@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Data never commits (re-fetched from the Hub by the build CLI)
+data/
+
+# Runtime artifacts
+artifacts/
+*.onnx
+*.pt
+
+# Env
+.env

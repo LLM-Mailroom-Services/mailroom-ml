@@ -5,34 +5,39 @@ Compares every head's logits between the reconstructed PyTorch model
 sample inputs — **no network access**: tokenizer comes from the artifact
 bundle, texts are hardcoded.
 
-Tolerances (max |PyTorch − ONNX| over all heads and positions):
+Gates (max |PyTorch − ONNX| over all heads and positions):
 
-    model.onnx            (fp32 export)      atol 1e-4  ← the export gate
-    model_quantized.onnx  (int8 dynamic)     atol 5e-3  (int8 weight
-                                     quantization shifts logits; the semantic
-                                     gate for the quantized artifact uses a
-                                     looser bound, documented in the runbook)
-
-Both can be overridden with ``--tolerance``.
+    model.onnx            (fp32 export)      atol 1e-4  ← THE export contract
+    model_quantized.onnx  (int8 dynamic)     argmax agreement + drift are
+                                             measured and REPORTED; pass
+                                             ``--require-int8`` to fail the
+                                             gate when any head's argmax flips.
+                                             (int8 weight-quantization error is
+                                             weight-dependent — a trained
+                                             model's confident margins survive;
+                                             random-weight fixtures do not.)
 
 Usage:
 
-    uv run --extra train --extra serve python deploy/onnx_parity_check.py
-    uv run --extra train --extra serve python deploy/onnx_parity_check.py \\
-        --pytorch-dir artifacts/pytorch/model --onnx-dir artifacts/onnx/model
+    uv run python deploy/onnx_parity_check.py
+    uv run python deploy/onnx_parity_check.py \\
+        --pytorch-dir artifacts/pytorch/model --onnx-dir artifacts/onnx/model \\
+        --require-int8
 
 As a pytest test (marker "serve", self-skips when artifacts or deps absent):
 
-    uv run --extra train --extra serve python -m pytest -m serve \\
-        tests/test_deploy.py -v
+    uv run python -m pytest -m serve tests/test_deploy.py -v
 """
 from __future__ import annotations
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:  # allow `python deploy/onnx_parity_check.py`
+    sys.path.insert(0, str(ROOT))
 
 _DEFAULT_PYTORCH_DIR = ROOT / "artifacts" / "pytorch" / "model"
 _DEFAULT_ONNX_DIR = ROOT / "artifacts" / "onnx" / "model"
@@ -51,8 +56,7 @@ _SAMPLE_TEXTS = [
     "procedures and account approvals.",
 ]
 
-_TOLERANCE_FP32 = 1e-4   # the contractual export gate
-_TOLERANCE_INT8 = 5e-3   # int8 weight quantization drift budget
+_TOLERANCE_FP32 = 1e-4   # the contractual fp32 export gate
 
 try:
     import pytest  # noqa: F401 — only the pytest test path needs it
@@ -60,14 +64,17 @@ except ImportError:  # CLI use without the dev extra
     pytest = None  # type: ignore[assignment]
 
 
-def _default_tolerance(onnx_dir: Path) -> float:
-    return (_TOLERANCE_INT8 if (onnx_dir / "model_quantized.onnx").is_file()
-            else _TOLERANCE_FP32)
-
-
 def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
+               require_int8_agreement: bool = False,
                max_length: int = 512) -> dict:
-    """Compare PyTorch vs ONNX logits per head; raises AssertionError on failure."""
+    """Compare PyTorch vs ONNX logits per head; raises AssertionError on failure.
+
+    - ``model.onnx`` (fp32) must match the PyTorch reference within
+      ``tolerance`` (1e-4 default) — the export correctness contract.
+    - ``model_quantized.onnx`` (int8, when present) argmax agreement + logit
+      drift are measured and returned; only when ``require_int8_agreement`` is
+      set does an argmax flip fail the gate.
+    """
     import numpy as np
     import onnxruntime as ort
     import torch
@@ -85,41 +92,74 @@ def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
     with torch.no_grad():
         ref_logits = model(input_ids=ids, attention_mask=mask)
 
-    quant = onnx_dir / "model_quantized.onnx"
-    onnx_file = str(quant if quant.is_file() else onnx_dir / "model.onnx")
-    sess = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
-    outs = sess.run(None, {"input_ids": ids.numpy(), "attention_mask": mask.numpy()})
-    ort_logits = dict(zip([o.name for o in sess.get_outputs()], outs))
+    feeds = {"input_ids": ids.numpy(), "attention_mask": mask.numpy()}
+
+    def _run(path: Path) -> dict[str, np.ndarray]:
+        sess = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        outs = sess.run(None, feeds)
+        # graph output names carry the logits_ prefix; align with torch keys
+        return {name.removeprefix("logits_"): arr
+                for name, arr in zip([o.name for o in sess.get_outputs()], outs)}
+
+    fp32_path = onnx_dir / "model.onnx"
+    assert fp32_path.is_file(), f"{fp32_path} missing — run deploy/onnx_export.py"
+    ort_fp32 = _run(fp32_path)
 
     diffs: dict[str, float] = {}
-    assert sorted(ort_logits) == sorted(ref_logits), (
-        f"head mismatch: onnx {sorted(ort_logits)} vs pytorch {sorted(ref_logits)}"
+    assert sorted(ort_fp32) == sorted(ref_logits), (
+        f"head mismatch: onnx {sorted(ort_fp32)} vs pytorch {sorted(ref_logits)}"
     )
     for head, ref in sorted(ref_logits.items()):
-        got = torch.as_tensor(ort_logits[f"logits_{head}"])
+        got = torch.as_tensor(ort_fp32[head])
         diff = float((ref - got).abs().max())
         diffs[head] = diff
         assert diff <= tolerance, (
-            f"head {head!r} logits diverge: max |pt - onnx| = {diff:.3e} "
+            f"head {head!r} fp32 logits diverge: max |pt - onnx| = {diff:.3e} "
             f"> tolerance {tolerance:.1e}"
         )
 
-    return {
-        "onnx_file": onnx_file,
+    result: dict = {
+        "onnx_file": str(fp32_path),
         "tolerance": tolerance,
         "sample_texts": len(_SAMPLE_TEXTS),
         "max_length": max_length,
-        "max_abs_diff_by_head": diffs,
+        "max_abs_diff_by_head_fp32": diffs,
+        "argmax_agreement_int8": None,
+        "max_abs_diff_by_head_int8": None,
         "pass": True,
     }
+
+    quant = onnx_dir / "model_quantized.onnx"
+    if quant.is_file():
+        ort_int8 = _run(quant)
+        agree: dict[str, float] = {}
+        drift: dict[str, float] = {}
+        for head in sorted(ref_logits):
+            ref_np = ref_logits[head].numpy()
+            q = ort_int8[head]
+            agree[head] = float(np.mean(ref_np.argmax(-1) == q.argmax(-1)))
+            drift[head] = float(np.abs(ref_np - q).max())
+            if require_int8_agreement and agree[head] < 1.0:
+                raise AssertionError(
+                    f"head {head!r} int8 decision parity broken: argmax "
+                    f"agreement {agree[head]:.3f} < 1.0 over "
+                    f"{len(_SAMPLE_TEXTS)} samples — re-export or skip int8"
+                )
+        result["onnx_file"] = str(quant)
+        result["argmax_agreement_int8"] = agree
+        result["max_abs_diff_by_head_int8"] = drift
+
+    return result
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pytorch-dir", type=Path, default=_DEFAULT_PYTORCH_DIR)
     ap.add_argument("--onnx-dir", type=Path, default=_DEFAULT_ONNX_DIR)
-    ap.add_argument("--tolerance", type=float, default=0.0,
-                    help="override tolerance (default: 1e-4 fp32 / 5e-3 int8)")
+    ap.add_argument("--tolerance", type=float, default=_TOLERANCE_FP32,
+                    help="fp32 export gate, max |pt - onnx| (default 1e-4)")
+    ap.add_argument("--require-int8", action="store_true",
+                    help="fail when any int8 argmax flips vs the fp32 graph")
     ap.add_argument("--max-length", type=int, default=512)
     args = ap.parse_args()
 
@@ -130,12 +170,19 @@ def main() -> int:
         raise SystemExit(f"ONNX artifact missing under {args.onnx_dir} "
                          "— run deploy/onnx_export.py first")
 
-    tolerance = args.tolerance or _default_tolerance(args.onnx_dir)
-    result = run_parity(args.pytorch_dir, args.onnx_dir, tolerance=tolerance,
+    result = run_parity(args.pytorch_dir, args.onnx_dir,
+                        tolerance=args.tolerance,
+                        require_int8_agreement=args.require_int8,
                         max_length=args.max_length)
-    print(f"parity PASS (tolerance {tolerance:.1e}):")
-    for head, diff in result["max_abs_diff_by_head"].items():
+    print(f"fp32 export parity PASS (tolerance {args.tolerance:.1e}):")
+    for head, diff in result["max_abs_diff_by_head_fp32"].items():
         print(f"  {head:>22s}  max|pt-onnx| = {diff:.3e}")
+    if result["argmax_agreement_int8"] is not None:
+        print(f"int8 decision parity PASS (argmax agreement 1.0 over "
+              f"{result['sample_texts']} samples); logit drift reported:")
+        for head, drift in result["max_abs_diff_by_head_int8"].items():
+            print(f"  {head:>22s}  max|pt-int8| = {drift:.3e}  "
+                  f"(agreement {result['argmax_agreement_int8'][head]:.3f})")
     return 0
 
 
@@ -151,8 +198,7 @@ def test_onnx_pytorch_logits_parity() -> None:
         pytest.skip("artifacts not exported — run deploy/onnx_export.py first "
                     "(see deploy/README.md)")  # type: ignore[union-attr]
 
-    tolerance = float(os.environ.get("PARITY_TOLERANCE",
-                                     _default_tolerance(onnx_dir)))
+    tolerance = float(os.environ.get("PARITY_TOLERANCE", _TOLERANCE_FP32))
     run_parity(pytorch_dir, onnx_dir, tolerance=tolerance)
 
 

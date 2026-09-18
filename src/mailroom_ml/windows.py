@@ -37,6 +37,14 @@ def _tokenizer():
             # full-doc tokenization for windowing is intentionally longer than
             # the model context — silence the per-call warning (we chunk).
             tok.model_max_length = 1 << 30
+            # Byte-compat with the published training set (transformers 5.x
+            # drift): transformers >= 5 added a guard that SKIPS the legacy
+            # clean_up_tokenization post-processing for BPE tokenizers, so
+            # decode() would emit "below ." where the committed build (and
+            # the published windows) emit "below.".  Re-enable the legacy
+            # cleanup so rebuilds stay byte-identical; setting this attribute
+            # is a no-op attribute on older transformers (attribute set).
+            tok.clean_up_tokenization_spaces_for_bpe_even_though_it_will_corrupt_output = True  # noqa: E501
             _TOKENIZER_CACHE = tok
         except Exception:  # noqa: BLE001 — train deps not installed
             _TOKENIZER_CACHE = False

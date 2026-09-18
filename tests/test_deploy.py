@@ -208,7 +208,5 @@ def test_onnx_parity_executes_or_skips() -> None:
     if not (pytorch_dir / "heads.pt").is_file() or \
             not (onnx_dir / "model.onnx").is_file():
         pytest.skip("artifacts not exported — run deploy/onnx_export.py first")
-    result = parity.run_parity(
-        pytorch_dir, onnx_dir,
-        tolerance=parity._default_tolerance(onnx_dir))
+    result = parity.run_parity(pytorch_dir, onnx_dir, tolerance=1e-4)
     assert result["pass"] is True

@@ -31,15 +31,33 @@ quantizer family optimum's ``ORTQuantizer`` wraps — see the optimum quicktour,
 https://huggingface.co/docs/optimum/exporters/onnx/usage_guides/export_a_model,
 for the standard-checkpoint path with ``optimum-cli export onnx --quantize int8``).
 
-Requires the train/serve extras (torch, transformers, onnxruntime):
+Requires the train/serve extras (torch, transformers, onnxruntime). Exporting
+with torch >= 2.14 additionally needs the ONNX toolchain wheel (``onnx`` /
+``onnxscript`` — the 2.14 exporter imports it):
 
-    uv run --extra train --extra serve python deploy/onnx_export.py \\
+    uv sync --extra train --extra serve
+    uv pip install onnx onnxscript    # torch >= 2.14 export/quantize toolchain
+
+Then:
+
+    uv run python deploy/onnx_export.py \\
         --pytorch-dir artifacts/pytorch/model \\
         --out-dir artifacts/onnx/model
 
-Then verify parity:
+Notes on the exporter choice (verified live 2026-09-18, torch 2.14.0):
 
-    uv run --extra train --extra serve python deploy/onnx_parity_check.py
+- torch.onnx.export now defaults to the Dynamo exporter (``dynamo=True``),
+  which currently emits an **invalid** graph for this architecture
+  (``Split`` with a removed ``num_outputs`` attribute → onnx.checker /
+  onnxruntime both reject it). We therefore pass ``dynamo=False`` to use the
+  stable TorchScript-tracer exporter (opset 17, dynamic batch+sequence axes;
+  graph validated with onnx.checker + onnxruntime before quantization).
+- torch's legacy exporter is still the default-arg-free stable path for custom
+  encoder graphs; revisit Dynamo when its Split emission is fixed.
+
+Verify parity afterwards:
+
+    uv run python deploy/onnx_parity_check.py
 """
 from __future__ import annotations
 
@@ -92,10 +110,15 @@ def build_reference_model(pytorch_dir: Path):
 
     base = AutoModel.from_pretrained(pytorch_dir, torch_dtype=torch.float32)
     model = HierarchicalClassifier(base, head_sizes)
-    model.heads.load_state_dict(
-        torch.load(pytorch_dir / "heads.pt", map_location="cpu",
-                   weights_only=True)
-    )
+    # heads.pt is saved by the trainer (cf096fa pattern) as a nested dict
+    # {"<head>": {"weight": …, "bias": …}} — flatten to ModuleDict keys.
+    heads_state = torch.load(pytorch_dir / "heads.pt", map_location="cpu",
+                             weights_only=True)
+    model.heads.load_state_dict({
+        f"{head}.{param}": tensor
+        for head, params in heads_state.items()
+        for param, tensor in params.items()
+    })
     model.eval()
     return model, maps
 
@@ -119,13 +142,17 @@ def export_onnx(
     *,
     quantize: bool = True,
     opset: int = 17,
+    dynamo: bool = False,
     dummy_seq_len: int = 64,
     max_seq_len: int = 8192,
 ) -> dict:
     """torch.onnx.export (dynamic batch+seq) + optional int8 quantize.
 
-    Writes ``model.onnx`` (+ ``model_quantized.onnx`` when quantize) and copies
-    ``labels.json`` + tokenizer files so the bundle is self-contained.
+    ``dynamo=False`` pins the legacy TorchScript-tracer exporter: the torch
+    2.14 Dynamo exporter currently emits an invalid ``Split`` node for this
+    architecture (module docstring). Writes ``model.onnx`` (+
+    ``model_quantized.onnx`` when quantize) and copies ``labels.json`` +
+    tokenizer files so the bundle is self-contained.
     """
     import torch
 
@@ -157,6 +184,7 @@ def export_onnx(
         dynamic_axes=dynamic_axes,
         opset_version=opset,
         do_constant_folding=True,
+        dynamo=dynamo,
     )
 
     meta = {
@@ -164,6 +192,7 @@ def export_onnx(
         "exported_from": str(pytorch_dir),
         "heads": head_order,
         "opset": opset,
+        "exporter": "torchscript-tracer" if not dynamo else "dynamo",
         "dynamic_axes": dynamic_axes,
         "max_seq_len": max_seq_len,
         "quantized": False,

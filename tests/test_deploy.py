@@ -62,7 +62,6 @@ def test_train_app_constructs() -> None:
 
 def test_train_app_uses_current_documented_surface() -> None:
     modal = _need_modal()
-    import inspect
 
     import deploy.modal_app as modal_app
 
@@ -111,8 +110,7 @@ def test_train_cmd_omits_optional_flags_when_turned_off() -> None:
     assert set(cmd) == {
         modal_app.sys.executable, "/root/training/train_modernbert.py",
         "--data", modal_app.TRAINING_DATA_REPO, "--output",
-        "/checkpoints/latest", "--epochs", "1", "--batch-size", "1",
-        "--grad-accum", "1", "--lr", "1e-05", "--seed", "1",
+        "/checkpoints/latest", "--epochs", "1", "--batch-size", "--grad-accum", "--lr", "1e-05", "--seed",
     }
 
 

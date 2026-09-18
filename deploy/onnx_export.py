@@ -64,7 +64,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import torch
@@ -188,7 +188,7 @@ def export_onnx(
     )
 
     meta = {
-        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "exported_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "exported_from": str(pytorch_dir),
         "heads": head_order,
         "opset": opset,

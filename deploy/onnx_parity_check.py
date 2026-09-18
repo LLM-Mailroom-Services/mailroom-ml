@@ -99,7 +99,8 @@ def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
         outs = sess.run(None, feeds)
         # graph output names carry the logits_ prefix; align with torch keys
         return {name.removeprefix("logits_"): arr
-                for name, arr in zip([o.name for o in sess.get_outputs()], outs)}
+                for name, arr in zip([o.name for o in sess.get_outputs()],
+                                     outs, strict=True)}
 
     fp32_path = onnx_dir / "model.onnx"
     assert fp32_path.is_file(), f"{fp32_path} missing — run deploy/onnx_export.py"

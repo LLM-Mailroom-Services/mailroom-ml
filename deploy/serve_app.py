@@ -213,7 +213,7 @@ _bearer = HTTPBearer(auto_error=False)
 
 
 def _auth_check(
-    cred: HTTPAuthorizationCredentials | None = Depends(_bearer),
+    cred: HTTPAuthorizationCredentials | None = Depends(_bearer),  # noqa: B008 - FastAPI dependency-injection idiom
 ) -> None:
     token = os.environ.get("SERVE_API_TOKEN", "")
     if not token:
@@ -222,6 +222,9 @@ def _auth_check(
     if cred is None or cred.credentials != token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="invalid bearer token")
+
+
+_auth_dep = Depends(_auth_check)  # module-level singleton (FastAPI/ruff B008)
 
 
 class PredictRequest(BaseModel):
@@ -233,12 +236,12 @@ class PredictRequest(BaseModel):
 
 @app.function(secrets=_serve_secrets(), timeout=120, startup_timeout=60)
 @modal.fastapi_endpoint(method="POST")
-def predict(request: PredictRequest, _: None = Depends(_auth_check)) -> dict:
+def predict(request: PredictRequest, _: None = _auth_dep) -> dict:
     """Run the int8 ONNX session; returns per-text head predictions + logits."""
     state = _session(_resolve_model_dir())
     ids, mask = _encode(request.texts, state)
     outs = state["session"].run(None, {"input_ids": ids, "attention_mask": mask})
-    logits_by_head = dict(zip(state["output_names"], outs))
+    logits_by_head = dict(zip(state["output_names"], outs, strict=True))
     head_names = sorted(k for k in logits_by_head if k.startswith("logits_"))
 
     predictions = []

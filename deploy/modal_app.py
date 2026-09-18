@@ -33,14 +33,14 @@ Behavior (mirrors the committed app):
   pushes the checkpoint to the Hub when ``--push-to-hub`` is set,
 - HF_TOKEN arrives via the secret (deploy-time env or the Modal dashboard).
 
-Deploy (only HF_TOKEN* is required — the training dtype is bf16-on-cuda):
+Deploy (only HF_TOKEN is required — the training dtype is bf16-on-cuda):
 
-    HF_TOKEN=... uv run --with modal==1.5.5 modal deploy deploy/modal_app.py
+    HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py
 
 Run (defaults: 5 epochs, batch 16, grad-accum 2, lr 2e-5, seed 42, eval-test on):
 
-    HF_TOKEN=... uv run --with modal==1.5.5 modal run deploy/modal_app.py
-    HF_TOKEN=... uv run --with modal==1.5.5 modal run deploy/modal_app.py \\
+    HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py
+    HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py \\
         --epochs 5 --push-to-hub Lucius-Morningstar/mailroom-modernbert-classifier
 """
 from __future__ import annotations
@@ -49,7 +49,7 @@ import os
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import modal
@@ -234,7 +234,7 @@ def train(
 
     # Rollback: keep every successful run under runs/<run-id>/; latest/ stays
     # the stable pointer the export/serve steps consume.
-    run_id = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     archive_dir = f"{CHECKPOINT_MOUNT}/runs/{run_id}"
     shutil.copytree(f"{CHECKPOINT_MOUNT}/latest", archive_dir)
     checkpoint_vol.commit()

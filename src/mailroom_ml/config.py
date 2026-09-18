@@ -69,6 +69,25 @@ DOC_TYPES: tuple[str, ...] = (
     "insurance_claim",
 )
 
+# Canonical subclass surfaces sanctioned by the constellation tracker
+# (#66 critical: correspondence is 8-key — zero voicemail, zero other; #67:
+# corporate_record observed GT is 10 keys — certificate_of_formation has
+# zero rows; #68: insurance is 6-key). Head label maps are DERIVED from the
+# observed GT at build time (surface-drift parity test, #66/#67/#75); these
+# tuples are the canonical normalization references, not the head vocab.
+CANONICAL_CORRESPONDENCE_SUBCLASSES: tuple[str, ...] = (
+    "email", "memo", "letter", "notice", "demand", "attorney_demand",
+    "press_release", "meeting_request",
+)
+OBSERVED_CORPORATE_RECORD_SUBCLASSES: tuple[str, ...] = (
+    "charter_amendment", "articles_of_incorporation", "officer_certificate",
+    "indenture", "subsidiary_list", "rights_instrument", "board_resolution",
+    "bylaws", "powers_of_attorney", "other",
+)
+INSURANCE_SUBCLASSES: tuple[str, ...] = (
+    "carrier", "inpatient", "outpatient", "pde", "property", "auto",
+)
+
 # ---------------------------------------------------------------------------
 # Routing policy — PLACEHOLDERS until selective-risk analysis on the
 # calibration set quantifies the right thresholds (Plan §Calibration).  The
@@ -85,6 +104,46 @@ FAST_PATH_ERROR_BUDGET = 0.02      # selective-risk target: P(err | fast path)
 
 # Abstention / unknown + OOD gate (novelty flag from OOD probe, Phase 2).
 ABSTAIN_UNKNOWN_CLASS = "unknown"
+
+# ---------------------------------------------------------------------------
+# Constellation intake-overhaul contract (mailroom-issues #85 epic, M1-M7 —
+# the org-owned spec this repo's routing layer must satisfy; the governed
+# llm-mailroom graph consumes these, mailroom-ml only defines the contract).
+# ---------------------------------------------------------------------------
+# Feature flag + mode mirror the org contract verbatim:
+#   MAILROOM_BERT_INTAKE=0   -> today's behavior (instant rollback)
+#   BERT_INTAKE_MODE=shadow  -> compute always, sorter always runs (metrics)
+#   BERT_INTAKE_MODE=verify  -> sorter runs, PASS requires agreement (P6)
+#   BERT_INTAKE_MODE=skip    -> PASS skips the LLM sorter (allowlisted classes)
+MAILROOM_BERT_INTAKE_DEFAULT = 0          # default OFF preserves pipeline behavior
+BERT_INTAKE_MODE = "shadow"               # rollout ladder: shadow -> verify -> skip
+
+# Initial routing thresholds from #85/#89; the #84-calibrated value replaces
+# BERT_INTAKE_MIN_CONFIDENCE once selective-risk analysis lands (plan S8).
+BERT_INTAKE_MIN_CONFIDENCE = 0.92         # calibrated doc_type confidence (epic example value)
+BERT_INTAKE_MAX_CHARS = 30_000            # ~8,192 tokens at ~3.8 chars/token (context_fit gate)
+INTAKE_HANDOFF_SCHEMA_VERSION = 1         # intake_handoff schema v1 (M1)
+
+# PASS/FAIL gate vocabulary (epic P1-P7 / F1-F7) — used by routing/evaluate_gate.
+GATE_REQUIRED_AGREEMENT = 0.80            # window-agreement floor (plan S = p*a*m)
+GATE_ALLOWLISTED_START = ("correspondence",)  # M7: first classes eligible for skip
+
+# ---------------------------------------------------------------------------
+# Enrichment source pins (Hub API, verified 2026-09-18) — per #52 discipline,
+# every source pool is revision-pinned; never pull live tips.
+# ---------------------------------------------------------------------------
+ENRON_DEDUP_REPO = "Lucius-Morningstar/enron-correspondence-dedup"
+ENRON_DEDUP_REVISION = "993919b4387f017b2fcff5902102de609ad41464"   # 247,523 rows
+CMS_POOL_REPO = "Lucius-Morningstar/cms-desynpuf-insurance-claims"
+CMS_POOL_REVISION = "875da3aa1c4cf0220be7e3fe11e489ec7490e840"      # 400 rendered
+GNOTHEIA_REPO = "gratex/GNOTHEIA-synthetic-insurance-dataset"
+GNOTHEIA_REVISION = "c006552404f8dc5bea89de5b39ecf4672607acef"      # 863 polycontexts
+BDR_REPO = "bdr-ai-org/insurance-motor-claims-decision-v1"
+BDR_REVISION = "090163351d02a0f7d5d4b5143aec6bcf878e2d59"           # 800 tabular
+INSURBIAS_REPO = "feihuangfh/INSURBIAS"
+INSURBIAS_REVISION = "311d59c4d2e117db3f4f12f515c0536090b4d876"     # narratives CSV
+CUAD_FULL_REPO = "Lucius-Morningstar/mailroom-cuad-contracts-full"
+CUAD_FULL_REVISION = "e69afe340b48133b7173d74b8ad220fcd28a1a6e"
 
 # ---------------------------------------------------------------------------
 # Synthetic-data program caps (policy v1 — see configs/synthetic_policy_v1.yaml)

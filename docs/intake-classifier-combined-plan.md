@@ -150,6 +150,17 @@ training support ≥ 5 rows · no OOD flag. Initial thresholds from config
 - **Labels**: `expected` → doc_type; `expected_subclass` → canonical key via
   the vendored dojo normalization (DMR-066) — `Service`/`service`,
   `Co_Branding`, `Joint Venture _ Filing` → `joint_venture`, etc.
+- **Label surfaces (org-canonical, issues #66/#67/#68/#75)**: head vocabularies
+  are **derived from the OBSERVED GT of the pinned parquet**, never from a
+  hand-maintained enum, with a parity test that fails CI on drift:
+  correspondence = 8 keys (email, memo, letter, notice, demand,
+  attorney_demand, press_release, meeting_request — **zero `voicemail`, zero
+  `other` in data**), corporate_record = 10 observed keys
+  (certificate_of_formation has zero rows → excluded), insurance_claim =
+  6 keys, contract = 25 CUAD + other, merger_agreement = 5 MAUD types.
+  Unresolvable subclasses for classes without an `other` token are a
+  guard failure (`triage_vocab_ok=false` → LLM path, P4/F4), never a
+  fabricated label.
 - **Title**: subject → exhibit_description → filename (title-wins).
 - **Windows**: token-level, 8,192 budget, 512 overlap, BPE round-trip clamp
   (every published window re-tokenizes ≤ 8,192 WITH specials; title survives
@@ -358,14 +369,27 @@ At ~1,000 docs/day steady state: ≥ 80% skip the LLM → LLM spend cut 80–90%
 
 ## 12. Rollout ladder + retrain cadence
 
-1. **Shadow:** classifier on every document, LLM never skipped; log
-   agreement/route recommendations (span only). 2. **Restricted fast path:**
-   skip only clean + high-confidence + ≥5 authentic support. 3. **Expand by
-   evidence:** new labels enter the fast path only under measured selective
-   risk. 4. **Retrain cadence:** retrain only with versioned data changes;
-   recalibrate every release; previous artifact retained for rollback.
-   5. **Human review loop:** low-confidence / OOD / high-impact disagreements
-   → review queue; reviewed authentic docs beat unlimited synthesis.
+Adopts the constellation epic #85/#92 ship order verbatim —
+**Shadow → Verify → Skip**, gated by eval + cost dashboards (M7), with the
+epic's P1–P7 / F1–F7 gate criteria and `intake_handoff` carry-through.
+
+1. **Shadow** (`BERT_INTAKE_MODE=shadow`): classifier computed on every
+   document; LLM sorter always runs; agreement/route recommendations logged
+   (span only), never skipping. Metrics: BERT-pass rate, sorter-skip rate,
+   disagreement rate, fail-soft rate, downstream extract accuracy.
+2. **Verify** (`BERT_INTAKE_MODE=verify`): gate on; `evaluate_intake_gate`
+   requires full PASS criteria incl. sorter agreement (P6); **no skip** —
+   sorter remains authority and validates every BERT PASS.
+3. **Skip** (`BERT_INTAKE_MODE=skip`): PASS skips the LLM sorter for
+   **allowlisted classes only — start correspondence / short notices** (M7);
+   FAIL on any criterion → full sorter (+ reviewer/boss as today).
+4. **Retrain cadence:** retrain only with versioned data changes; recalibrate
+   every release; previous artifact retained for rollback;
+   `MAILROOM_BERT_INTAKE=0` restores today's path instantly (M6).
+5. **Human review loop:** low-confidence / OOD / high-impact disagreements →
+   review queue; reviewed authentic docs beat unlimited synthesis.
+6. **Epic closure:** M7 closes #85; this repo's eval/calibration evidence is
+   the sign-off artifact (#92 acceptance).
 
 ---
 
@@ -400,7 +424,43 @@ At ~1,000 docs/day steady state: ≥ 80% skip the LLM → LLM spend cut 80–90%
 
 ---
 
-## 15. Sources
+## 15. Constellation-issues incorporation (LLM-Mailroom-Services/mailroom-issues, mined 2026-09-18)
+
+The org's tracker is the governing contract for the intake overhaul. Every
+relevant issue and its disposition in this plan:
+
+| Issue | Title (state) | Disposition in this plan |
+|---|---|---|
+| **#84** | Proposal: ModernBERT Implementation (open) | The org-owned charter this repo implements. Its "further details" slot = this plan (§1–§13). M3 (#88) is blocked on the published calibrated checkpoint — the artifact this repo produces. |
+| **#85** | EPIC: ModernBERT-coupled intake overhaul (open, high) | The routing/gate contract: adopted verbatim — `intake_handoff` schema v1 (M1 fields: schema_version, method, routing, triage, sections, quality, gate, provenance), feature flags `MAILROOM_BERT_INTAKE` + `BERT_INTAKE_MODE=shadow\|verify\|skip`, thresholds `bert_intake_max_chars` (default 30,000, §config) + `bert_intake_min_confidence` (initial 0.92; replaced by §8 selective-risk value), P1–P7 / F1–F7 gate criteria, `evaluate_intake_gate(...) -> PASS\|FAIL`, classify-node continuation table, fail-soft invariant "intake never blocks a run", instant rollback via flag. Implemented in `mailroom_ml.routing` + `tracing` (intake-bert-prep/`intake-ml-triage` span). |
+| **#86** | M1 — Intake handoff contract + schema + feature flags (open, high) | `INTAKE_HANDOFF_SCHEMA_VERSION=1`; `routing.build_handoff(...)` shape; defaults preserve today's behavior (flag off). |
+| **#87** | M2 — Context-size / routing gate (open, high) | `should_bert_intake(text, stats)` beside `should_llm_intake`; context_fit = chars ≤ BERT_INTAKE_MAX_CHARS ∧ tokens ≤ 8,192; messy/oversize → LLM; model-unavailable → LLM; `routing.reason` machine-readable for observability. |
+| **#88** | M3 — ModernBERT intake inference path (open, blocked-by #84) | `mailroom_ml.inference` + `model` — hierarchical outputs → triage (primary_doc_class, doc_subclass, calibrated confidence); coverage==1.0 / context_fit enforced (never truncate into BERT); shadow-capable by construction. |
+| **#89** | M4 — Confidence & quality guardrails (open, high) | Quality bundle emitted on every prep: messy, method, chars, token_estimate, context_fit, coverage, section_map_ok, triage_vocab_ok, guard_failures[]; vocab clamps via `labels` canon; fixtures for each guard failure in `tests`. |
+| **#90** | M5 — Sorter + reviewer PASS/FAIL wiring (open, high) | `evaluate_intake_gate(handoff, sorter_result?, reviewer_result?)` implementing P1–P7/F1–F7; reviewer blind; skip eligibility only when all PASS criteria hold. |
+| **#91** | M6 — Pipeline continuation / fallback (open, high) | classify-node table: PASS+skip → `classification_method=bert_intake`, no `SorterAgent`; FAIL → full sorter with enhanced handoff prior; BERT error → pre-BERT behavior. |
+| **#92** | M7 — Eval harness, cost/latency, Shadow→Verify→Skip (open, medium) | §11 (eval surfaces incl. short-doc cohort agreement/ECE/$/doc/p50-p95) + §12 rollout; M7 closes #85 — our calibration/selective-risk reports are the sign-off artifacts. |
+| **#66** | taxonomy_parity RED: correspondence 10-key vs 8-key (open, **critical**) | Label-surface discipline adopted: mailroom-ml derives head vocabs from observed GT + parity test; canonical correspondence = 8 keys (no voicemail, no other). This repo's surfaces are correct-by-construction against the pinned parquet. |
+| **#67** | corporate_record under-claim 5 tokens vs 10 observed (open, high) | Observed 10-key corporate_record head (certificate_of_formation excluded — zero rows); parity test fails on under-claim or over-claim. |
+| **#68** | ARM prompts stale 4-token insurance / 10-9-key correspondence (open, high) | Insurance head = 6 keys (promote-only doctrine respected: we never mutate frozen prompt lineages; the ML surface uses the data). |
+| **#52** | Enron eval not revision-pinned (closed) | Discipline extended: every enrichment pool is revision-pinned in `config.py` (enron @ `993919b4…`, GNOTHEIA @ `c0065524…`, BDR @ `09016335…`, INSURBIAS @ `311d59c4…`, CMS pool @ `875da3aa…`, CUAD-full @ `e69afe34…`). Pseudo-label runs record `revision_resolved` in their manifest (same model as the fix). |
+| **#57** | corpus-eda vocab drift 9-vs-6 insurance + truthy sha (closed) | Build-time vocab == eval-time vocab: single `labels.py` canon + observed-GT derivation; sha256 verification is byte-exact (`provenance.verify_hub_sha256`). |
+| **#75** | HF card/pin drift (open) | The "re-derive surfaces from pinned parquet so drift fails CI" guardrail is implemented here as the surface parity test. |
+| **#51/#43/#38** | eval-integrity (phantom `unknown`, class_set replay, precision>1.0) (closed) | Classifier's `unknown` is inference-only abstention and never emitted into `intake_handoff.triage` (P4 vocab gate); subclass eval always per-head; no metric can exceed 1.0 (macro-F1 math pinned by tests). |
+| **#76** | GEPA prompt-version iteration (open) | Out of scope (prompt work belongs to the GEPA loop); the classifier's vocabulary decisions respect the frozen-lineage doctrine. |
+| **#63** | calibration ≠ correctness (closed) | TraceHandle lesson applied: confidence is calibrated probability, not correctness — selective risk is measured, never assumed. |
+
+Open questions the epic leaves (answered here): `bert_intake_max_chars` =
+30,000 (≈ 8,192 tokens at ~3.8 chars/token); PASS-sleep may copy
+`doc_subclass` to the manifest only when the class's taxonomy token is
+supported and calibrated (P4); section maps stay empty-by-design for short
+forms (P5); single global threshold first, per-class after calibration data
+accumulates; gmail free-triage lane interaction is a graph decision outside
+this repo (flag surface only).
+
+---
+
+## 16. Sources
 
 1. `eval-environment/docs/intake-classifier-proposal.md` (plan A)
 2. `ModernBERT implementation.md` (plan B, ppl-ai file)

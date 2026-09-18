@@ -12,13 +12,29 @@ repo never imports the dojo package (Mailroom-Corpus-EDA commit cf096fa):
 
 The corpus GT surfaces (CORPUS_SUBCLASS_SURFACES) all resolve through these
 tables; tests pin every surface value to its canonical key.
+
+HEAD VOCABS ARE OBSERVED, NOT ENUMERATED (mailroom-issues #66/#67/#68/#75,
+see ``observed_label_surfaces``): per-class training heads are derived from
+the pinned GT at build time (train+validation rows only — the held-out test
+split never shapes a head).  ``SUBCLASS_BY_CLASS`` remains the CANONICAL
+normalization reference (what ``normalize_subclass`` resolves through), not
+the head vocabulary; a zero-row enum label (``certificate_of_formation``,
+``voicemail``) is not a trainable class.
 """
 from __future__ import annotations
 
 import re
 from typing import Any
 
-from mailroom_ml.config import DOC_TYPES
+import pandas as pd
+
+from mailroom_ml.config import (
+    CANONICAL_CORRESPONDENCE_SUBCLASSES,
+    DOC_TYPES,
+    FINETUNE_REVISION,
+    INSURANCE_SUBCLASSES,
+    OBSERVED_CORPORATE_RECORD_SUBCLASSES,
+)
 
 __all__ = [
     "DOC_TYPES",
@@ -28,6 +44,7 @@ __all__ = [
     "SUBCLASS_BY_CLASS",
     "CONTRACT_SUBTYPE_LABELS",
     "normalize_subclass",
+    "observed_label_surfaces",
     "label_maps",
 ]
 
@@ -141,6 +158,11 @@ def normalize_subclass(doc_type: str, value: Any) -> str:
     (DMR-066): contract surfaces resolve through the CUAD alias table
     (case/separator folded); every other class through case-folded exact
     match against its canonical enum; unresolvable values become ``other``.
+
+    Note: ``other`` is emitted for unresolvable values even in classes whose
+    OBSERVED head has no ``other`` token (e.g. correspondence) — such a row
+    is a guard-failure candidate per #75 (surface-drift parity test), never
+    an invented label; the canonical normalization is unchanged.
     """
     if value is None:
         return "other"
@@ -171,7 +193,56 @@ def normalize_subclass(doc_type: str, value: Any) -> str:
     return "other"
 
 
-def label_maps(docs_df) -> dict[str, dict[str, Any]]:
+def observed_label_surfaces(docs: pd.DataFrame) -> dict[str, tuple[str, ...]]:
+    """Tracker-sanctioned per-class head vocabs, derived from the pinned GT.
+
+    Mechanism: per doc_type, the subclass keys observed over rows where
+    ``split != "test"`` — the held-out test split must never shape a head
+    vocab (mailroom-issues #66/#67/#75).  With the sanctioned exceptions
+    where the tracker keeps the FULL canonical enum as the head
+    (config.py, corpus revision ``FINETUNE_REVISION``):
+
+    - ``contract`` — CUAD canon ``CONTRACT_SUBTYPE_KEYS + ("other",)``:
+      ``other`` is the CUAD fallback token for unseen families at
+      inference time, independent of whether the corpus observes it;
+    - ``merger_agreement`` — MAUD canon ``MAUD_CONSIDERATION_TYPES`` (5);
+    - ``corporate_record`` / ``correspondence`` / ``insurance_claim`` — the
+      OBSERVED set only: zero-row enum labels (``certificate_of_formation``,
+      ``voicemail``) and ``other``-by-fiat are NOT trainable classes.  An
+      unresolved row in a class whose observed head has no ``other`` token
+      is a guard failure (#75), never an invented label.
+
+    Determinism/order: observed keys are ordered by their sanctioned
+    config tuple when one exists (the tracker-reviewed corpus order, which
+    pins id2label indices), with any drift keys NOT in the sanction —
+    the #75 failures — appended in sorted order; contract and
+    merger_agreement follow their canonical tuple order.
+    """
+    active = docs[docs["split"] != "test"]
+    observed: dict[str, set[str]] = {}
+    for cls, grp in active.groupby("doc_type", sort=True):
+        observed[cls] = set(grp["subclass"])
+    sanctioned_order = {
+        "correspondence": CANONICAL_CORRESPONDENCE_SUBCLASSES,
+        "corporate_record": OBSERVED_CORPORATE_RECORD_SUBCLASSES,
+        "insurance_claim": INSURANCE_SUBCLASSES,
+    }
+    surfaces: dict[str, tuple[str, ...]] = {}
+    for cls in DOC_TYPES:
+        if cls == "contract":
+            surfaces[cls] = CONTRACT_SUBTYPE_KEYS + ("other",)
+        elif cls == "merger_agreement":
+            surfaces[cls] = MAUD_CONSIDERATION_TYPES
+        else:
+            obs = observed.get(cls, set())
+            order = sanctioned_order[cls]
+            ordered = tuple(k for k in order if k in obs)
+            drift = tuple(sorted(obs - set(order)))  # unsanctioned keys -> drift failure
+            surfaces[cls] = ordered + drift
+    return surfaces
+
+
+def label_maps(docs_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
     """Per-head id2label/label2id/weights for the hierarchical classifier.
 
     Builds the label contract consumed by the training loop + inference
@@ -179,12 +250,16 @@ def label_maps(docs_df) -> dict[str, dict[str, Any]]:
 
     - ``doc_type`` head: the 5 corpus classes + ``unknown`` (inference-only,
       zero training rows — OOD/abstention bucket).
-    - one subclass head per doc_type, label vocabulary = the class's
-      ``SUBCLASS_BY_CLASS`` enum.
+    - one subclass head per class, label vocabulary = the OBSERVED surface
+      from ``observed_label_surfaces`` (train+validation rows of the pinned
+      GT — never the full canonical enum, never the held-out test split;
+      issues #66/#67/#68/#75).
 
     Weights are inverse-frequency over the TRAIN split only (computed by
     ``mailroom_ml.dataset.class_weights`` — imported lazily to keep the
-    dataset module's import graph acyclic).
+    dataset module's import graph acyclic).  Each head carries a ``note``
+    documenting its derivation source (observed-vs-canonical) and the
+    corpus revision.
     """
     from mailroom_ml.dataset import class_weights
 
@@ -197,13 +272,22 @@ def label_maps(docs_df) -> dict[str, dict[str, Any]]:
         "weights": class_weights(docs_df, "doc_type"),
         "note": "unknown is inference-time only (zero training rows)",
     }
+    surfaces = observed_label_surfaces(docs_df)
     for cls in DOC_TYPES:
-        labels = list(SUBCLASS_BY_CLASS[cls])
+        labels = list(surfaces[cls])
+        surface_source = (
+            "canonical-enum" if cls in ("contract", "merger_agreement")
+            else "observed-gt"
+        )
         heads[cls] = {
             "labels": labels,
             "id2label": {i: k for i, k in enumerate(labels)},
             "label2id": {k: i for i, k in enumerate(labels)},
             "weights": class_weights(docs_df[docs_df["doc_type"] == cls], "subclass"),
-            "note": "fires only when doc_type predicts this class",
+            "note": (
+                f"fires only when doc_type predicts this class; surface="
+                f"{surface_source} (observed over split != test), "
+                f"corpus_revision={FINETUNE_REVISION}"
+            ),
         }
     return heads

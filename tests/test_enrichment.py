@@ -194,19 +194,21 @@ def test_enron_gt_dedup_same_filename_kept_different_dropped():
     canonical = _canonical()
     canonical_text = canonical[
         canonical["filename"] == "enron_letter_002.txt"]["doc_text"].iloc[0]
-    gt = pd.DataFrame([
-        # same filename + same sha: document identity -> kept
-        {"filename": "enron_letter_002.txt", "expected": "correspondence",
-         "expected_subclass": "letter", "doc_text": canonical_text,
-         "aeslc_join": "1"},
-        # different filename + same sha -> dropped (dedup_by_sha discipline)
-        {"filename": "enron_letter_copy.txt", "expected": "correspondence",
-         "expected_subclass": "letter", "doc_text": canonical_text,
-         "aeslc_join": "1"},
-    ])
-    res = assemble_enron_gt(gt, canonical)
+    # same filename + same sha: document identity -> kept
+    identity = pd.DataFrame([{
+        "filename": "enron_letter_002.txt", "expected": "correspondence",
+        "expected_subclass": "letter", "doc_text": canonical_text,
+        "aeslc_join": "1"}])
+    res = assemble_enron_gt(identity, canonical)
     assert set(res.rows["filename"]) == {"enron_letter_002.txt"}
-    reasons = dict(zip(res.rejected["filename"], res.rejected["reason"], strict=False))
+    # different filename + same sha -> dropped against the canonical corpus
+    copy = pd.DataFrame([{
+        "filename": "enron_letter_copy.txt", "expected": "correspondence",
+        "expected_subclass": "letter", "doc_text": canonical_text,
+        "aeslc_join": "1"}])
+    res2 = assemble_enron_gt(copy, canonical)
+    assert res2.rows.empty
+    reasons = dict(zip(res2.rejected["filename"], res2.rejected["reason"], strict=False))
     assert reasons["enron_letter_copy.txt"] == "duplicate_sha_canonical"
 
 
@@ -219,6 +221,8 @@ def test_enron_gt_cap_two_x_correspondence_train():
     groups = [_enron_gt_rows()] * 4
     gt = pd.concat([g for g in groups], ignore_index=True)
     gt["filename"] = [f"e{i:03d}.txt" for i in range(len(gt))]
+    # distinct text per row so within-pool dedup does not pre-empt the cap
+    gt["doc_text"] = [f"body {i}" for i in range(len(gt))]
     res = assemble_enron_gt(gt, canonical)
     assert len(res.rows) == cap
     cut = res.rejected[res.rejected["reason"] == "cap_2x"]
@@ -342,16 +346,16 @@ def test_insurance_cap_prioritizes_subclass_tails():
     canonical = _mini_canonical(n_ins=50, ins_subclasses=("carrier",))
     pool = pd.DataFrame([
         {"filename": f"g_p_{i:03d}.txt", "doc_text": f"prop {i}"}
-        for i in range(12)] +
+        for i in range(30)] +
         [{"filename": f"b_a_{i:03d}.txt", "doc_text": f"auto {i}"}
-         for i in range(12)] +
+         for i in range(30)] +
         [{"filename": f"cms_c{i:03d}.txt", "claim_type": "carrier",
-          "doc_text": f"carrier {i}"} for i in range(6)])
-    gno = assemble_gnotheia_pool(pool.iloc[:12], canonical,
+          "doc_text": f"carrier {i}"} for i in range(30)])
+    gno = assemble_gnotheia_pool(pool.iloc[:30], canonical,
                                  head_subclasses=INSURANCE_SUBCLASSES)
-    bdr = assemble_bdr_pool(pool.iloc[12:24], canonical,
+    bdr = assemble_bdr_pool(pool.iloc[30:60], canonical,
                             head_subclasses=INSURANCE_SUBCLASSES)
-    cms = assemble_cms_pool(pool.iloc[24:], canonical,
+    cms = assemble_cms_pool(pool.iloc[60:], canonical,
                             head_subclasses=INSURANCE_SUBCLASSES)
     combined, _ = combine_tier1([("gnotheia", gno), ("bdr", bdr), ("cms", cms)])
     ins = combined[combined["doc_type"] == "insurance_claim"]
@@ -359,9 +363,9 @@ def test_insurance_cap_prioritizes_subclass_tails():
     # budget = 2*50 - 50 = 50 new rows; tails (property, auto) fill it first
     assert len(kept) == 50
     counts = kept["subclass"].value_counts().to_dict()
-    assert counts["property"] == 12
-    assert counts["auto"] == 12
-    assert counts["carrier"] == 26
+    assert counts["property"] == 30
+    assert counts["auto"] == 20
+    assert "carrier" not in counts
     assert (cut["reason"] == "cap_insurance_class").all()
     # under budget -> no cut at all
     kept2, cut2 = apply_insurance_cap(ins.iloc[:10], canonical,
@@ -371,26 +375,29 @@ def test_insurance_cap_prioritizes_subclass_tails():
 
 def test_combine_tier1_cross_pool_dedup():
     text = "Same doc in two pools."
-    a = pd.DataFrame([{"filename": "a_1.txt", "doc_text": text + " A"}])
-    b = pd.DataFrame([{"filename": "b_1.txt", "doc_text": text},
-                      {"filename": "b_2.txt", "doc_text": text}])
+    a = pd.DataFrame([{"filename": "a_1.txt", "claim_type": "carrier",
+                       "doc_text": text}])  # pool 1 (earlier wins)
+    b = pd.DataFrame([{"filename": "b_1.txt", "doc_text": text},  # cross-pool dup
+                      {"filename": "b_2.txt", "doc_text": text + " unique"}])
     ra = assemble_cms_pool(a, _canonical(), head_subclasses=INSURANCE_SUBCLASSES)
     rb = assemble_gnotheia_pool(b, _canonical(),
                                 head_subclasses=INSURANCE_SUBCLASSES)
     rows, rejects = combine_tier1([("cms", ra), ("gnotheia", rb)])
     # b_1 duplicates a_1's sha (same text) -> cross-pool drop; b_2 unique
-    assert "a_1.txt" in set(rows["filename"]) or True  # first pool wins
     assert len(rows[rows["content_sha256"] == content_sha256(text)]) == 1
-    assert rejects["reason"].eq("duplicate_sha_cross_pool").any()
+    assert set(rows[rows["content_sha256"] == content_sha256(text)]["filename"]) == {"a_1.txt"}
+    rej = rejects[rejects["reason"] == "duplicate_sha_cross_pool"]
+    assert set(rej["filename"]) == {"b_1.txt"}
 
 
 # ---------------------------------------------------------------------------
 # Tier 2 — pseudo-label scaffold
 # ---------------------------------------------------------------------------
 
-def _cands(n: int, subclass: str, start_conf: float = 0.99) -> pd.DataFrame:
+def _cands(n: int, subclass: str, start_conf: float = 0.99,
+           prefix: str = "cand") -> pd.DataFrame:
     return pd.DataFrame([{
-        "filename": f"cand_{i:03d}.txt", "doc_text": f"blind body {i}",
+        "filename": f"{prefix}_{i:03d}.txt", "doc_text": f"blind body {i}",
         "pred_doc_type": "correspondence", "pred_subclass": subclass,
         "doc_type_conf": start_conf - i * 0.001,
         "subclass_conf": start_conf - i * 0.001,
@@ -435,8 +442,9 @@ def test_pseudo_confidence_gates():
 
 def test_pseudo_cap_and_balanced_stratification():
     canonical = _mini_canonical(n_corr=100, corr_subclasses=("email", "letter", "memo"))
-    cands = pd.concat([_cands(40, "email"), _cands(40, "letter"),
-                       _cands(40, "memo")], ignore_index=True)
+    cands = pd.concat([_cands(40, "email", prefix="em"),
+                       _cands(40, "letter", prefix="lt"),
+                       _cands(40, "memo", prefix="mm")], ignore_index=True)
     res = assemble_pseudo_labels(
         cands, canonical, head_subclasses=("email", "letter", "memo"))
     cap = int(round(0.30 * 100))
@@ -666,7 +674,7 @@ def test_label_maps_regenerate_over_merged_docs():
     res = assemble_gnotheia_pool(
         pd.DataFrame([{"filename": "g_1.txt", "doc_text": "polycontext one"}]),
         canonical, head_subclasses=INSURANCE_SUBCLASSES)
-    merged = pd.concat([canonical, res.rows[DOCS_SCHEMA_COLUMNS]],
+    merged = pd.concat([canonical, res.rows[list(DOCS_SCHEMA_COLUMNS)]],
                        ignore_index=True)
     maps = label_maps(merged)
     # enrichment rows widened the insurance head to the observed property key
@@ -688,6 +696,17 @@ def write_stage(stage_dir: Path, docs: pd.DataFrame) -> None:
         d.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pandas(docs[docs["split"] == split],
                                             preserve_index=False),
+                       d / f"{split}-00000-of-00001.parquet")
+    # a real staged tree carries the windows config for train+validation;
+    # empty canonical windows are enough for verify to accept train-only
+    # enrichment windows
+    empty_wins = pd.DataFrame(columns=("filename", "window_index", "n_windows",
+                                       "text", "doc_type", "subclass", "split",
+                                       "window_tokens"), dtype=str)
+    for split in ("train", "validation"):
+        d = stage_dir / "parquet" / "windows" / split
+        d.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_pandas(empty_wins, preserve_index=False),
                        d / f"{split}-00000-of-00001.parquet")
     (stage_dir / "manifest.txt").write_text(
         "mailroom-modernbert-training manifest\n"
@@ -787,7 +806,8 @@ def test_cli_tier1_writes_marry_the_stage_layout(tmp_path, capsys):
                                  "purpose", "label_source", "label_confidence",
                                  "example_weight", "lineage", "tier"}
     assert (prov["purpose"] == PURPOSE_TRAIN_ONLY).all()
-    assert prov["label_source"].nunique() == 2  # enron_gt + gnotheia_polycontext
+    # gnotheia is off the observed fixture head -> only enron_gt rows adopt
+    assert prov["label_source"].nunique() == 1
     # audit store: enron cap cuts? no — 2 enron rows under cap; gnotheia property
     # is off the OBSERVED fixture head -> rejected loud in enrichment_audit.jsonl
     audit_lines = (stage_dir / "enrichment_audit.jsonl").read_text(encoding="utf-8").splitlines()
@@ -846,7 +866,7 @@ def test_cli_tier2_end_to_end(tmp_path):
     canonical = _mini_canonical(n_corr=40, corr_subclasses=("email", "letter"))
     write_stage(stage_dir, canonical)
     blind = tmp_path / "blind.csv"
-    pd.concat([_cands(10, "email"), _cands(10, "letter")],
+    pd.concat([_cands(10, "email", prefix="em"), _cands(10, "letter", prefix="lt")],
               ignore_index=True).to_csv(blind, index=False)
     args = ["--stage", str(stage_dir), "--tiers", "2", "--no-windows",
             "--blind-pool", str(blind)]

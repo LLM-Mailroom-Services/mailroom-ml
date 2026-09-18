@@ -485,6 +485,7 @@ def _assemble_insurance_pool(
     head_subclasses: tuple[str, ...] | None,
     label_source: str,
     render_required: bool = False,
+    exact_subclass: bool = False,
 ) -> PoolResult:
     """Shared Tier-1 insurance pipeline (per-pool wrappers set the policy)."""
     if pool_df.empty:
@@ -522,7 +523,12 @@ def _assemble_insurance_pool(
             continue
         raw_subclass = adopted_subclass if adopted_subclass is not None else \
             str(r.get(subclass_col) or "") if subclass_col else ""
-        subclass = _normalized_subclass("insurance_claim", raw_subclass) \
+        # exact_subclass: the pool's label IS the canonical token verbatim
+        # (e.g. INSURBIAS narratives) — the labels canon (#57) may not carry
+        # the token YET, so normalization would silently fold it to "other";
+        # assign verbatim and let the observed-head check decide adoption.
+        subclass = raw_subclass if exact_subclass and raw_subclass else \
+            _normalized_subclass("insurance_claim", raw_subclass) \
             if raw_subclass else ""
         if not subclass:
             rejects.append({"filename": fn, "reason": "missing_subclass",
@@ -629,7 +635,8 @@ def assemble_insurbias_pool(
         source_corpus=source_corpus, source_revision=source_revision,
         text_col=text_col, subclass_col=None, title_col=title_col,
         head_subclasses=head_subclasses,
-        label_source="insurbias_narrative", render_required=False)
+        label_source="insurbias_narrative", render_required=False,
+        exact_subclass=True)
 
 
 def combine_tier1(

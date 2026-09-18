@@ -117,7 +117,9 @@ def _parse_caps(specs: list[str] | None) -> dict[str, float]:
 
 
 def _load_stage_docs(stage_dir: Path) -> pd.DataFrame:
-    """Canonical documents = the existing staged tree (train+val+test).
+    """Canonical documents = the existing staged tree (train+val+test),
+    EXCLUDING any prior ``enrichment-*`` files (the enrichment parquet is
+    regenerated wholesale every run — a rerun must never double-count).
 
     The stage is the source of truth for dedup, observed surfaces, caps and
     the leak audit: enrichment is measured against exactly what the trainer
@@ -131,8 +133,18 @@ def _load_stage_docs(stage_dir: Path) -> pd.DataFrame:
                 f"no staged documents under {stage_dir / 'parquet' / 'documents' / split} "
                 f"— run training/build_dataset.py --stage-only first")
         for f in files:
+            if f.name.startswith("enrichment-"):
+                continue  # replaced by this run; never double-counted
             frames.append(pd.read_parquet(f))
     return pd.concat(frames, ignore_index=True)
+
+
+def _replace_enrichment_files(stage_dir: Path) -> None:
+    """Remove stale enrichment parquet files before writing fresh ones."""
+    for pattern in ("parquet/documents/train/enrichment-*",
+                    "parquet/windows/train/enrichment-*"):
+        for f in stage_dir.glob(pattern):
+            f.unlink()
 
 
 def _read_pool_dir(local: Path, pool_name: str) -> pd.DataFrame:
@@ -167,14 +179,27 @@ def _load_pool(spec: str | None, pool_name: str, default_repo: str,
             f"repo_id@revision")
     if path.is_dir():
         df = _read_pool_dir(path, pool_name)
+        revision = _dir_revision(path)
     elif path.suffix.lower() == ".csv":
         df = pd.read_csv(path)
+        revision = hashlib.sha256(path.read_bytes()).hexdigest()
     elif path.suffix.lower() in (".parquet", ".pq"):
         df = pd.read_parquet(path)
+        revision = hashlib.sha256(path.read_bytes()).hexdigest()
     else:
         raise ValueError(f"pool {pool_name}: unsupported file {path.suffix}")
-    revision = hashlib.sha256(path.read_bytes()).hexdigest()
     return df, f"local:{pool_name}", revision
+
+
+def _dir_revision(local: Path) -> str:
+    """Deterministic content revision for a local pool DIRECTORY: sorted
+    relative paths + per-file content sha256s, hashed again."""
+    h = hashlib.sha256()
+    for rel in sorted(p.relative_to(local).as_posix()
+                  for p in local.rglob("*") if p.is_file()):
+        h.update(str(rel).encode("utf-8"))
+        h.update((local / rel).read_bytes())
+    return h.hexdigest()
 
 
 def _subset_docs(df: pd.DataFrame) -> pd.DataFrame:
@@ -262,13 +287,13 @@ def assemble_tier3(canonical: pd.DataFrame, caps: dict[str, float],
     """Synthesis machinery: eligibility + mixture caps (+ gate runs when a
     candidates frame is given)."""
     authentic = _authentic_counts(canonical)
-    stat = {}
-    if cards is not None:
-        elig = evaluate_eligibility(
-            authentic, subclass_class=_subclass_class_map(canonical))
-        stat["eligible"] = [sc for sc, e in sorted(elig.items())
-                            if e.cap > 0 and e.eligible]
-        stat["caps"] = {sc: e.cap for sc, e in sorted(elig.items())}
+    elig = evaluate_eligibility(
+        authentic, subclass_class=_subclass_class_map(canonical))
+    stat = {
+        "eligible": [sc for sc, e in sorted(elig.items())
+                     if e.cap > 0 and e.eligible],
+        "caps": {sc: e.cap for sc, e in sorted(elig.items())},
+    }
     mix = mixture_caps(authentic, global_share=caps["global_share"],
                        per_subclass_share=caps["per_subclass_share"])
     stat["mixture_global_cap"] = mix["__global_cap__"]
@@ -430,8 +455,13 @@ def main(argv: list[str] | None = None) -> int:
                                                   "revision": rev,
                                                   "rows_in": int(len(blind))}
         tier2_rows, tier2_stats = assemble_tier2(
-            canonical, caps, blind, audit, family_col=args.family_col)
+                canonical, caps, blind, audit, family_col=args.family_col)
         stats["tier2"] = tier2_stats
+        if args.family_col and args.family_col not in canonical.columns:
+            print("family seam inactive: canonical stage docs lack "
+                  f"{args.family_col!r} — thread-families of the canonical "
+                  "corpus cannot be blocked (enrichment rows still land in "
+                  "train only)")
 
     if 3 in tiers:
         cards = None
@@ -472,6 +502,10 @@ def main(argv: list[str] | None = None) -> int:
                        f"human_audit_pending={t3['human_audit_pending']})")
     out.append(f"audit store           : {len(audit)} rejected/cut rows "
                "(never fitted)")
+    leak: dict[str, int] = {}
+    for r in audit.records:
+        leak[str(r["reason"])] = leak.get(str(r["reason"]), 0) + 1
+    out.append(f"leak summary          : {json.dumps(leak, sort_keys=True)}")
     for r in audit.records[:20]:
         out.append(f"  audit {str(r.get('pool', 'gates')):<20s} "
                    f"{r['filename' if 'filename' in r else 'candidate_id']:<28s} "
@@ -493,6 +527,7 @@ def main(argv: list[str] | None = None) -> int:
 
     merged = canonical.copy()
     if not all_rows.empty:
+        _replace_enrichment_files(args.stage)
         merged = pd.concat([merged, _subset_docs(all_rows)],
                            ignore_index=True)
         _write_parquet(_subset_docs(all_rows),

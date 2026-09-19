@@ -54,8 +54,10 @@ import json
 import math
 import os
 import random
+import shutil
 import time
 from collections import Counter, defaultdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 import numpy as np
@@ -136,15 +138,14 @@ def load_dataset(data: str, split: str) -> list[dict]:
 def tokenize_rows(rows: list[dict], tokenizer, max_length: int) -> list[dict]:
     """Tokenize window text; rows carry doc_type/subclass labels.
 
-    Rows are tokenized with truncation but NO padding — make_batches pads
-    to the longest row in each batch (dynamic padding: p50 train window is
-    3,845 tokens vs the 8,192 cap; fixed padding doubles GPU work).
+    Fixed ``max_length`` padding (see make_batches — the dynamic-padding
+    variant measured ~15% faster but hung mid-epoch-2 on the L4).
     """
-    enc = tokenizer([r["text"] for r in rows], padding=False,
-                    truncation=True, max_length=max_length, return_tensors="np")
+    enc = tokenizer([r["text"] for r in rows], padding="max_length",
+                    truncation=True, max_length=max_length, return_tensors="pt")
     return [{
-        "input_ids": torch.from_numpy(enc["input_ids"][i]),
-        "attention_mask": torch.from_numpy(enc["attention_mask"][i]),
+        "input_ids": enc["input_ids"][i],
+        "attention_mask": enc["attention_mask"][i],
         "doc_type": r["doc_type"],
         "subclass": r["subclass"],
         "filename": r["filename"],
@@ -165,25 +166,22 @@ def _pad_right(t: torch.Tensor, target_len: int) -> torch.Tensor:
 
 
 def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
-    """Yield batches; input_ids/attention_mask are pad-to-longest in batch.
+    """Yield batches (rows are pre-padded to max_length by tokenize_rows).
 
-    Dynamic padding (no fixed 8,192 pad): train windows measure p50 = 3,845
-    tokens, so a fixed max_length pad wastes ~2x the GPU work — measured
-    wall time at 8,192 padding was 6.1 s/step on an L4. Padding to the
-    batch's longest row (attention-masked) cuts the epoch wall time roughly
-    in half; truncation still never exceeds MAX_TOKENS.
+    FIXED padding (not dynamic): the dynamic-padding variant (pad to the
+    batch's longest row) measured only ~15% faster — 75% of windows sit
+    near the 8,192 cap, so most shuffled batches still pad near-full — and
+    the variable-length sdpa + gradient-checkpointing path hung mid-epoch-2
+    on the L4 (2026-09-19). Fixed padding is the proven-stable config.
     """
     idx = list(range(len(rows)))
     if shuffle:
         random.shuffle(idx)
     for i in range(0, len(idx), batch_size):
         sel = [rows[j] for j in idx[i:i + batch_size]]
-        max_len = max(r["input_ids"].shape[0] for r in sel)
         yield {
-            "input_ids": torch.stack(
-                [_pad_right(r["input_ids"], max_len) for r in sel]).to(device),
-            "attention_mask": torch.stack(
-                [_pad_right(r["attention_mask"], max_len) for r in sel]).to(device),
+            "input_ids": torch.stack([r["input_ids"] for r in sel]).to(device),
+            "attention_mask": torch.stack([r["attention_mask"] for r in sel]).to(device),
             "doc_type": torch.tensor([heads["doc_type"]["label2id"][r["doc_type"]]
                                       for r in sel], device=device),
             "subclass": torch.tensor([heads[r["doc_type"]]["label2id"][r["subclass"]]
@@ -358,6 +356,53 @@ def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
     return float(res.x)
 
 
+def _commit_checkpoint_volume() -> None:
+    """Persist volume writes so a killed run keeps its per-epoch checkpoints.
+
+    Only meaningful inside the Modal container (env set by
+    ``deploy/modal_app.py``): the trainer's ``/checkpoints`` writes are
+    uncommitted volume changes until ``commit()`` — a kill/timeout before
+    the app-level commit would silently lose every epoch. A failed commit
+    never fails training (the app-level commit still runs on success).
+    """
+    name = os.environ.get("MAILROOM_ML_CHECKPOINT_VOLUME")
+    if not name:
+        return
+    try:
+        import modal  # noqa: PLC0415 — modal is only present in the container
+
+        modal.Volume.from_name(name).commit()
+        print(f"[trainer] volume committed: {name}", flush=True)
+    except Exception as exc:  # noqa: BLE001 — commit must never kill training
+        print(f"[trainer] volume commit failed: {exc}", flush=True)
+
+
+def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
+                    temps: dict, summary: dict) -> None:
+    """Write the full checkpoint bundle (backbone + heads + sidecars)."""
+    output.mkdir(parents=True, exist_ok=True)
+    model.backbone.save_pretrained(output)
+    tokenizer.save_pretrained(output)
+    torch.save({name: head.state_dict() for name, head in model.heads.items()},
+               output / "heads.pt")
+    (output / "labels.json").write_text(
+        json.dumps(maps, sort_keys=True, indent=2))
+    # authentic-support sidecar: per (doc_type, subclass) train-row counts —
+    # the ROUTE_MIN_AUTHENTIC_SUPPORT gate's data source (inference.py reads
+    # train_counts.json; absent sidecar -> gate fails open to the LLM path).
+    # Counts reflect the rows actually trained on (post --limit).
+    train_counts: dict[str, dict[str, int]] = {}
+    for r in train_rows:
+        train_counts.setdefault(r["doc_type"], {}).setdefault(r["subclass"], 0)
+        train_counts[r["doc_type"]][r["subclass"]] += 1
+    (output / "train_counts.json").write_text(
+        json.dumps(train_counts, sort_keys=True, indent=2))
+    (output / "temperatures.json").write_text(
+        json.dumps(temps, sort_keys=True, indent=2))
+    (output / "summary.json").write_text(
+        json.dumps(summary, sort_keys=True, indent=2))
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data", default=DEFAULT_DATA,
@@ -388,6 +433,54 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--model", default=MODEL_ID,
                     help="backbone model id (default: the committed pin)")
     return ap
+
+
+def _fit_temperatures(model, val_rows, batch_size: int, heads, device) -> dict:
+    """Per-head temperature scaling on validation logits (plan §8)."""
+    temps: dict[str, float] = {}
+    val_logits: dict[str, list] = defaultdict(list)
+    val_labels: dict[str, list] = defaultdict(list)
+    with torch.no_grad():
+        for batch in make_batches(val_rows, batch_size, False, heads, device):
+            lg = model(batch["input_ids"], batch["attention_mask"])
+            for name, t in lg.items():
+                if name == "doc_type":
+                    val_logits[name].append(t.cpu())
+                    val_labels[name].append(batch["doc_type"].cpu())
+                else:
+                    sel = batch["doc_type"] == heads["doc_type"]["label2id"][name]
+                    val_logits[name].append(t[sel].cpu())
+                    val_labels[name].append(batch["subclass"][sel].cpu())
+    for name in val_logits:
+        lg = torch.cat(val_logits[name])
+        lab = torch.cat(val_labels[name])
+        if len(lab) < 2 or len(set(lab.tolist())) < 2:
+            temps[name] = 1.0  # too few rows to fit T — leave uncalibrated
+        else:
+            temps[name] = fit_temperature(lg, lab)
+    return temps
+
+
+def _summary(run_id: str, args, device, events: list[dict], selected: dict,
+             temps: dict, wall: float, epochs_run: int) -> dict:
+    return {
+        "run_id": run_id,
+        "data": args.data,
+        "model": args.model,
+        "seed": args.seed,
+        "device": str(device),
+        "epochs_run": epochs_run,
+        "epochs_requested": args.epochs,
+        "training_wall_s": round(wall, 1),
+        "checkpoint_selection": {
+            "rule": f"best val doc_type macro-F1 with doc_type ECE <= {ECE_BUDGET}",
+            "epoch": selected["epoch"],
+            "macro_f1": selected["macro_f1"],
+            "ece": selected["ece"],
+        },
+        "epochs": events,
+        "temperatures": {k: round(v, 3) for k, v in temps.items()},
+    }
 
 
 def main() -> int:
@@ -467,6 +560,9 @@ def main() -> int:
     selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None}
     t0 = time.time()
     steps_done = 0
+    run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    runs_dir = args.output.parent / "runs"
+    temps: dict[str, float] = {}
     for epoch in range(1, args.epochs + 1):
         remaining = max(0, args.max_steps - steps_done) if args.max_steps else 0
         loss, n = train_epoch(model, make_batches(train_rows, args.batch_size, True,
@@ -491,6 +587,22 @@ def main() -> int:
               f"doc_acc {val['doc_type_doc_acc']} "
               f"macro_f1 {val['doc_type_macro_f1']} "
               f"ece {val['doc_type_ece']}", flush=True)
+        # per-epoch checkpoint: save + archive + volume commit so a kill or
+        # timeout never loses more than the in-flight epoch (2026-09-19: a
+        # cancelled run lost everything because the only save happened at
+        # the very end). Temperatures are fitted per epoch so any epoch's
+        # checkpoint is deployment-usable.
+        temps = _fit_temperatures(model, val_rows, args.batch_size, heads, device)
+        print("temperatures:", {k: round(v, 3) for k, v in temps.items()},
+              flush=True)
+        save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
+                        temps, _summary(run_id, args, device, events, selected,
+                                        temps, time.time() - t0, epoch))
+        epoch_archive = runs_dir / f"{run_id}-e{epoch}"
+        shutil.copytree(args.output, epoch_archive)
+        print(f"[trainer] epoch {epoch} checkpoint archived: {epoch_archive}",
+              flush=True)
+        _commit_checkpoint_volume()
         if val["val_loss"] < best_val:
             best_val = val["val_loss"]
             stale = 0
@@ -506,70 +618,10 @@ def main() -> int:
     wall = time.time() - t0
     print(f"training wall: {wall:.1f}s", flush=True)
 
-    # temperature scaling per head on validation logits
-    temps: dict[str, float] = {}
-    val_logits: dict[str, list] = defaultdict(list)
-    val_labels: dict[str, list] = defaultdict(list)
-    with torch.no_grad():
-        for batch in make_batches(val_rows, args.batch_size, False, heads, device):
-            lg = model(batch["input_ids"], batch["attention_mask"])
-            for name, t in lg.items():
-                if name == "doc_type":
-                    val_logits[name].append(t.cpu())
-                    val_labels[name].append(batch["doc_type"].cpu())
-                else:
-                    sel = batch["doc_type"] == heads["doc_type"]["label2id"][name]
-                    val_logits[name].append(t[sel].cpu())
-                    val_labels[name].append(batch["subclass"][sel].cpu())
-    for name in val_logits:
-        lg = torch.cat(val_logits[name])
-        lab = torch.cat(val_labels[name])
-        if len(lab) < 2 or len(set(lab.tolist())) < 2:
-            temps[name] = 1.0  # too few rows to fit T — leave uncalibrated
-        else:
-            temps[name] = fit_temperature(lg, lab)
-    print("temperatures:", {k: round(v, 3) for k, v in temps.items()},
-          flush=True)
-
-    # save checkpoint
-    args.output.mkdir(parents=True, exist_ok=True)
-    model.backbone.save_pretrained(args.output)
-    tokenizer.save_pretrained(args.output)
-    torch.save({name: head.state_dict() for name, head in model.heads.items()},
-               args.output / "heads.pt")
-    (args.output / "labels.json").write_text(
-        json.dumps(maps, sort_keys=True, indent=2))
-    # authentic-support sidecar: per (doc_type, subclass) train-row counts —
-    # the ROUTE_MIN_AUTHENTIC_SUPPORT gate's data source (inference.py reads
-    # train_counts.json; absent sidecar -> gate fails open to the LLM path).
-    # Counts reflect the rows actually trained on (post --limit).
-    train_counts: dict[str, dict[str, int]] = {}
-    for r in train_rows:
-        train_counts.setdefault(r["doc_type"], {}).setdefault(r["subclass"], 0)
-        train_counts[r["doc_type"]][r["subclass"]] += 1
-    (args.output / "train_counts.json").write_text(
-        json.dumps(train_counts, sort_keys=True, indent=2))
-    (args.output / "temperatures.json").write_text(
-        json.dumps(temps, sort_keys=True, indent=2))
-    summary = {
-        "data": args.data,
-        "model": args.model,
-        "seed": args.seed,
-        "device": str(device),
-        "epochs_run": len(events),
-        "epochs_requested": args.epochs,
-        "training_wall_s": round(wall, 1),
-        "checkpoint_selection": {
-            "rule": f"best val doc_type macro-F1 with doc_type ECE <= {ECE_BUDGET}",
-            "epoch": selected["epoch"],
-            "macro_f1": selected["macro_f1"],
-            "ece": selected["ece"],
-        },
-        "epochs": events,
-        "temperatures": {k: round(v, 3) for k, v in temps.items()},
-    }
-    (args.output / "summary.json").write_text(
-        json.dumps(summary, sort_keys=True, indent=2))
+    # final save (reuses the last epoch's temperatures — no extra val pass)
+    save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
+                    temps, _summary(run_id, args, device, events, selected,
+                                    temps, wall, len(events)))
     print(f"checkpoint saved: {args.output}", flush=True)
     for p in sorted(args.output.iterdir()):
         print(f"  {p.name}", flush=True)

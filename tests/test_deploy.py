@@ -59,9 +59,11 @@ def test_train_app_constructs() -> None:
     assert modal_app.TRAIN_TIMEOUT_S == 8 * 60 * 60
     assert modal_app.TRAIN_STARTUP_TIMEOUT_S == 10 * 60
     # compute guardrails (2026-09-19: 1-vCPU default starved the GPU — the
-    # trainer must never run on the default 0.125-core request again):
-    assert modal_app.TRAIN_CPU >= 8
-    assert modal_app.TRAIN_MEMORY_MIB >= 16384
+    # trainer must never run on the default 0.125-core request again; the
+    # cost pass cut 8->2 cores / 16->10 GiB — billed on request, and the
+    # per-step CPU work is ~0.5s vs ~6s of GPU work):
+    assert modal_app.TRAIN_CPU >= 2
+    assert modal_app.TRAIN_MEMORY_MIB >= 10240
     assert modal_app.TRAIN_RETRIES == 0
 
 

@@ -89,8 +89,14 @@ TRAIN_STARTUP_TIMEOUT_S = 60 * 10
 # min). cpu=8 physical cores (soft limit bursts to +16) and 16 GiB RAM keep the
 # tokenizer/data-loading/optimizer work off the critical path; retries=0 means
 # a half-trained run is never auto-rerun (a fresh spawn is the only retry).
-TRAIN_CPU = 8
-TRAIN_MEMORY_MIB = 16384  # 16 GiB
+#
+# 2026-09-19 (cost pass): Modal bills CPU/memory on the REQUESTED allocation,
+# and the trainer's per-step CPU work is ~0.5 s vs ~6 s of GPU work — 8 cores
+# was ~3x over-provisioned. cpu=2 / 10 GiB keeps the GPU fed at ~25% lower
+# cost/hour; the per-step log heartbeat makes any starvation visible within
+# minutes (and per-epoch checkpoints cap the loss).
+TRAIN_CPU = 2
+TRAIN_MEMORY_MIB = 10240  # 10 GiB (container measured ~7.1 GiB peak)
 TRAIN_RETRIES = 0
 
 # Deploy-time env keys copied into a Modal Secret (never hardcode tokens).
@@ -254,6 +260,11 @@ def train(
     cmd = _build_train_cmd(epochs, batch_size, grad_accum, lr, seed,
                            push_to_hub, eval_test, max_steps)
     print("[mailroom-ml-train] " + " ".join(cmd), flush=True)
+
+    # per-epoch checkpointing: the trainer commits the volume itself after
+    # each epoch save (a kill/timeout before this app-level commit would
+    # otherwise lose every epoch — 2026-09-19 incident).
+    os.environ["MAILROOM_ML_CHECKPOINT_VOLUME"] = CHECKPOINT_VOLUME_NAME
 
     result = subprocess.run(cmd)
     if result.returncode != 0:

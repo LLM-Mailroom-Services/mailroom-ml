@@ -34,8 +34,10 @@ Port of the committed predecessor (``Mailroom-Corpus-EDA @ cf096fa``,
   logits (scipy ``minimize_scalar``, bounded (0.05, 10.0)); heads with < 2
   rows or < 2 unique classes in val stay at T = 1.0.
 - **Checkpoint**: backbone + tokenizer + ``heads.pt`` + ``labels.json``
-  (sidecar copy) + ``temperatures.json`` + ``summary.json`` (+ optional Hub
-  push via ``--push-to-hub``).
+  (sidecar copy) + ``temperatures.json`` + ``train_counts.json`` (authentic
+  per-(doc_type, subclass) train-row counts — the routing gate's
+  ``ROUTE_MIN_AUTHENTIC_SUPPORT`` data source) + ``summary.json`` (+ optional
+  Hub push via ``--push-to-hub``).
 - **Test gate** (``--eval-test``): report-only — held-out document accuracy
   via the committed windower at eval time; the P0 thresholds (doc_type >=
   0.95 / subclass >= 0.75) belong to the eval harness, NOT this trainer:
@@ -476,6 +478,16 @@ def main() -> int:
                args.output / "heads.pt")
     (args.output / "labels.json").write_text(
         json.dumps(maps, sort_keys=True, indent=2))
+    # authentic-support sidecar: per (doc_type, subclass) train-row counts —
+    # the ROUTE_MIN_AUTHENTIC_SUPPORT gate's data source (inference.py reads
+    # train_counts.json; absent sidecar -> gate fails open to the LLM path).
+    # Counts reflect the rows actually trained on (post --limit).
+    train_counts: dict[str, dict[str, int]] = {}
+    for r in train_rows:
+        train_counts.setdefault(r["doc_type"], {}).setdefault(r["subclass"], 0)
+        train_counts[r["doc_type"]][r["subclass"]] += 1
+    (args.output / "train_counts.json").write_text(
+        json.dumps(train_counts, sort_keys=True, indent=2))
     (args.output / "temperatures.json").write_text(
         json.dumps(temps, sort_keys=True, indent=2))
     summary = {

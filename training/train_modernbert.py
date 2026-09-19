@@ -248,12 +248,12 @@ def evaluate(model, batches, heads, maps, device) -> dict:
         for name, lg in logits.items():
             logits_by_head[name].append(lg.cpu())
             if name == "doc_type":
-                labels_by_head[name].append(batch["doc_type"])
+                labels_by_head[name].append(batch["doc_type"].cpu())
             else:
                 # subclass heads are scored only on their own class's rows
                 sel = batch["doc_type"] == heads["doc_type"]["label2id"][name]
                 logits_by_head[name][-1] = lg[sel].cpu()
-                labels_by_head[name].append(batch["subclass"][sel])
+                labels_by_head[name].append(batch["subclass"][sel].cpu())
         for i, fn in enumerate(batch["filename"]):
             dt_p = dt_preds[i].item()
             cls = maps["doc_type"]["id2label"][str(dt_p)]
@@ -493,11 +493,11 @@ def main() -> int:
             for name, t in lg.items():
                 if name == "doc_type":
                     val_logits[name].append(t.cpu())
-                    val_labels[name].append(batch["doc_type"])
+                    val_labels[name].append(batch["doc_type"].cpu())
                 else:
                     sel = batch["doc_type"] == heads["doc_type"]["label2id"][name]
                     val_logits[name].append(t[sel].cpu())
-                    val_labels[name].append(batch["subclass"][sel])
+                    val_labels[name].append(batch["subclass"][sel].cpu())
     for name in val_logits:
         lg = torch.cat(val_logits[name])
         lab = torch.cat(val_labels[name])

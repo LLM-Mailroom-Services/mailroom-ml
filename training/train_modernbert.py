@@ -363,7 +363,11 @@ def main() -> int:
     tokenizer = AutoTokenizer.from_pretrained(args.model)
     # bf16 on CUDA only — CPU bf16 is emulated and pathologically slow
     dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
-    base = AutoModel.from_pretrained(args.model, torch_dtype=dtype)
+    # sdpa: fused memory-efficient attention — eager attention materializes
+    # fp32 QK^T scores (~12.9 GB/layer at 8,192 context) and OOMs even at
+    # batch 4 on a 22 GB L4; sdpa never materializes the scores (no extra dep).
+    base = AutoModel.from_pretrained(args.model, torch_dtype=dtype,
+                                     attn_implementation="sdpa")
     base = base.to(device)
 
     # head configs from the published labels.json

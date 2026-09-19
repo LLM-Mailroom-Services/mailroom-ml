@@ -366,8 +366,13 @@ def main() -> int:
     # sdpa: fused memory-efficient attention — eager attention materializes
     # fp32 QK^T scores (~12.9 GB/layer at 8,192 context) and OOMs even at
     # batch 4 on a 22 GB L4; sdpa never materializes the scores (no extra dep).
+    # Gradient checkpointing on CUDA: retained activations across 22 layers
+    # (fp32 rotary casts + QKV) still OOM the L4 in training mode (22.9 GB at
+    # batch 4); checkpointing recomputes them in backward -> 3.3 GB peak.
     base = AutoModel.from_pretrained(args.model, torch_dtype=dtype,
                                      attn_implementation="sdpa")
+    if device.type == "cuda":
+        base.gradient_checkpointing_enable()
     base = base.to(device)
 
     # head configs from the published labels.json

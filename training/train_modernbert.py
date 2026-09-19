@@ -157,6 +157,13 @@ def class_weight_tensor(weights: dict[str, float], labels: list[str],
                         dtype=torch.float32, device=device)
 
 
+def _pad_right(t: torch.Tensor, target_len: int) -> torch.Tensor:
+    """Right-pad a 1-D tensor with zeros to ``target_len`` (no-op when at or
+    over length). Used for dynamic-padding batches; pads are masked out by
+    the attention mask, so the embedding of token 0 never contributes."""
+    return F.pad(t, (0, max(0, target_len - t.shape[0])))
+
+
 def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
     """Yield batches; input_ids/attention_mask are pad-to-longest in batch.
 
@@ -172,16 +179,11 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
     for i in range(0, len(idx), batch_size):
         sel = [rows[j] for j in idx[i:i + batch_size]]
         max_len = max(r["input_ids"].shape[0] for r in sel)
-        # pad right to the batch's longest row (0-fill; masked out by the
-        # attention mask, so the embedding of token 0 never contributes)
-        pad_to = max_len  # bind outside the closure (ruff B023)
-
-        def _pad(t):
-            return F.pad(t, (0, pad_to - t.shape[0]))
         yield {
-            "input_ids": torch.stack([_pad(r["input_ids"]) for r in sel]).to(device),
+            "input_ids": torch.stack(
+                [_pad_right(r["input_ids"], max_len) for r in sel]).to(device),
             "attention_mask": torch.stack(
-                [_pad(r["attention_mask"]) for r in sel]).to(device),
+                [_pad_right(r["attention_mask"], max_len) for r in sel]).to(device),
             "doc_type": torch.tensor([heads["doc_type"]["label2id"][r["doc_type"]]
                                       for r in sel], device=device),
             "subclass": torch.tensor([heads[r["doc_type"]]["label2id"][r["subclass"]]

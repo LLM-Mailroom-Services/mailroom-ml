@@ -37,7 +37,7 @@ Deploy (only HF_TOKEN is required — the training dtype is bf16-on-cuda):
 
     HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py
 
-Run (defaults: 5 epochs, batch 16, grad-accum 2, lr 2e-5, seed 42, eval-test on):
+Run (defaults: 5 epochs, batch 4, grad-accum 8, lr 2e-5, seed 42, eval-test on):
 
     HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py
     HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py \\
@@ -189,8 +189,8 @@ def _build_train_cmd(
 )
 def train(
     epochs: int = 5,
-    batch_size: int = 16,
-    grad_accum: int = 2,
+    batch_size: int = 4,
+    grad_accum: int = 8,
     lr: float = 2e-5,
     seed: int = 42,
     push_to_hub: str = "",
@@ -257,8 +257,8 @@ def train(
 @app.local_entrypoint()
 def main(
     epochs: int = 5,
-    batch_size: int = 16,
-    grad_accum: int = 2,
+    batch_size: int = 4,
+    grad_accum: int = 8,
     lr: float = 2e-5,
     seed: int = 42,
     push_to_hub: str = "",

@@ -174,7 +174,8 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
         max_len = max(r["input_ids"].shape[0] for r in sel)
         # pad right to the batch's longest row (0-fill; masked out by the
         # attention mask, so the embedding of token 0 never contributes)
-        _pad = lambda t: F.pad(t, (0, max_len - t.shape[0]))
+        def _pad(t):
+            return F.pad(t, (0, max_len - t.shape[0]))
         yield {
             "input_ids": torch.stack([_pad(r["input_ids"]) for r in sel]).to(device),
             "attention_mask": torch.stack(

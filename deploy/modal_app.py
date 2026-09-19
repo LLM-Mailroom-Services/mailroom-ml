@@ -42,6 +42,15 @@ Run (defaults: 5 epochs, batch 4, grad-accum 8, lr 2e-5, seed 42, eval-test on):
     HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py
     HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py \\
         --epochs 5 --push-to-hub Lucius-Morningstar/mailroom-modernbert-classifier
+
+Long runs (1-3h): deploy once, then fire-and-forget via the spawn launcher —
+a spawn on the deployed function is fully server-side and survives the
+launching client dying (``modal run --detach`` does not):
+
+    HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py
+    HF_TOKEN=... uv run --extra deploy python deploy/spawn_train.py \\
+        --push-to-hub Lucius-Morningstar/mailroom-modernbert-classifier
+    modal app logs ap-<app-id>   # epoch lines stream live
 """
 from __future__ import annotations
 

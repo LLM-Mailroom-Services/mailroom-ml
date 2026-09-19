@@ -226,10 +226,8 @@ def train(
                            push_to_hub, eval_test)
     print("[mailroom-ml-train] " + " ".join(cmd), flush=True)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
+    result = subprocess.run(cmd)
     if result.returncode != 0:
-        print(result.stderr[-4000:])
         raise RuntimeError(f"train_modernbert.py exited {result.returncode}")
 
     # Rollback: keep every successful run under runs/<run-id>/; latest/ stays

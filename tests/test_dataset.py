@@ -106,7 +106,7 @@ def test_stage_documents_only(tmp_path):
     # --no-windows path: documents config only, verify still green
     stats = stage(tmp_path, rows=fixture_rows(), with_windows=False)
     assert "windows" not in stats["counts"]
-    assert not (tmp_path / "parquet" / "windows").exists()
+    assert not (tmp_path / "data" / "windows").exists()
     check = verify_stage(tmp_path)
     assert check["ok"], check["problems"]
 
@@ -124,8 +124,8 @@ def test_stage_byte_deterministic_rebuilds(tmp_path):
         "documents/train", "documents/validation", "documents/test",
         "windows/train", "windows/validation",
     ):
-        af = sorted((a_dir / "parquet" / cfg_split).glob("*.parquet"))
-        bf = sorted((b_dir / "parquet" / cfg_split).glob("*.parquet"))
+        af = sorted((a_dir / "data" / cfg_split).glob("*.parquet"))
+        bf = sorted((b_dir / "data" / cfg_split).glob("*.parquet"))
         assert [f.name for f in af] == [f.name for f in bf]
         assert af and all(af[i].read_bytes() == bf[i].read_bytes()
                           for i in range(len(af))), cfg_split
@@ -207,7 +207,7 @@ def test_leakage_audit_fixture_clean_and_dup_titles():
 
 @pytest.mark.fullcorpus
 @pytest.mark.skipif(
-    not (DATA_DIR / "parquet" / "ground_truth" / "train").exists(),
+    not (DATA_DIR / "data" / "ground_truth" / "train").exists(),
     reason="local snapshot absent (data/parquet) — fetch via training/build_dataset.py",
 )
 def test_full_corpus_contract():
@@ -237,7 +237,7 @@ def test_full_corpus_contract():
 @pytest.mark.fullcorpus
 @pytest.mark.skipif(
     not transformers_available()
-    or not (DATA_DIR / "parquet" / "ground_truth" / "train").exists(),
+    or not (DATA_DIR / "data" / "ground_truth" / "train").exists(),
     reason="needs transformers (train extra) AND the local snapshot under data/parquet",
 )
 def test_full_corpus_windows_within_budget():

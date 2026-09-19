@@ -66,7 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
                     help="artifact bundle dir (default: ML_MODEL_DIR env or "
                          "artifacts/{pytorch,onnx}/model)")
     ap.add_argument("--stage", type=Path, default=STAGE_DIR,
-                    help="staged tree with parquet/documents/test "
+                    help="staged tree with data/documents/test "
                          "(default data/modernbert_training/stage)")
     ap.add_argument("--subset", default="test",
                     choices=["test"], help="eval split (held-out test only)")

@@ -380,11 +380,20 @@ def stage(stage_dir: Path, rows: list[dict] | None = None,
 
     Layout (byte-deterministic — sorted rows, seeded split, no timestamps):
 
-        parquet/documents/{train,validation,test}/*.parquet  one row per document
-        parquet/windows/{train,validation}/*.parquet         one row per window
-        labels.json        id2label per head + class weights (train split)
-        vocabularies.json  canonical subclass vocab per doc_type
-        manifest.txt       build facts + sha256s
+        data/documents/{train,validation,test}/*.parquet  one row per document
+        data/windows/{train,validation}/*.parquet         one row per window
+        dataset_info.json   root card declaring the documents/windows configs
+        labels.json         id2label per head + class weights (train split)
+        vocabularies.json   canonical subclass vocab per doc_type
+        manifest.txt        build facts + sha256s
+
+    The ``data/<config>/<split>/`` layout + root ``dataset_info.json`` is the
+    canonical raw-parquet repo shape: the datasets-server indexes
+    ``documents``/``windows`` as real configs, so
+    ``load_dataset(repo, "documents")`` works natively. (The previous
+    ``parquet/`` namespace is the server's own export format — uploading
+    there made the server flatten every file into one broken ``default``
+    config.)
 
     Returns a stats dict (``counts`` per config/split + ``manifest_sha256``)
     for the publish CLI.
@@ -398,7 +407,7 @@ def stage(stage_dir: Path, rows: list[dict] | None = None,
     maps = label_maps(docs)
 
     def _write(df: pd.DataFrame, cfg: str, split: str) -> int:
-        d = stage_dir / "parquet" / cfg / split
+        d = stage_dir / "data" / cfg / split
         d.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pandas(df, preserve_index=False),
                        d / f"{split}-00000-of-00001.parquet")
@@ -414,6 +423,8 @@ def stage(stage_dir: Path, rows: list[dict] | None = None,
             counts.setdefault("windows", {})[split] = _write(
                 wins[wins["split"] == split], "windows", split)
 
+    _write_dataset_info(stage_dir, counts)
+
     sidecars = {
         "labels.json": json.dumps(maps, sort_keys=True, indent=2),
         "vocabularies.json": json.dumps(
@@ -426,6 +437,52 @@ def stage(stage_dir: Path, rows: list[dict] | None = None,
     manifest = build_manifest(docs, counts, maps)
     (stage_dir / "manifest.txt").write_text(manifest, encoding="utf-8")
     return {"counts": counts, "manifest_sha256": record_manifest_sha(manifest)}
+
+
+def _write_dataset_info(stage_dir: Path, counts: dict[str, dict[str, int]]) -> None:
+    """Root ``dataset_info.json`` declaring the documents/windows configs.
+
+    The datasets-server indexes a raw-parquet repo from this file: without
+    it, every parquet file lands in one broken ``default`` config
+    (heterogeneous schemas — ``doc_text`` vs ``text`` — under one roof) and
+    ``load_dataset(repo, "documents")`` fails with "BuilderConfig not found.
+    Available: ['default']".
+    """
+    import pyarrow.parquet as pq
+
+    # arrow type name -> datasets-server dtype name (large_string is what
+    # pa.Table.from_pandas emits for str columns)
+    _DTYPE = {"large_string": "string", "string": "string",
+              "int64": "int64", "double": "float64", "bool": "bool"}
+
+    def _config(cfg: str, splits: dict[str, int]) -> dict:
+        d = stage_dir / "data" / cfg
+        first = sorted((d / next(iter(splits))).glob("*.parquet"))[0]
+        schema = pq.read_schema(first)
+        features = {
+            name: {"dtype": _DTYPE.get(str(schema.field(name).type),
+                                       str(schema.field(name).type)),
+                   "_type": "Value"}
+            for name in schema.names
+        }
+        return {
+            "description": f"{cfg} config of the mailroom-modernbert-training set",
+            "features": features,
+            "splits": {
+                split: {
+                    "name": split,
+                    "num_bytes": sum(f.stat().st_size
+                                     for f in (d / split).glob("*.parquet")),
+                    "num_examples": n,
+                    "dataset_name": "Lucius-Morningstar/mailroom-modernbert-training",
+                }
+                for split, n in splits.items()
+            },
+        }
+
+    info = {cfg: _config(cfg, splits) for cfg, splits in counts.items()}
+    (stage_dir / "dataset_info.json").write_text(
+        json.dumps(info, indent=2) + "\n", encoding="utf-8")
 
 
 def verify_stage(stage_dir: Path) -> dict:
@@ -442,11 +499,11 @@ def verify_stage(stage_dir: Path) -> dict:
 
     problems: list[str] = []
     counts: dict[str, dict[str, int]] = {}
-    configs = ("documents",) if not (stage_dir / "parquet" / "windows").exists() \
+    configs = ("documents",) if not (stage_dir / "data" / "windows").exists() \
         else ("documents", "windows")
     for cfg in configs:
         for split in ("train", "validation", "test"):
-            files = sorted((stage_dir / "parquet" / cfg / split).glob("*.parquet"))
+            files = sorted((stage_dir / "data" / cfg / split).glob("*.parquet"))
             if cfg == "windows" and split == "test":
                 if files:
                     problems.append("windows/test must not exist (test held out)")
@@ -472,7 +529,7 @@ def verify_stage(stage_dir: Path) -> dict:
     docs = pd.concat([
         pd.read_parquet(f)
         for split in ("train", "validation", "test")
-        for f in sorted((stage_dir / "parquet" / "documents" / split).glob("*.parquet"))
+        for f in sorted((stage_dir / "data" / "documents" / split).glob("*.parquet"))
     ])
     dup = docs["filename"].duplicated()
     if dup.any():

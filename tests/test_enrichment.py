@@ -692,7 +692,7 @@ def write_stage(stage_dir: Path, docs: pd.DataFrame) -> None:
     import pyarrow.parquet as pq
 
     for split in ("train", "validation", "test"):
-        d = stage_dir / "parquet" / "documents" / split
+        d = stage_dir / "data" / "documents" / split
         d.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pandas(docs[docs["split"] == split],
                                             preserve_index=False),
@@ -704,7 +704,7 @@ def write_stage(stage_dir: Path, docs: pd.DataFrame) -> None:
                                        "text", "doc_type", "subclass", "split",
                                        "window_tokens"), dtype=str)
     for split in ("train", "validation"):
-        d = stage_dir / "parquet" / "windows" / split
+        d = stage_dir / "data" / "windows" / split
         d.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pandas(empty_wins, preserve_index=False),
                        d / f"{split}-00000-of-00001.parquet")
@@ -769,7 +769,7 @@ def test_cli_dry_run_deterministic_and_writes_nothing(tmp_path, capsys):
     assert "enrichment-note" in first and "train ONLY" in first
     assert "tier1 enron" in first and '"kept": 2' in first
     # NOTHING was written: no parquet, no sidecars, manifest untouched
-    assert not (stage_dir / "parquet" / "documents" / "train" / "enrichment-00000-of-00001.parquet").exists()
+    assert not (stage_dir / "data" / "documents" / "train" / "enrichment-00000-of-00001.parquet").exists()
     assert not (stage_dir / "enrichment_provenance.parquet").exists()
     assert not (stage_dir / "enrichment_audit.jsonl").exists()
     assert "enrichment" not in (stage_dir / "manifest.txt").read_text(encoding="utf-8")
@@ -790,7 +790,7 @@ def test_cli_tier1_writes_marry_the_stage_layout(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "verify ok" in out
     # enrichment rows land in documents/train ONLY — never val/test
-    doc_train = stage_dir / "parquet" / "documents" / "train"
+    doc_train = stage_dir / "data" / "documents" / "train"
     enrichment = pd.read_parquet(doc_train / "enrichment-00000-of-00001.parquet")
     assert list(enrichment.columns) == list(DOCS_SCHEMA_COLUMNS)
     assert (enrichment["split"] == "train").all()
@@ -798,7 +798,7 @@ def test_cli_tier1_writes_marry_the_stage_layout(tmp_path, capsys):
     assert len(enrichment) == 2
     assert set(enrichment["filename"]) == {"enron_x1.txt", "enron_x2.txt"}
     for split in ("validation", "test"):
-        files = list((stage_dir / "parquet" / "documents" / split).glob("enrichment-*"))
+        files = list((stage_dir / "data" / "documents" / split).glob("enrichment-*"))
         assert not files, f"enrichment must never land in {split}"
     # provenance sidecar carries the §5 columns, filename-joined
     prov = pd.read_parquet(stage_dir / "enrichment_provenance.parquet")
@@ -824,7 +824,7 @@ def test_cli_tier1_writes_marry_the_stage_layout(tmp_path, capsys):
     assert not re.search(r"\d{4}-\d{2}-\d{2}", manifest)
     # held-out test split is byte-identical to the pre-enrichment state
     before_test = canonical[canonical["split"] == "test"].sort_values("filename")
-    after_test = pd.read_parquet(stage_dir / "parquet" / "documents" / "test" / "test-00000-of-00001.parquet")
+    after_test = pd.read_parquet(stage_dir / "data" / "documents" / "test" / "test-00000-of-00001.parquet")
     assert before_test.reset_index(drop=True).equals(after_test)
 
 
@@ -842,12 +842,12 @@ def test_cli_rerun_is_byte_identical(tmp_path):
         for rel in ("manifest.txt", "labels.json", "enrichment_audit.jsonl",
                     "enrichment_provenance.parquet")
     }
-    snap_doc = (stage_dir / "parquet" / "documents" / "train"
+    snap_doc = (stage_dir / "data" / "documents" / "train"
                 / "enrichment-00000-of-00001.parquet").read_bytes()
     assert assemble_cli.main(_cli_args(stage_dir, pools)) == 0
     for rel, blob in snapshot.items():
         assert (stage_dir / rel).read_bytes() == blob, f"{rel} drifted across reruns"
-    assert (stage_dir / "parquet" / "documents" / "train"
+    assert (stage_dir / "data" / "documents" / "train"
             / "enrichment-00000-of-00001.parquet").read_bytes() == snap_doc
     assert not re.search(rb"\d{4}-\d{2}-\d{2}",
                          (stage_dir / "enrichment_audit.jsonl").read_bytes())
@@ -872,7 +872,7 @@ def test_cli_tier2_end_to_end(tmp_path):
             "--blind-pool", str(blind)]
     rc = assemble_cli.main(args)
     assert rc == 0
-    enrichment = pd.read_parquet(stage_dir / "parquet" / "documents" / "train"
+    enrichment = pd.read_parquet(stage_dir / "data" / "documents" / "train"
                                  / "enrichment-00000-of-00001.parquet")
     assert len(enrichment) == int(round(0.30 * 40))  # the 30% cap
     assert (enrichment["subclass"].value_counts() == 6).all()  # balanced
@@ -893,13 +893,13 @@ def test_cli_windows_marry_the_windows_layout(tmp_path):
     for name, path in pools.items():
         args += [f"--{name}-pool", str(path)]
     assert assemble_cli.main(args) == 0
-    wins = pd.read_parquet(stage_dir / "parquet" / "windows" / "train"
+    wins = pd.read_parquet(stage_dir / "data" / "windows" / "train"
                            / "enrichment-00000-of-00001.parquet")
     assert list(wins.columns) == list(WINDOW_SCHEMA_COLUMNS)
     assert (wins["split"] == "train").all()
     assert wins["window_tokens"].ge(1).all()
     assert (wins["filename"].isin(
-        pd.read_parquet(stage_dir / "parquet" / "documents" / "train"
+        pd.read_parquet(stage_dir / "data" / "documents" / "train"
                         / "enrichment-00000-of-00001.parquet")["filename"])).all()
 
 

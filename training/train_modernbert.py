@@ -106,8 +106,8 @@ def load_dataset(data: str, split: str) -> list[dict]:
     """Rows from the windows config (train/validation) or documents (test).
 
     A local path resolves the committed stage layout
-    (``parquet/{windows|documents}/{split}/*.parquet``); anything else is an
-    HF dataset repo id resolved through the published ``parquet`` folders via
+    (``data/{windows|documents}/{split}/*.parquet``); anything else is an
+    HF dataset repo id resolved through the published ``data`` folders via
     ``hf://`` data_files globs, honoring ``TRAINING_DATA_REVISION`` (deploy
     env or the committed config pin).
     """
@@ -116,18 +116,18 @@ def load_dataset(data: str, split: str) -> list[dict]:
         import pandas as pd
 
         cfg = "windows" if split != "test" else "documents"
-        files = sorted((local / "parquet" / cfg / split).glob("*.parquet"))
+        files = sorted((local / "data" / cfg / split).glob("*.parquet"))
         if not files:
             raise FileNotFoundError(f"no {cfg}/{split} parquet under {local}")
         frames = [pd.read_parquet(f) for f in files]
         return pd.concat(frames, ignore_index=True).to_dict("records")
-    # Remote Hub repo: the datasets-server exposes only an auto-converted
-    # `default` config (union of windows+documents), so resolve the published
-    # parquet/<cfg>/<split> folders directly via hf:// data_files globs.
+    # Remote Hub repo: resolve the published data/<cfg>/<split> folders
+    # directly via hf:// data_files globs (robust regardless of how the
+    # datasets-server indexes the repo).
     from datasets import load_dataset as hf_load_dataset
 
     cfg = "windows" if split != "test" else "documents"
-    glob = f"hf://datasets/{data}/parquet/{cfg}/{split}/*.parquet"
+    glob = f"hf://datasets/{data}/data/{cfg}/{split}/*.parquet"
     ds = hf_load_dataset("parquet", split=split, data_files={split: glob},
                          revision=_hub_revision())
     return [dict(r) for r in ds]

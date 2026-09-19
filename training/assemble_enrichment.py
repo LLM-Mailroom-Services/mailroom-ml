@@ -23,8 +23,8 @@ config pins are the default — issue #52 discipline, never live tips).
 Local overrides record the pool file's content-sha256 as the revision.
 
 Writes (married to the committed stage layout — the trainer's globs):
-  parquet/documents/train/enrichment-00000-of-00001.parquet   documents schema
-  parquet/windows/train/enrichment-00000-of-00001.parquet     window schema (--no-windows skips)
+  data/documents/train/enrichment-00000-of-00001.parquet   documents schema
+  data/windows/train/enrichment-00000-of-00001.parquet     window schema (--no-windows skips)
   enrichment_provenance.parquet   per-row §5 provenance (filename-joined)
   enrichment_audit.jsonl          every rejected/cut row, with reasons
   labels.json                     REGENERATED from canonical + enrichment docs
@@ -127,10 +127,10 @@ def _load_stage_docs(stage_dir: Path) -> pd.DataFrame:
     """
     frames = []
     for split in ("train", "validation", "test"):
-        files = sorted((stage_dir / "parquet" / "documents" / split).glob("*.parquet"))
+        files = sorted((stage_dir / "data" / "documents" / split).glob("*.parquet"))
         if not files:
             raise FileNotFoundError(
-                f"no staged documents under {stage_dir / 'parquet' / 'documents' / split} "
+                f"no staged documents under {stage_dir / 'data' / 'documents' / split} "
                 f"— run training/build_dataset.py --stage-only first")
         for f in files:
             if f.name.startswith("enrichment-"):
@@ -141,8 +141,8 @@ def _load_stage_docs(stage_dir: Path) -> pd.DataFrame:
 
 def _replace_enrichment_files(stage_dir: Path) -> None:
     """Remove stale enrichment parquet files before writing fresh ones."""
-    for pattern in ("parquet/documents/train/enrichment-*",
-                    "parquet/windows/train/enrichment-*"):
+    for pattern in ("data/documents/train/enrichment-*",
+                    "data/windows/train/enrichment-*"):
         for f in stage_dir.glob(pattern):
             f.unlink()
 
@@ -396,7 +396,7 @@ def main(argv: list[str] | None = None) -> int:
                     help="KEY=VALUE[,KEY=VALUE...] overrides, e.g. "
                          "enron_cap_mult=3,insurance_cap_mult=2.5")
     ap.add_argument("--no-windows", action="store_true",
-                    help="skip writing parquet/windows/train enrichment windows")
+                    help="skip writing data/windows/train enrichment windows")
     ap.add_argument("--enron-pool", default=None, help="path or repo_id@rev")
     ap.add_argument("--cms-pool", default=None)
     ap.add_argument("--gnotheia-pool", default=None)
@@ -531,7 +531,7 @@ def main(argv: list[str] | None = None) -> int:
         merged = pd.concat([merged, _subset_docs(all_rows)],
                            ignore_index=True)
         _write_parquet(_subset_docs(all_rows),
-                       args.stage / "parquet" / "documents" / "train"
+                       args.stage / "data" / "documents" / "train"
                        / "enrichment-00000-of-00001.parquet")
         prov_cols = ("filename", "source_corpus", "source_revision",
                      "purpose", "label_source", "label_confidence",
@@ -545,7 +545,7 @@ def main(argv: list[str] | None = None) -> int:
                     for r in all_rows.to_dict("records")]
             wins = build_enrichment_windows(recs)
             if not wins.empty:
-                _write_parquet(wins, args.stage / "parquet" / "windows" / "train"
+                _write_parquet(wins, args.stage / "data" / "windows" / "train"
                                / "enrichment-00000-of-00001.parquet")
     else:
         empty = pd.DataFrame(columns=("filename", "source_corpus",

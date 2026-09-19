@@ -43,7 +43,11 @@ FINETUNE_REPO = "Lucius-Morningstar/mailroom-finetune"
 FINETUNE_REVISION = "19720ceb4e29bc3134a88507aa57cdfac7a64a1b"
 
 TRAINING_DATA_REPO = "Lucius-Morningstar/mailroom-modernbert-training"
-TRAINING_DATA_REVISION = "6790341e25229a2617914c839ff0e70c590d7b6d"
+# Republished by the mailroom-ml pipeline (training/build_dataset.py) on
+# 2026-09-19 — content-identical to 6790341e; docs cover the full
+# synthetic-data layer and the README `configs:` block makes the
+# documents/windows configs load natively on the Hub.
+TRAINING_DATA_REVISION = "b2b9a7c0c656d873ca15c23482b4c6e119b51b26"
 
 # Operator-set at publish time (never a default in committed code paths).
 CLASSIFIER_MODEL_REPO = "Lucius-Morningstar/mailroom-modernbert-classifier"

@@ -38,7 +38,9 @@ from mailroom_ml.labels import DOC_TYPES, SUBCLASS_BY_CLASS  # noqa: E402
 
 
 def render_card(stats: dict, repo_id: str) -> str:
-    """Dataset-card markdown (mirrors the committed publish.py card)."""
+    """Dataset-card markdown — documents the FULL synthetic-data fine-tuning
+    layer, not just this repo's rows: corpus → finetune working copy →
+    (gated) enrichment tiers → build/publish → trainer consumption."""
     counts = stats["counts"]
     docs = counts["documents"]
     wins = counts.get("windows", {})
@@ -56,15 +58,56 @@ tags:
 - mailroom
 - modernbert
 - hierarchical-classification
+- synthetic-data
 pretty_name: mailroom-modernbert-training
+configs:
+- config_name: documents
+  default: true
+  data_files:
+  - split: train
+    path: data/documents/train/*
+  - split: validation
+    path: data/documents/validation/*
+  - split: test
+    path: data/documents/test/*
+- config_name: windows
+  data_files:
+  - split: train
+    path: data/windows/train/*
+  - split: validation
+    path: data/windows/validation/*
 ---
 
 # mailroom-modernbert-training
 
 Cleaned + prepared hierarchical-classification training set for the
-**ModernBERT-base** ingest fast-path, derived from the pinned
-[`{cfg.FINETUNE_REPO}`](https://huggingface.co/datasets/{cfg.FINETUNE_REPO})
-corpus (working copy; revision `{cfg.FINETUNE_REVISION[:8]}`).
+**ModernBERT-base** ingest fast-path — the fine-tuning surface of the
+mailroom-ml synthetic-data layer.
+
+## The layer (end to end)
+
+```
+Lucius-Morningstar/mailroom-dataset      corpus (GT labels, canonical v9)
+        │  (working copy, pinned)
+        ▼
+Lucius-Morningstar/mailroom-finetune     corpus snapshot @ {cfg.FINETUNE_REVISION[:8]}
+        │  training/build_dataset.py (stage + verify)
+        ▼
+THIS REPO (mailroom-modernbert-training) @ pinned revision
+        │  training/train_modernbert.py (--data <repo>)
+        ▼
+Lucius-Morningstar/mailroom-modernbert-classifier   (trained checkpoint)
+```
+
+Synthetic enrichment (tier 1/2/3) is assembled by
+`training/assemble_enrichment.py from external pools (enron, cms, gnotheia,
+bdr, insurbias, blind) with per-tier caps, a 7-gate audit, and
+`example_weight`/`lineage`/`tier` columns. **No enrichment tier is adopted
+into this dataset yet** — adoption is gated by the plan's §6.1 A/B ladder
+(an adopted tier must beat the no-enrichment baseline on the held-out test
+split before it ships here). This revision is the pure-canonical baseline.
+
+## Rows
 
 | | |
 |---|---|
@@ -115,7 +158,8 @@ title-first doctrine the pipeline sorter uses.
 Built by `mailroom_ml` (src/) + `training/build_dataset.py` in the
 mailroom-ml repo. `manifest.txt` carries the build facts + sha256s; rebuilds
 are byte-identical (sorted rows, seeded split, pinned tokenizer, no
-timestamps in artifacts).
+timestamps in artifacts). Publishing is operator-only (`--publish`) and
+byte-verifies every sidecar against the Hub after upload.
 """
 
 
@@ -172,20 +216,24 @@ def main(argv: list[str] | None = None) -> int:
             f"windows {stats['counts'].get('windows', {})})"
         ),
     )
-    print(f"uploaded: https://huggingface.co/datasets/{args.repo_id}/commit/{commit.commit_hash}")
+    print(f"uploaded: {commit.commit_url}")
+    commit_sha = commit.commit_url.rstrip("/").rsplit("/", 1)[-1]
 
     print("uploaded; verifying sha256s...")
     results = []
-    for rel in ("manifest.txt", "labels.json", "vocabularies.json", "README.md"):
-        local = (cfg.STAGE_DIR / rel).read_bytes()
+    for rel in ("manifest.txt", "labels.json", "vocabularies.json",
+                "README.md", "dataset_info.json"):
+        local = cfg.STAGE_DIR / rel
+        if not local.exists():
+            continue  # e.g. --no-windows stage has no windows config
         hub_path = hf_hub_download(
             repo_id=args.repo_id, filename=rel, repo_type="dataset",
-            revision=commit.commit_hash)
+            revision=commit_sha)
         hub = Path(hub_path).read_bytes()
-        verified = hub == local
+        verified = hub == local.read_bytes()
         results.append({
             "file": rel, "verified": verified,
-            "local_sha256": hashlib.sha256(local).hexdigest(),
+            "local_sha256": hashlib.sha256(local.read_bytes()).hexdigest(),
             "hub_sha256": hashlib.sha256(hub).hexdigest(),
         })
         print(f"  {rel}: {'OK' if verified else 'MISMATCH'}")

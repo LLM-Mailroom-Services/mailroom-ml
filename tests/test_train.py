@@ -181,7 +181,7 @@ def _write_parquet(root, cfg: str, split: str, rows: list[dict]) -> None:
     import pyarrow as pa
     import pyarrow.parquet as pq
 
-    d = root / "parquet" / cfg / split
+    d = root / "data" / cfg / split
     d.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows),
                    d / f"{split}-00000-of-00001.parquet")

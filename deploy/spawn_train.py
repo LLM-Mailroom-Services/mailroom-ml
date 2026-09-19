@@ -57,21 +57,21 @@ def _live_app_ids() -> list[str]:
         if "ap-" not in line or "mailroom-ml" not in line:
             continue
         fields = [f.strip() for f in line.split("│")]
-        # columns: App ID | Description | State | Tasks | Created at | ...
-        if len(fields) >= 5 and fields[3].isdigit() and int(fields[3]) > 0:
+        # fields: '' | App ID | Description | State | Tasks | Created at ...
+        if len(fields) >= 6 and fields[4].isdigit() and int(fields[4]) > 0:
             ids.append(fields[1])
     return ids
 
 
 def _deployed_app_id() -> str | None:
-    """The mailroom-ml-train deployed app id (state ``deployed``)."""
+    """The mailroom-ml-train deployed app id (State column == 'deployed')."""
     out = subprocess.run(["modal", "app", "list"], capture_output=True,
                          text=True, timeout=60).stdout
     for line in out.splitlines():
         if "ap-" not in line or "mailroom-ml" not in line:
             continue
         fields = [f.strip() for f in line.split("│")]
-        if len(fields) >= 3 and fields[2] == "deployed":
+        if len(fields) >= 4 and fields[3] == "deployed":
             return fields[1]
     return None
 

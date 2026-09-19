@@ -80,6 +80,15 @@ TRAINER_SCRIPT = "/root/training/train_modernbert.py"
 TRAIN_GPU = "L4"
 TRAIN_TIMEOUT_S = 60 * 60 * 4   # 4h: weight download + 5 epochs on 5k windows
 TRAIN_STARTUP_TIMEOUT_S = 60 * 10
+# Compute guardrails (verified against the installed modal 1.5.5 SDK + docs on
+# 2026-09-19): the default GPU-function request is 0.125 cores / 128 MiB — the
+# first deployed run starved on 1 vCPU (GPU idle, epoch 1 never landed in 45
+# min). cpu=8 physical cores (soft limit bursts to +16) and 16 GiB RAM keep the
+# tokenizer/data-loading/optimizer work off the critical path; retries=0 means
+# a half-trained run is never auto-rerun (a fresh spawn is the only retry).
+TRAIN_CPU = 8
+TRAIN_MEMORY_MIB = 16384  # 16 GiB
+TRAIN_RETRIES = 0
 
 # Deploy-time env keys copied into a Modal Secret (never hardcode tokens).
 _DEPLOY_ENV_KEYS = ("HF_TOKEN",)
@@ -157,12 +166,14 @@ def _build_train_cmd(
     seed: int,
     push_to_hub: str,
     eval_test: bool,
+    max_steps: int = 0,
 ) -> list[str]:
     """The exact trainer CLI invocation — the documented train_modernbert.py
     surface is held here, byte for flag, so the deploy test suite can assert it.
 
     Flags surfaced by the job: --data, --output, --epochs, --batch-size,
-    --grad-accum, --lr, --seed, --seed, --push-to-hub <repo>, --eval-test.
+    --grad-accum, --lr, --seed, --seed, --push-to-hub <repo>, --eval-test,
+    --max-steps (pre-flight smoke cap).
     """
     cmd = [
         sys.executable,
@@ -186,15 +197,20 @@ def _build_train_cmd(
         cmd += ["--push-to-hub", push_to_hub]
     if eval_test:
         cmd += ["--eval-test"]
+    if max_steps:
+        cmd += ["--max-steps", str(max_steps)]
     return cmd
 
 
 @app.function(
     gpu=TRAIN_GPU,  # string API — verified current for the 1.5.5 SDK
+    cpu=TRAIN_CPU,  # 8 physical cores — 1-vCPU default starved the GPU (see above)
+    memory=TRAIN_MEMORY_MIB,  # 16 GiB
     volumes={CHECKPOINT_MOUNT: checkpoint_vol, HF_CACHE_MOUNT: hf_cache_vol},
     secrets=_config_secrets(),
     timeout=TRAIN_TIMEOUT_S,
     startup_timeout=TRAIN_STARTUP_TIMEOUT_S,
+    retries=TRAIN_RETRIES,  # never auto-rerun a half-trained run
 )
 def train(
     epochs: int = 5,
@@ -204,6 +220,7 @@ def train(
     seed: int = 42,
     push_to_hub: str = "",
     eval_test: bool = True,
+    max_steps: int = 0,
 ) -> dict:
     """Run the fine-tune inside an L4 GPU container.
 

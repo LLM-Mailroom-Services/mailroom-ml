@@ -191,7 +191,16 @@ def head_loss(model, batch, heads, device) -> torch.Tensor:
 
 
 def train_epoch(model, batches, optimizer, scheduler, heads, device,
-                grad_accum: int) -> float:
+                grad_accum: int, step_limit: int = 0,
+                log_every: int = 50) -> tuple[float, int]:
+    """One epoch. Returns (mean loss, steps taken).
+
+    Guardrails:
+    - ``log_every``: per-step progress line so a stalled/starved container is
+      visible in ``modal app logs`` within seconds instead of at epoch end.
+    - ``step_limit``: cap micro-batches for the pre-flight smoke run (smoke
+      exercises forward+backward+optimizer without burning an epoch).
+    """
     model.train()
     total, n = 0.0, 0
     for step, batch in enumerate(batches):
@@ -204,7 +213,11 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
             optimizer.zero_grad()
         total += loss.item()
         n += 1
-    return total / max(1, n)
+        if (step + 1) % log_every == 0:
+            print(f"  step {step + 1} loss {loss.item():.4f}", flush=True)
+        if step_limit and (step + 1) >= step_limit:
+            break
+    return total / max(1, n), n
 
 
 @torch.no_grad()
@@ -342,6 +355,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--limit", type=int, default=0,
                     help="smoke-test: cap train rows (val = max(1, limit//4), "
                          "test docs = limit); 0 = all")
+    ap.add_argument("--max-steps", type=int, default=0,
+                    help="pre-flight smoke: cap micro-batches across the run "
+                         "(0 = unlimited); stops after the epoch containing "
+                         "the cap")
+    ap.add_argument("--log-every", type=int, default=50,
+                    help="print a per-step loss line every N micro-batches "
+                         "(visibility guardrail for long GPU runs)")
     ap.add_argument("--model", default=MODEL_ID,
                     help="backbone model id (default: the committed pin)")
     return ap
@@ -423,10 +443,15 @@ def main() -> int:
     events: list[dict] = []
     selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None}
     t0 = time.time()
+    steps_done = 0
     for epoch in range(1, args.epochs + 1):
-        loss = train_epoch(model, make_batches(train_rows, args.batch_size, True,
-                                               heads, device),
-                           optimizer, scheduler, heads, device, args.grad_accum)
+        remaining = max(0, args.max_steps - steps_done) if args.max_steps else 0
+        loss, n = train_epoch(model, make_batches(train_rows, args.batch_size, True,
+                                                  heads, device),
+                              optimizer, scheduler, heads, device,
+                              args.grad_accum, step_limit=remaining,
+                              log_every=args.log_every)
+        steps_done += n
         val = evaluate(model, make_batches(val_rows, args.batch_size, False,
                                            heads, device), heads, maps, device)
         # hardening seam: select the best val macro-F1 s.t. ECE is acceptable
@@ -451,6 +476,10 @@ def main() -> int:
             if stale >= 2:
                 print(f"early stop at epoch {epoch}", flush=True)
                 break
+        if args.max_steps and steps_done >= args.max_steps:
+            print(f"max-steps reached ({args.max_steps}); smoke run complete",
+                  flush=True)
+            break
     wall = time.time() - t0
     print(f"training wall: {wall:.1f}s", flush=True)
 

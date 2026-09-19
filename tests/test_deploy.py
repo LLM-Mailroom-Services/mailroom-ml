@@ -58,6 +58,11 @@ def test_train_app_constructs() -> None:
     assert modal_app.TRAIN_GPU == "L4"
     assert modal_app.TRAIN_TIMEOUT_S == 4 * 60 * 60
     assert modal_app.TRAIN_STARTUP_TIMEOUT_S == 10 * 60
+    # compute guardrails (2026-09-19: 1-vCPU default starved the GPU — the
+    # trainer must never run on the default 0.125-core request again):
+    assert modal_app.TRAIN_CPU >= 8
+    assert modal_app.TRAIN_MEMORY_MIB >= 16384
+    assert modal_app.TRAIN_RETRIES == 0
 
 
 def test_train_app_uses_current_documented_surface() -> None:

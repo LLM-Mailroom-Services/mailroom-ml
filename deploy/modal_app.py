@@ -249,7 +249,7 @@ def train(
     print(f"[mailroom-ml-train] dataset pin verified: {info.sha}", flush=True)
 
     cmd = _build_train_cmd(epochs, batch_size, grad_accum, lr, seed,
-                           push_to_hub, eval_test)
+                           push_to_hub, eval_test, max_steps)
     print("[mailroom-ml-train] " + " ".join(cmd), flush=True)
 
     result = subprocess.run(cmd)

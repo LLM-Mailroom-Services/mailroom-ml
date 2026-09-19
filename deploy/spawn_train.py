@@ -43,16 +43,37 @@ SMOKE_WATCH_S = 60 * 12   # generous ceiling for image pull + model download
 SMOKE_STEP_TIMEOUT_S = 60 * 4  # no step line for 4 min => starved/stuck
 
 
-def _running_app_ids() -> list[str]:
-    """Parse `modal app list` for live mailroom-ml-train app ids."""
+def _live_app_ids() -> list[str]:
+    """Parse `modal app list` for mailroom-ml-train apps with live tasks.
+
+    A spawn on the deployed function runs as a task ON the deployed app
+    (state ``deployed``, Tasks > 0) — that is the only "running work" signal;
+    stopped apps (0 tasks) must not trip the double-launch guard.
+    """
     out = subprocess.run(["modal", "app", "list"], capture_output=True,
                          text=True, timeout=60).stdout
     ids = []
     for line in out.splitlines():
-        if "ap-" in line and "mailroom-ml" in line and "deployed" not in line:
-            # columns: │ ap-xxx │ name │ state │ tasks │ date │
-            ids.append(line.split("│")[1].strip())
+        if "ap-" not in line or "mailroom-ml" not in line:
+            continue
+        fields = [f.strip() for f in line.split("│")]
+        # columns: App ID | Description | State | Tasks | Created at | ...
+        if len(fields) >= 5 and fields[3].isdigit() and int(fields[3]) > 0:
+            ids.append(fields[1])
     return ids
+
+
+def _deployed_app_id() -> str | None:
+    """The mailroom-ml-train deployed app id (state ``deployed``)."""
+    out = subprocess.run(["modal", "app", "list"], capture_output=True,
+                         text=True, timeout=60).stdout
+    for line in out.splitlines():
+        if "ap-" not in line or "mailroom-ml" not in line:
+            continue
+        fields = [f.strip() for f in line.split("│")]
+        if len(fields) >= 3 and fields[2] == "deployed":
+            return fields[1]
+    return None
 
 
 def _watch_logs(app_id: str, needle: str, timeout_s: int) -> list[str]:
@@ -91,10 +112,10 @@ if __name__ == "__main__":
               "push the checkpoint; aborting.", file=sys.stderr)
         sys.exit(2)
 
-    live = _running_app_ids()
+    live = _live_app_ids()
     if live:
-        print(f"ERROR: training app already running: {live} — one GPU run at "
-              f"a time. Stop it first (modal app stop {live[0]}).",
+        print(f"ERROR: training work already live on: {live} — one GPU run "
+              f"at a time. Wait for it to finish (modal app logs {live[0]}).",
               file=sys.stderr)
         sys.exit(3)
 
@@ -115,34 +136,27 @@ if __name__ == "__main__":
         print("watch: modal app logs ap-<app-id>  (find it via: modal app list)")
         sys.exit(0)
 
-    # Smoke watch: find the ephemeral app, verify step cadence, stop it.
-    app_id = None
-    deadline = time.time() + 120
-    while time.time() < deadline and not app_id:
-        ids = _running_app_ids()
-        if ids:
-            app_id = ids[-1]  # newest
-        else:
-            time.sleep(10)
+    # Smoke watch: the run executes as a task on the DEPLOYED app — watch its
+    # logs for the smoke's completion line and the step cadence. The deployed
+    # app is never stopped (that would garbage-collect the deployment); the
+    # smoke call ends on its own after max-steps.
+    app_id = _deployed_app_id()
     if not app_id:
-        print("ERROR: smoke app never appeared in `modal app list`",
-              file=sys.stderr)
+        print("ERROR: no deployed mailroom-ml-train app found — deploy first "
+              "(modal deploy deploy/modal_app.py)", file=sys.stderr)
         sys.exit(4)
-    print(f"smoke app: {app_id}")
+    print(f"smoke runs on deployed app: {app_id}")
 
-    tail = _watch_logs(app_id, "step 24", SMOKE_WATCH_S)
+    tail = _watch_logs(app_id, "smoke run complete", SMOKE_WATCH_S)
     print("--- smoke log tail ---")
     print("\n".join(tail))
-    if not any("step 24" in ln for ln in tail):
-        print("ERROR: smoke run did not reach step 24 — container starved or "
-              "stuck (check step cadence above). Stopping the app.",
-              file=sys.stderr)
-        subprocess.run(["modal", "app", "stop", app_id], timeout=60)
+    if not any("smoke run complete" in ln for ln in tail):
+        print("ERROR: smoke run did not complete — container starved or "
+              "stuck (check step cadence above).", file=sys.stderr)
         sys.exit(5)
 
     # Cadence check: steps should land seconds apart, not minutes.
     step_lines = [ln for ln in tail if "step" in ln and "loss" in ln]
     print(f"smoke OK: {len(step_lines)} step lines, "
           f"last: {step_lines[-1] if step_lines else 'n/a'}")
-    subprocess.run(["modal", "app", "stop", app_id], timeout=60)
-    print("smoke app stopped — ready for the real launch.")
+    print("smoke complete — ready for the real launch.")

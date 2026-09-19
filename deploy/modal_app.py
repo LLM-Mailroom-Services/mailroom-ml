@@ -93,9 +93,12 @@ from mailroom_ml.config import (  # noqa: E402  (contract: single source of trut
 # for the Hub data pull, scipy for temperature scaling.
 image = (
     modal.Image.debian_slim(python_version="3.12")
-    .add_local_dir(ROOT / "src", remote_path="/root/src")
-    .add_local_dir(ROOT / "training", remote_path="/root/training")
-    .add_local_dir(ROOT / "configs", remote_path="/root/configs")
+    .env(
+        {
+            "PYTHONPATH": "/root/src",
+            "MAILROOM_ML_ROOT": "/root",  # training bootstrap anchor (cf096fa pattern)
+        }
+    )
     .uv_pip_install(
         "torch>=2.4",
         "transformers>=4.48",  # ModernBERT requires >= 4.48 (model card)
@@ -110,12 +113,9 @@ image = (
         "tqdm>=4.0",
         "huggingface_hub>=0.24",
     )
-    .env(
-        {
-            "PYTHONPATH": "/root/src",
-            "MAILROOM_ML_ROOT": "/root",  # training bootstrap anchor (cf096fa pattern)
-        }
-    )
+    .add_local_dir(ROOT / "src", remote_path="/root/src")
+    .add_local_dir(ROOT / "training", remote_path="/root/training")
+    .add_local_dir(ROOT / "configs", remote_path="/root/configs")
 )
 
 checkpoint_vol = modal.Volume.from_name(CHECKPOINT_VOLUME_NAME, create_if_missing=True)

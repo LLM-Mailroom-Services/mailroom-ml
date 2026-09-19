@@ -56,7 +56,7 @@ def test_train_app_constructs() -> None:
     assert isinstance(modal_app.train, modal.Function)
     # deployed configuration (documented in deploy/README.md):
     assert modal_app.TRAIN_GPU == "L4"
-    assert modal_app.TRAIN_TIMEOUT_S == 4 * 60 * 60
+    assert modal_app.TRAIN_TIMEOUT_S == 8 * 60 * 60
     assert modal_app.TRAIN_STARTUP_TIMEOUT_S == 10 * 60
     # compute guardrails (2026-09-19: 1-vCPU default starved the GPU — the
     # trainer must never run on the default 0.125-core request again):

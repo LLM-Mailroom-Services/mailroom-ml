@@ -78,7 +78,10 @@ TRAINER_SCRIPT = "/root/training/train_modernbert.py"
 # GPU + timeouts — exposed as constants so the deploy test suite can assert the
 # deployed configuration offline (string GPU API, verified against 1.5.5 docs).
 TRAIN_GPU = "L4"
-TRAIN_TIMEOUT_S = 60 * 60 * 4   # 4h: weight download + 5 epochs on 5k windows
+# 8h: 5 epochs at dynamic padding measures ~1h/epoch on an L4 (~5h) +
+# held-out test eval. A timeout here kills the run WITHOUT a checkpoint
+# (saved only at the end), so the ceiling must clear the worst case.
+TRAIN_TIMEOUT_S = 60 * 60 * 8
 TRAIN_STARTUP_TIMEOUT_S = 60 * 10
 # Compute guardrails (verified against the installed modal 1.5.5 SDK + docs on
 # 2026-09-19): the default GPU-function request is 0.125 cores / 128 MiB — the

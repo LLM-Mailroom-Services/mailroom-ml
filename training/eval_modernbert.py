@@ -157,7 +157,16 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         except RuntimeError as exc:  # transformers absent
             raise SystemExit(f"eval needs the transformers tokenizer: {exc}") from exc
         decorated = window_titles(title, wins)
-        merged = _merge_windows(bundle, decorated, max_length)
+        try:
+            merged = _merge_windows(bundle, decorated, max_length)
+        except ValueError:
+            # tokenizer drift: the windower clamps with the transformers
+            # tokenizer, encode_inputs measures with the bundle's standalone
+            # tokenizer — a window can measure a few tokens over budget.
+            # Mirror production fail-open (classify_document routes LLM):
+            # count the doc as an overflow miss, never crash the eval.
+            merged = {"doc_type": "llm_overflow", "subclass": None,
+                      "_window_probs": []}
         dt_pred = merged["doc_type"]
         sc_pred = merged["subclass"]
         confusion[(gt_dt, dt_pred)] += 1

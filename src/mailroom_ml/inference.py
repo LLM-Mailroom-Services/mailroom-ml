@@ -271,17 +271,27 @@ def load_bundle(model_dir: str | Path | None = None,
         from transformers import AutoModel
 
         try:
-            model = AutoModel.from_pretrained(str(mdir), torch_dtype=torch.float32)
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            # Trainer semantics: bf16+sdpa on CUDA, fp32 on CPU; heads stay
+            # fp32 (the trainer casts pooled -> float before the heads) —
+            # matches the deployed predictor.
+            model = AutoModel.from_pretrained(
+                str(mdir),
+                torch_dtype=torch.bfloat16 if device.type == "cuda"
+                else torch.float32,
+                attn_implementation="sdpa" if device.type == "cuda" else None,
+            ).to(device)
             model.eval()
-            heads = torch.load(mdir / "heads.pt", map_location="cpu")
+            heads = torch.load(mdir / "heads.pt", map_location=device)
             head_modules: dict[str, Any] = {}
             for name, state in heads.items():
-                lin = torch.nn.Linear(model.config.hidden_size, state["weight"].shape[0])
+                lin = torch.nn.Linear(model.config.hidden_size,
+                                      state["weight"].shape[0]).to(device)
                 lin.load_state_dict(state)
                 head_modules[name] = lin
         except Exception as exc:  # noqa: BLE001 — torch/transformers load errors
             raise BundleLoadError(f"pytorch checkpoint load failed: {exc}") from exc
-        predict_fn = _pytorch_predict(model, head_modules, torch.device("cpu"))
+        predict_fn = _pytorch_predict(model, head_modules, device)
         artifact_sha = _sha256(mdir / "model.safetensors")
     else:
         raise BundleLoadError(

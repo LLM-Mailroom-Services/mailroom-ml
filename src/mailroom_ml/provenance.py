@@ -66,9 +66,9 @@ text_clerk       : llm-dojo-scoring deterministic_normalize (DMR-066),
                     (NFC, newline unify, NBSP, zero-width, C0 controls, hyphen
                     unwrap, blank-run collapse, horizontal collapse, trim)
 title_rule       : subject -> exhibit_description -> EMPTY (semantic-only;
-                    the filename fallback was removed 2026-09-20 — it leaked
-                    the label: 42.8% of filenames carried the subclass token,
-                    65.9% of rows had title==filename)
+                    the filename fallback was removed in the pre-flight clean
+                    — it leaked the label: 42.8% of filenames carried the
+                    subclass token, 65.9% of rows had title==filename)
 leak_audit       : title==filename 0, filename-shaped titles 0 (gate in
                     mailroom_ml.dataset.filename_leak_audit + verify_stage)
 heads            : doc_type (5 + unknown) + per-class subclass heads

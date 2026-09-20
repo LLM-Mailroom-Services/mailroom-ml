@@ -233,11 +233,12 @@ if __name__ == "__main__":
                          "ORIGINAL --epochs (the trainer continues to it)")
     ap.add_argument("--trainer-extra", action="append", default=None,
                     help="extra trainer flags passed through verbatim "
-                         "(repeatable; e.g. --trainer-extra "
-                         "--label-smoothing=0.05 --trainer-extra "
-                         "--mlp-heads). Audit levers: --loss-lambda-dt, "
-                         "--label-smoothing, --weight-mode, --weight-cap, "
-                         "--mlp-heads, --head-dropout, "
+                         "(repeatable; the '=' form is REQUIRED — argparse "
+                         "treats a space-separated value as a new option: "
+                         "--trainer-extra=--label-smoothing=0.05 "
+                         "--trainer-extra=--mlp-heads). Audit levers: "
+                         "--loss-lambda-dt, --label-smoothing, --weight-mode, "
+                         "--weight-cap, --mlp-heads, --head-dropout, "
                          "--freeze-backbone-epochs, --early-stop-patience, "
                          "--weight-decay, --betas, --eps, "
                          "--subclass-min-train-rows")

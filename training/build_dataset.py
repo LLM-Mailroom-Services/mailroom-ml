@@ -149,9 +149,20 @@ split before it ships here). This revision is the pure-canonical baseline.
 ## Input construction
 
 `title` follows the corpus's title-wins convention: **subject →
-exhibit_description → filename**. Each window input is
-`title + "\\n\\n" + window_text`, truncated to 8,192 tokens — the same
-title-first doctrine the pipeline sorter uses.
+exhibit_description → empty** (semantic-only). The filename fallback was
+removed on 2026-09-20: it leaked the label (42.8% of filenames carried the
+subclass token; 65.9% of rows had `title == filename`) and a real pipeline
+filename does not encode the class. Each window input is
+`title + "\\n\\n" + window_text` (body-only when there is no semantic
+title), truncated to 8,192 tokens.
+
+Text is run through the pipeline's **deterministic intake clerk**
+(`deterministic_normalize`, vendored in `mailroom_ml/normalize.py`) at build
+time — the same clerk `llm-mailroom apply_intake` runs before the classifier —
+so training input is byte-representative of inference input (NFC, newline
+unify, NBSP, zero-width strip, C0 controls, hyphen unwrap, blank-run collapse,
+horizontal collapse, edge trim). A `filename_leak_audit` gate in
+`verify_stage` fails the build if a filename-derived title ever returns.
 
 ## Provenance
 

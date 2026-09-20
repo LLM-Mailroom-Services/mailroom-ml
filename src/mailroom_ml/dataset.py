@@ -275,12 +275,17 @@ def leakage_audit(df: pd.DataFrame) -> dict[str, Any]:
     dup = {fn: splits for fn, splits in by_fn.items() if len(splits) > 1}
     result["duplicate_filenames_across_splits"] = dup
 
-    # near-dup titles: exact + case/separator-folded counts, with exemplars
+    # near-dup titles: exact + case/separator-folded counts, with exemplars.
+    # Empty titles are excluded — since the 2026-09-20 leak fix, a document
+    # with no semantic title carries "" (body-only window), and many such
+    # rows are not "duplicate titles", they are simply untitled.
     titles = df["title"].astype(str)
-    exact_dup = titles[titles.duplicated(keep=False)].value_counts()
+    nonempty = titles[titles.str.strip() != ""]
+    exact_dup = nonempty[nonempty.duplicated(keep=False)].value_counts()
     exact_dup = exact_dup[exact_dup > 1]
     folded_series = titles.map(lambda t: _ALIAS_KEY_RE.sub("", t.lower()))
-    folded_dup = folded_series.value_counts()
+    folded_nonempty = folded_series[folded_series != ""]
+    folded_dup = folded_nonempty.value_counts()
     folded_dup = folded_dup[folded_dup > 1]
     exemplars = []
     for fold, n in sorted(folded_dup.items(), key=lambda kv: (-kv[1], kv[0]))[:3]:
@@ -341,16 +346,16 @@ def filename_leak_audit(df: pd.DataFrame) -> dict[str, Any]:
         r"\.(?:htm|html|txt|pdf|docx?|xml)$", case=False, regex=True
     ) & ~title.str.contains(" ", regex=False)
     title_has_dt = [
-        bool(_fold(d)) and _fold(d) in _fold(t) for t, d in zip(title, dt)
+        bool(_fold(d)) and _fold(d) in _fold(t) for t, d in zip(title, dt, strict=False)
     ]
     title_has_sub = [
-        bool(_fold(s)) and _fold(s) in _fold(t) for t, s in zip(title, sub)
+        bool(_fold(s)) and _fold(s) in _fold(t) for t, s in zip(title, sub, strict=False)
     ]
     text_has_dt = [
-        bool(_fold(d)) and _fold(d) in _fold(t) for t, d in zip(text, dt)
+        bool(_fold(d)) and _fold(d) in _fold(t) for t, d in zip(text, dt, strict=False)
     ]
     text_has_sub = [
-        bool(_fold(s)) and _fold(s) in _fold(t) for t, s in zip(text, sub)
+        bool(_fold(s)) and _fold(s) in _fold(t) for t, s in zip(text, sub, strict=False)
     ]
     return {
         "title_eq_filename": int(title_eq_fn.sum()),

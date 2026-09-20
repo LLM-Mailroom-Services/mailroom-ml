@@ -1,0 +1,488 @@
+{
+  "n_train_windows": 4499,
+  "batch_size": 4,
+  "grad_accum": 8,
+  "A_scheduler_plan": {
+    "2": {
+      "micro_per_epoch": 1125,
+      "opt_per_epoch": 141,
+      "correct_total_opt_steps": 282,
+      "correct_warmup_opt_steps": 16,
+      "correct_warmup_pct_of_run": 5.7,
+      "OLD_buggy_total_steps_micro": 2250,
+      "OLD_buggy_warmup_opt_steps": 135,
+      "OLD_warmup_pct_of_epoch1": 95.7,
+      "lr_at_end_pct_of_peak": 5.7
+    },
+    "3": {
+      "micro_per_epoch": 1125,
+      "opt_per_epoch": 141,
+      "correct_total_opt_steps": 423,
+      "correct_warmup_opt_steps": 25,
+      "correct_warmup_pct_of_run": 5.9,
+      "OLD_buggy_total_steps_micro": 3375,
+      "OLD_buggy_warmup_opt_steps": 202,
+      "OLD_warmup_pct_of_epoch1": 143.3,
+      "lr_at_end_pct_of_peak": 5.9
+    }
+  },
+  "B_weights_inverse_cap10": {
+    "contract": {
+      "n_classes": 26,
+      "max_weight": 9.72,
+      "min_weight": 0.498,
+      "ratio": 19.5,
+      "top3": [
+        [
+          "non_compete_no_solicit",
+          9.72
+        ],
+        [
+          "affiliate",
+          2.43
+        ],
+        [
+          "transportation",
+          2.16
+        ]
+      ],
+      "bottom3": [
+        [
+          "consulting",
+          0.59
+        ],
+        [
+          "license",
+          0.51
+        ],
+        [
+          "supply",
+          0.5
+        ]
+      ]
+    },
+    "corporate_record": {
+      "n_classes": 10,
+      "max_weight": 10.0,
+      "min_weight": 0.558,
+      "ratio": 17.91,
+      "top3": [
+        [
+          "other",
+          10.0
+        ],
+        [
+          "board_resolution",
+          1.58
+        ],
+        [
+          "powers_of_attorney",
+          1.58
+        ]
+      ],
+      "bottom3": [
+        [
+          "indenture",
+          0.79
+        ],
+        [
+          "articles_of_incorporation",
+          0.67
+        ],
+        [
+          "charter_amendment",
+          0.56
+        ]
+      ]
+    },
+    "correspondence": {
+      "n_classes": 8,
+      "max_weight": 10.0,
+      "min_weight": 0.219,
+      "ratio": 45.69,
+      "top3": [
+        [
+          "attorney_demand",
+          10.0
+        ],
+        [
+          "meeting_request",
+          2.51
+        ],
+        [
+          "demand",
+          1.98
+        ]
+      ],
+      "bottom3": [
+        [
+          "memo",
+          1.58
+        ],
+        [
+          "notice",
+          1.49
+        ],
+        [
+          "email",
+          0.22
+        ]
+      ]
+    },
+    "doc_type": {
+      "n_classes": 6,
+      "max_weight": 4.43,
+      "min_weight": 0.604,
+      "ratio": 7.33,
+      "top3": [
+        [
+          "merger_agreement",
+          4.43
+        ],
+        [
+          "corporate_record",
+          1.48
+        ],
+        [
+          "contract",
+          1.1
+        ]
+      ],
+      "bottom3": [
+        [
+          "unknown",
+          1.0
+        ],
+        [
+          "correspondence",
+          0.65
+        ],
+        [
+          "insurance_claim",
+          0.6
+        ]
+      ]
+    },
+    "insurance_claim": {
+      "n_classes": 6,
+      "max_weight": 1.264,
+      "min_weight": 0.613,
+      "ratio": 2.06,
+      "top3": [
+        [
+          "pde",
+          1.26
+        ],
+        [
+          "carrier",
+          1.24
+        ],
+        [
+          "outpatient",
+          1.21
+        ]
+      ],
+      "bottom3": [
+        [
+          "inpatient",
+          1.18
+        ],
+        [
+          "property",
+          0.91
+        ],
+        [
+          "auto",
+          0.61
+        ]
+      ]
+    },
+    "merger_agreement": {
+      "n_classes": 5,
+      "max_weight": 10.0,
+      "min_weight": 0.515,
+      "ratio": 19.42,
+      "top3": [
+        [
+          "mixed_cash_stock_election",
+          10.0
+        ],
+        [
+          "mixed_cash_stock",
+          2.42
+        ],
+        [
+          "all_stock",
+          1.15
+        ]
+      ],
+      "bottom3": [
+        [
+          "all_stock",
+          1.15
+        ],
+        [
+          "other",
+          0.58
+        ],
+        [
+          "all_cash",
+          0.51
+        ]
+      ]
+    }
+  },
+  "B_weights_sqrt-inverse_cap10": {
+    "contract": {
+      "n_classes": 26,
+      "max_weight": 3.118,
+      "min_weight": 0.706,
+      "ratio": 4.42,
+      "top3": [
+        [
+          "non_compete_no_solicit",
+          3.12
+        ],
+        [
+          "affiliate",
+          1.56
+        ],
+        [
+          "transportation",
+          1.47
+        ]
+      ],
+      "bottom3": [
+        [
+          "consulting",
+          0.77
+        ],
+        [
+          "license",
+          0.72
+        ],
+        [
+          "supply",
+          0.71
+        ]
+      ]
+    },
+    "corporate_record": {
+      "n_classes": 10,
+      "max_weight": 3.479,
+      "min_weight": 0.747,
+      "ratio": 4.65,
+      "top3": [
+        [
+          "other",
+          3.48
+        ],
+        [
+          "board_resolution",
+          1.26
+        ],
+        [
+          "powers_of_attorney",
+          1.26
+        ]
+      ],
+      "bottom3": [
+        [
+          "indenture",
+          0.89
+        ],
+        [
+          "articles_of_incorporation",
+          0.82
+        ],
+        [
+          "charter_amendment",
+          0.75
+        ]
+      ]
+    },
+    "correspondence": {
+      "n_classes": 8,
+      "max_weight": 7.172,
+      "min_weight": 0.468,
+      "ratio": 15.33,
+      "top3": [
+        [
+          "attorney_demand",
+          7.17
+        ],
+        [
+          "meeting_request",
+          1.58
+        ],
+        [
+          "demand",
+          1.41
+        ]
+      ],
+      "bottom3": [
+        [
+          "memo",
+          1.26
+        ],
+        [
+          "notice",
+          1.22
+        ],
+        [
+          "email",
+          0.47
+        ]
+      ]
+    },
+    "doc_type": {
+      "n_classes": 6,
+      "max_weight": 2.105,
+      "min_weight": 0.777,
+      "ratio": 2.71,
+      "top3": [
+        [
+          "merger_agreement",
+          2.1
+        ],
+        [
+          "corporate_record",
+          1.22
+        ],
+        [
+          "contract",
+          1.05
+        ]
+      ],
+      "bottom3": [
+        [
+          "unknown",
+          1.0
+        ],
+        [
+          "correspondence",
+          0.81
+        ],
+        [
+          "insurance_claim",
+          0.78
+        ]
+      ]
+    },
+    "insurance_claim": {
+      "n_classes": 6,
+      "max_weight": 1.124,
+      "min_weight": 0.783,
+      "ratio": 1.44,
+      "top3": [
+        [
+          "pde",
+          1.12
+        ],
+        [
+          "carrier",
+          1.11
+        ],
+        [
+          "outpatient",
+          1.1
+        ]
+      ],
+      "bottom3": [
+        [
+          "inpatient",
+          1.09
+        ],
+        [
+          "property",
+          0.95
+        ],
+        [
+          "auto",
+          0.78
+        ]
+      ]
+    },
+    "merger_agreement": {
+      "n_classes": 5,
+      "max_weight": 4.919,
+      "min_weight": 0.718,
+      "ratio": 6.86,
+      "top3": [
+        [
+          "mixed_cash_stock_election",
+          4.92
+        ],
+        [
+          "mixed_cash_stock",
+          1.56
+        ],
+        [
+          "all_stock",
+          1.07
+        ]
+      ],
+      "bottom3": [
+        [
+          "all_stock",
+          1.07
+        ],
+        [
+          "other",
+          0.76
+        ],
+        [
+          "all_cash",
+          0.72
+        ]
+      ]
+    }
+  },
+  "C_support_floor_min12": {
+    "contract": {
+      "n_classes": 26,
+      "low_support_classes": [
+        "affiliate",
+        "non_compete_no_solicit"
+      ],
+      "remap_to_other": true,
+      "val_cells_lt5": 20,
+      "val_cells_zero": 5,
+      "classes_after_floor": 26
+    },
+    "corporate_record": {
+      "n_classes": 10,
+      "low_support_classes": [],
+      "remap_to_other": true,
+      "val_cells_lt5": 6,
+      "val_cells_zero": 1,
+      "classes_after_floor": 10
+    },
+    "correspondence": {
+      "n_classes": 8,
+      "low_support_classes": [
+        "attorney_demand"
+      ],
+      "remap_to_other": false,
+      "val_cells_lt5": 1,
+      "val_cells_zero": 0,
+      "classes_after_floor": 7
+    },
+    "insurance_claim": {
+      "n_classes": 6,
+      "low_support_classes": [],
+      "remap_to_other": false,
+      "val_cells_lt5": 0,
+      "val_cells_zero": 0,
+      "classes_after_floor": 6
+    },
+    "merger_agreement": {
+      "n_classes": 5,
+      "low_support_classes": [],
+      "remap_to_other": true,
+      "val_cells_lt5": 1,
+      "val_cells_zero": 1,
+      "classes_after_floor": 5
+    }
+  }
+}

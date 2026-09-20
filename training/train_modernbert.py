@@ -303,6 +303,12 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
     window: list[float] = []
     for step, batch in enumerate(batches):
         loss, _ = head_loss(model, batch, heads, device, cfg)
+        # divergence guard (2026-09-20 audit R6): a non-finite loss would
+        # otherwise propagate NaN weights into a checkpoint that gets pushed.
+        if not torch.isfinite(loss):
+            raise RuntimeError(
+                f"non-finite loss at micro-step {step + 1} "
+                f"({loss.item()}) — aborting before a NaN checkpoint is saved")
         (loss / grad_accum).backward()
         if (step + 1) % grad_accum == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -641,7 +647,10 @@ def _apply_subclass_support_threshold(train_rows: list[dict],
             continue
         counts = Counter(r["subclass"] for r in train_rows
                          if r["doc_type"] == cls)
-        low = sorted(s for s, c in counts.items() if c < min_rows)
+        # 'other' is the head's catch-all and the deployment's fail-open
+        # target — never a remap/drop SOURCE (it may be the remap TARGET).
+        low = sorted(s for s, c in counts.items()
+                     if c < min_rows and s != "other")
         if not low:
             continue
         low_set = set(low)
@@ -779,7 +788,14 @@ def _fit_temperatures_from_logits(logits_by_head: dict[str, list],
 
 
 def _summary(run_id: str, args, device, events: list[dict], selected: dict,
-             temps: dict, wall: float, epochs_run: int) -> dict:
+             temps: dict, wall: float, epochs_run: int,
+             test_metrics: dict | None = None) -> dict:
+    """Run summary — the artifact's self-describing record.
+
+    Carries the FULL hyperparameter set (2026-09-20 audit R3: the artifact
+    could not be tied back to its config) and the held-out test metrics
+    (R2: they were printed to stdout only and lost).
+    """
     return {
         "run_id": run_id,
         "data": args.data,
@@ -789,6 +805,10 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
         "epochs_run": epochs_run,
         "epochs_requested": args.epochs,
         "training_wall_s": round(wall, 1),
+        "hyperparameters": {
+            k: (str(v) if isinstance(v, Path) else v)
+            for k, v in sorted(vars(args).items())
+        },
         "checkpoint_selection": {
             "rule": ("best val doc_type macro-F1 (observed classes) with "
                      f"CALIBRATED doc_type ECE <= {ECE_BUDGET}"),
@@ -796,7 +816,9 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
             "macro_f1": selected["macro_f1"],
             "ece": selected["ece"],
             "ece_raw": selected.get("ece_raw"),
+            "gate_met": bool(selected["epoch"] > 0),
         },
+        "test_metrics": test_metrics or {},
         "epochs": events,
         "temperatures": {k: round(v, 3) for k, v in temps.items()},
     }
@@ -945,6 +967,7 @@ def main() -> int:
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     runs_dir = args.output.parent / "runs"
     for epoch in range(start_epoch, args.epochs + 1):
+        epoch_t0 = time.time()
         if args.freeze_backbone_epochs > 0 \
                 and epoch == args.freeze_backbone_epochs + 1:
             for p in model.backbone.parameters():
@@ -968,10 +991,12 @@ def main() -> int:
         # the selection gate uses the CALIBRATED ECE — the old raw-T=1 gate
         # was structurally unreachable for any overconfident head
         temps = _fit_temperatures_from_logits(val_logits, val_labels)
-        val["doc_type_ece_calibrated"] = round(
-            ece_calibrated(torch.cat(val_logits["doc_type"]),
-                           torch.cat(val_labels["doc_type"]),
-                           temps["doc_type"]), 4)
+        # calibrated ECE for EVERY head (was doc_type only) — the subclass
+        # heads are the deployment-critical ones for the conditional route
+        for name in val_logits:
+            val[f"{name}_ece_calibrated"] = round(
+                ece_calibrated(torch.cat(val_logits[name]),
+                               torch.cat(val_labels[name]), temps[name]), 4)
         # hardening seam: select the best val macro-F1 (observed classes)
         # s.t. the CALIBRATED ECE is acceptable (recorded, not an exit)
         if val["doc_type_macro_f1_observed"] > selected["macro_f1"] \
@@ -981,7 +1006,10 @@ def main() -> int:
                         "ece": val["doc_type_ece_calibrated"],
                         "ece_raw": val["doc_type_ece"]}
         events.append({"epoch": epoch, "loss": round(loss, 4),
-                       "loss_endpoint": round(loss_endpoint, 4), **val})
+                       "loss_endpoint": round(loss_endpoint, 4),
+                       "lr": round(scheduler.get_last_lr()[0], 8),
+                       "epoch_wall_s": round(time.time() - epoch_t0, 1),
+                       **val})
         print(f"epoch {epoch}/{args.epochs} loss {loss:.4f} "
               f"(endpoint {loss_endpoint:.4f}) "
               f"val_loss {val['val_loss']:.4f} "
@@ -1026,38 +1054,10 @@ def main() -> int:
     wall = time.time() - t0
     print(f"training wall: {wall:.1f}s", flush=True)
 
-    # final save (reuses the last epoch's temperatures — no extra val pass)
-    save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
-                    temps, _summary(run_id, args, device, events, selected,
-                                    temps, wall, len(events)),
-                    optimizer=optimizer, scheduler=scheduler,
-                    epoch=len(events), steps_done=steps_done,
-                    steps_done_micro=steps_done_micro)
-    print(f"checkpoint saved: {args.output}", flush=True)
-    for p in sorted(args.output.iterdir()):
-        print(f"  {p.name}", flush=True)
-    print(f"selection: best val macro-F1 (observed) s.t. calibrated "
-          f"ECE <= {ECE_BUDGET} -> epoch {selected['epoch']} "
-          f"(macro_f1 {selected['macro_f1']}, ece {selected['ece']})",
-          flush=True)
-    print(f"run summary: device={device} seed={args.seed} "
-          f"epochs={len(events)} wall={wall:.1f}s data={args.data}",
-          flush=True)
-
-    if args.push_to_hub:
-        from huggingface_hub import HfApi
-
-        api = HfApi()
-        api.create_repo(args.push_to_hub, repo_type="model", exist_ok=True)
-        api.upload_folder(folder_path=str(args.output), repo_id=args.push_to_hub,
-                          repo_type="model",
-                          commit_message=f"ModernBERT hierarchical classifier "
-                                         f"(epochs {args.epochs})")
-        print(f"pushed: https://huggingface.co/{args.push_to_hub}", flush=True)
-
+    # held-out test eval BEFORE the final save so the metrics land in the
+    # summary (2026-09-20 audit R2: they were stdout-only and lost).
+    test_metrics: dict = {}
     if args.eval_test:
-        # held-out test: window each document at eval time (documents config
-        # carries full text), plurality-vote the windows per head
         test_docs = load_dataset(args.data, "test")
         if args.limit:
             test_docs = test_docs[:args.limit]
@@ -1083,12 +1083,76 @@ def main() -> int:
                     if sc_pred == heads[cls]["label2id"][r["subclass"]]:
                         sc_correct += 1
         n = len(test_docs)
-        if n:
-            print(f"test doc_type acc: {dt_correct}/{n} = {dt_correct / n:.4f}")
-            print(f"test subclass acc (conditional): {sc_correct}/{dt_correct} "
-                  f"= {sc_correct / max(1, dt_correct):.4f}")
+        test_metrics = {
+            "n_docs": n,
+            "doc_type_acc": round(dt_correct / n, 4) if n else None,
+            "subclass_acc_conditional": (
+                round(sc_correct / dt_correct, 4) if dt_correct else None),
+            "doc_type_correct": dt_correct,
+            "subclass_correct": sc_correct,
+        }
+        print(f"test metrics: {test_metrics}", flush=True)
+
+    summary = _summary(run_id, args, device, events, selected, temps, wall,
+                       len(events), test_metrics)
+
+    # final save (reuses the last epoch's temperatures — no extra val pass)
+    save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
+                    temps, summary,
+                    optimizer=optimizer, scheduler=scheduler,
+                    epoch=len(events), steps_done=steps_done,
+                    steps_done_micro=steps_done_micro)
+
+    # selection enforcement (2026-09-20 audit R1): the pushed artifact must be
+    # the SELECTED epoch, not merely the last one. Promote the selected
+    # epoch's weights into latest/ when it differs from the final epoch.
+    selected_epoch = selected["epoch"]
+    if selected_epoch > 0 and selected_epoch != len(events):
+        src = runs_dir / f"{run_id}-e{selected_epoch}"
+        if src.is_dir():
+            for f in src.iterdir():
+                if f.is_file() and f.name != "summary.json":
+                    shutil.copy2(f, args.output / f.name)
+            (args.output / "summary.json").write_text(
+                json.dumps(summary, sort_keys=True, indent=2))
+            print(f"[trainer] promoted selected epoch {selected_epoch} "
+                  f"weights into {args.output}", flush=True)
         else:
-            print("test doc_type acc: 0/0 (no test documents)")
+            print(f"[trainer] WARNING: selected epoch {selected_epoch} "
+                  f"archive missing ({src}); latest/ holds the final epoch",
+                  flush=True)
+    elif selected_epoch == 0:
+        print(f"[trainer] WARNING: selection gate NOT met by any epoch "
+              f"(calibrated doc_type ECE never <= {ECE_BUDGET}); latest/ "
+              f"holds the final epoch — treat this artifact as UNCALIBRATED",
+              flush=True)
+
+    print(f"checkpoint saved: {args.output}", flush=True)
+    for p in sorted(args.output.iterdir()):
+        print(f"  {p.name}", flush=True)
+    print(f"selection: best val macro-F1 (observed) s.t. calibrated "
+          f"ECE <= {ECE_BUDGET} -> epoch {selected['epoch']} "
+          f"(macro_f1 {selected['macro_f1']}, ece {selected['ece']})",
+          flush=True)
+    print(f"run summary: device={device} seed={args.seed} "
+          f"epochs={len(events)} wall={wall:.1f}s data={args.data}",
+          flush=True)
+
+    if args.push_to_hub:
+        from huggingface_hub import HfApi
+
+        api = HfApi()
+        api.create_repo(args.push_to_hub, repo_type="model", exist_ok=True)
+        # optimizer/scheduler/resume state is training-internal — never push
+        # it to the model repo (2026-09-20 audit R10: it doubled repo size).
+        api.upload_folder(
+            folder_path=str(args.output), repo_id=args.push_to_hub,
+            repo_type="model",
+            ignore_patterns=["optimizer.pt", "scheduler.pt", "resume.json"],
+            commit_message=f"ModernBERT hierarchical classifier "
+                           f"(epochs {args.epochs}, selected epoch "
+                           f"{selected_epoch})")
+        print(f"pushed: https://huggingface.co/{args.push_to_hub}", flush=True)
     return 0
 
 

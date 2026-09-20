@@ -323,7 +323,9 @@ def assemble_tier3(canonical: pd.DataFrame, caps: dict[str, float],
             "filename": str(r.get("filename") or r.get("id")),
             "doc_text": text, "doc_type": card.parent_class,
             "subclass": card.subclass,
-            "title": str(r.get("title") or r.get("filename") or ""),
+            # semantic-only title (2026-09-20 leak fix): never fall back to the
+            # filename — it leaks the label and mismatches inference.
+            "title": str(r.get("title") or ""),
             "source_corpus": f"synthetic:{card.parent_class}/{card.subclass}",
             "source_revision": "card",
             "label_source": "synthetic_card",

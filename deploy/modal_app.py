@@ -267,6 +267,16 @@ def train(
     """
     from huggingface_hub import HfApi
 
+    # R8 (2026-09-20 audit): the Secret is captured at DEPLOY time from the
+    # shell env.  If HF_TOKEN was not exported then, the deployed function has
+    # no token and every spawn dies at the dataset pull — fail loudly here
+    # instead of silently.
+    if not os.environ.get("HF_TOKEN"):
+        raise RuntimeError(
+            "HF_TOKEN absent in the container — the app was deployed without "
+            "it exported, so the Secret was never captured. Re-deploy with "
+            "`export HF_TOKEN=$(cat ~/.config/opencode/secrets/hf-token)`.")
+
     print(f"[mailroom-ml-train] config: data={TRAINING_DATA_REPO} "
           f"rev={TRAINING_DATA_REVISION} model={MODEL_ID}", flush=True)
 
@@ -298,12 +308,20 @@ def train(
         raise RuntimeError(f"train_modernbert.py exited {result.returncode}")
 
     # Rollback: keep every successful run under runs/<run-id>/; latest/ stays
-    # the stable pointer the export/serve steps consume.
+    # the stable pointer the export/serve steps consume.  A smoke run
+    # (max_steps > 0) writes to smoke-<ts>, NOT latest/ — archiving it would
+    # copy a STALE latest/ (R5, 2026-09-20 audit), so smoke skips the archive.
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-    archive_dir = f"{CHECKPOINT_MOUNT}/runs/{run_id}"
-    shutil.copytree(f"{CHECKPOINT_MOUNT}/latest", archive_dir)
-    checkpoint_vol.commit()
-    print(f"[mailroom-ml-train] archived checkpoint to {archive_dir}", flush=True)
+    archive_dir = ""
+    if max_steps:
+        print("[mailroom-ml-train] smoke run — skipping the runs/ archive "
+              "(latest/ untouched)", flush=True)
+    else:
+        archive_dir = f"{CHECKPOINT_MOUNT}/runs/{run_id}"
+        shutil.copytree(f"{CHECKPOINT_MOUNT}/latest", archive_dir)
+        checkpoint_vol.commit()
+        print(f"[mailroom-ml-train] archived checkpoint to {archive_dir}",
+              flush=True)
 
     return {
         "returncode": result.returncode,

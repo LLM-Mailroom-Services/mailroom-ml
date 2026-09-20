@@ -61,10 +61,12 @@ def test_build_documents_fixtures():
     # canonical subclass keys only
     for cls, grp in docs.groupby("doc_type"):
         assert set(grp["subclass"]) <= set(SUBCLASS_BY_CLASS[cls]), cls
-    # title-wins: subject beats filename, exhibit_description second
+    # title-wins: subject beats filename, exhibit_description second, and a
+    # row with no semantic title gets "" (the filename fallback was removed
+    # in the pre-flight clean — it leaked the label)
     assert docs[docs["filename"] == "enron_subject_001.txt"].iloc[0]["title"] == "Re: Enron"
     assert docs[docs["filename"] == "edgar_exhibit_001.htm"].iloc[0]["title"] == "Certificates of Officer"
-    assert docs[docs["filename"] == "enron_notice_001.txt"].iloc[0]["title"] == "enron_notice_001.txt"
+    assert docs[docs["filename"] == "enron_notice_001.txt"].iloc[0]["title"] == ""
     # inject a subject row to pin the rule independent of the fixture
     injected = rows + [{
         "filename": "enron_subject_002.txt", "expected": "correspondence",
@@ -260,3 +262,78 @@ def test_full_corpus_windows_within_budget():
         lambda r: not r["text"].startswith(
             docs[docs["filename"] == r["filename"]].iloc[0]["title"]), axis=1)
     assert not bad_prefix.any(), f"{int(bad_prefix.sum())} windows lost the title prefix"
+
+
+# ---------------------------------------------------------------------------
+# Pre-flight clean (2026-09-20): intake clerk + label-leak gate
+# ---------------------------------------------------------------------------
+
+def test_deterministic_normalize_is_the_pipeline_clerk():
+    """The vendored clerk removes BOM/CRLF/blank-runs/controls — the exact
+    skew between raw corpus text and what the pipeline feeds the classifier."""
+    from mailroom_ml.normalize import deterministic_normalize
+
+    raw = "\ufeffAGREEMENT  \r\n\r\n\r\n\r\nby and among  \r\n\r\n  X   Y  \r\n"
+    cleaned, stats = deterministic_normalize(raw)
+    assert "\ufeff" not in cleaned and "\r" not in cleaned
+    assert "\n\n\n" not in cleaned
+    assert cleaned == "AGREEMENT\n\nby and among\n\nX Y"
+    assert stats["changed"] is True
+    # empty input is a no-op, never a crash
+    assert deterministic_normalize("") == ("", {
+        "raw_chars": 0, "cleaned_chars": 0, "collapsed_blank_runs": 0,
+        "hyphen_unwraps": 0, "changed": False})
+
+
+def test_build_title_is_semantic_only():
+    """No filename fallback: a row with no subject/exhibit gets '' (leak fix)."""
+    from mailroom_ml.preprocessing import build_title
+
+    assert build_title({"filename": "auto:CLM-1.txt", "metadata": {}}) == ""
+    assert build_title({"filename": "x.txt",
+                        "metadata": {"subject": "Re: Enron"}}) == "Re: Enron"
+    assert build_title({"filename": "x.htm", "metadata": {
+        "exhibit_description": "Certificates of Officer"}}) == "Certificates of Officer"
+
+
+def test_filename_leak_audit_flags_and_clears():
+    from mailroom_ml.dataset import filename_leak_audit
+
+    leaky = pd.DataFrame({
+        "filename": ["auto:CLM-1.txt", "contract_1_merger_agreement.txt"],
+        "title": ["auto:CLM-1.txt", "contract_1_merger_agreement.txt"],
+        "doc_text": ["body", "body"],
+        "doc_type": ["insurance_claim", "merger_agreement"],
+        "subclass": ["auto", "all_stock"],
+    })
+    audit = filename_leak_audit(leaky)
+    assert audit["clean"] is False
+    assert audit["title_eq_filename"] == 2
+    assert audit["title_looks_like_filename"] == 2
+
+    clean = leaky.assign(title=["", ""])
+    audit2 = filename_leak_audit(clean)
+    assert audit2["clean"] is True
+    assert audit2["title_eq_filename"] == 0
+    assert audit2["title_looks_like_filename"] == 0
+
+
+def test_verify_stage_fails_loudly_on_filename_leak(tmp_path):
+    """A stage whose titles are filenames must FAIL verify (the gate)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    docs = pd.DataFrame({
+        "filename": ["a.txt"], "document_id": [""], "content_sha256": [""],
+        "source_revision": ["r"], "title": ["a.txt"], "doc_text": ["body"],
+        "doc_type": ["contract"], "subclass": ["consulting"],
+        "corpus_split": ["train"], "token_estimate": [1], "split": ["train"],
+    })
+    for split in ("train", "validation", "test"):
+        d = tmp_path / "data" / "documents" / split
+        d.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_pandas(docs, preserve_index=False),
+                       d / f"{split}-00000-of-00001.parquet")
+    chk = verify_stage(tmp_path)
+    assert chk["ok"] is False
+    assert any("label leak" in p for p in chk["problems"])

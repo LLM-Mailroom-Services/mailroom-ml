@@ -35,6 +35,12 @@ def _need_modal():
     return pytest.importorskip("modal")
 
 
+def _need_serve():
+    """Skip guard: the serving app needs the serve extra (fastapi)."""
+    _need_modal()
+    return pytest.importorskip("fastapi")
+
+
 def _expected_train_flags() -> list[str]:
     """The documented training/train_modernbert.py CLI surface."""
     return [
@@ -279,7 +285,7 @@ def test_spawn_metrics_roundtrip(tmp_path, monkeypatch) -> None:
 
 # -- fallback serving app -----------------------------------------------------
 def test_serve_app_constructs() -> None:
-    modal = _need_modal()
+    modal = _need_serve()
 
     from deploy import serve_app
 
@@ -295,7 +301,7 @@ def test_serve_app_constructs() -> None:
 def test_serve_app_secrets_require_token() -> None:
     """Token source: deploy-time env (dict secret) or a loud named-secret
     requirement — never a tokenless deployment."""
-    modal = _need_modal()
+    modal = _need_serve()
 
     from deploy import serve_app
 
@@ -314,7 +320,7 @@ def test_serve_app_secrets_require_token() -> None:
 
 
 def test_serve_model_dir_resolution() -> None:
-    _need_modal()
+    _need_serve()
 
     from deploy import serve_app
 

@@ -43,11 +43,13 @@ FINETUNE_REPO = "Lucius-Morningstar/mailroom-finetune"
 FINETUNE_REVISION = "19720ceb4e29bc3134a88507aa57cdfac7a64a1b"
 
 TRAINING_DATA_REPO = "Lucius-Morningstar/mailroom-modernbert-training"
-# Republished by the mailroom-ml pipeline (training/build_dataset.py) on
-# 2026-09-19 — content-identical to 6790341e; docs cover the full
-# synthetic-data layer and the README `configs:` block makes the
-# documents/windows configs load natively on the Hub.
-TRAINING_DATA_REVISION = "b2b9a7c0c656d873ca15c23482b4c6e119b51b26"
+# Republished 2026-09-20 (pre-flight clean): the 2026-09-19 build leaked the
+# label through the title fallback (title==filename for 65.9% of rows; 42.8%
+# of filenames carried the subclass token) and consumed RAW corpus text while
+# the pipeline feeds the classifier deterministic_normalize(doc_text).  This
+# revision is leak-free (semantic-only titles) and clerk-normalized, so
+# training input is byte-representative of inference input.
+TRAINING_DATA_REVISION = "5b72a345cd3c057b736bea4910fdbef6509ad1c3"
 
 # Operator-set at publish time (never a default in committed code paths).
 CLASSIFIER_MODEL_REPO = "Lucius-Morningstar/mailroom-modernbert-classifier"

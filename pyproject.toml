@@ -27,6 +27,7 @@ train = [
 serve = [
     "onnxruntime>=1.18",
     "optimum>=1.20",
+    "fastapi>=0.110",  # deploy/serve_app.py (Modal web endpoints)
 ]
 dev = [
     "pytest>=8.0",

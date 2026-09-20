@@ -581,3 +581,64 @@ def test_local_stage_loader_missing_split(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_dataset(str(tmp_path), "train")
 
+
+
+def test_train_epoch_aborts_on_nonfinite_loss():
+    """Divergence guard (2026-09-20 audit R6): a NaN loss must abort the run
+    before a NaN checkpoint can be saved/pushed."""
+    device = torch.device("cpu")
+
+    class _NanModel(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = nn.Linear(4, 2)
+
+        def forward(self, input_ids, attention_mask):
+            z = self.lin(input_ids.float())
+            return {"doc_type": z * float("nan"), "a": z[:, :1]}
+
+    model = _NanModel()
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0)
+    heads = {
+        "doc_type": {"label2id": {"a": 0, "b": 1}, "labels": ["a", "b"],
+                     "weights": {"a": 1.0, "b": 1.0}},
+        "a": {"label2id": {"a": 0}, "labels": ["a"], "weights": {"a": 1.0}},
+    }
+    rows = [{"input_ids": torch.zeros(4, dtype=torch.long),
+             "attention_mask": torch.ones(4, dtype=torch.long),
+             "doc_type": "a", "subclass": "a", "filename": "f.txt"}]
+    batches = list(make_batches(rows, 1, False, heads, device))
+    with pytest.raises(RuntimeError, match="non-finite loss"):
+        train_epoch(model, iter(batches), opt, sched, heads, device, 1,
+                    loss_cfg=LossConfig())
+
+
+def test_summary_records_hyperparameters_and_test_metrics():
+    """R2/R3: the summary carries the full hyperparameter set and the held-out
+    test metrics, and flags whether the selection gate was met."""
+    from training.train_modernbert import _summary
+
+    args = SimpleNamespace(
+        data="repo", model=MODEL_ID, seed=42, epochs=3, batch_size=4,
+        grad_accum=8, lr=2e-5, loss_lambda_dt=0.65, label_smoothing=0.05,
+        weight_mode="sqrt-inverse", weight_cap=10.0, mlp_heads=True,
+        head_dropout=0.1, subclass_min_train_rows=12, early_stop_patience=2,
+        weight_decay=0.01, betas="0.9,0.999", eps=1e-8, max_length=8192,
+        freeze_backbone_epochs=0, eval_test=True, push_to_hub="",
+        resume="", output="/tmp/x", limit=0, log_every=50, max_steps=0,
+    )
+    events = [{"epoch": 1, "loss": 1.0, "lr": 2e-5, "epoch_wall_s": 10.0}]
+    selected = {"epoch": 1, "macro_f1": 0.7, "ece": 0.04, "ece_raw": 0.2}
+    s = _summary("rid", args, "cpu", events, selected, {"doc_type": 0.5},
+                 100.0, 1, {"n_docs": 323, "doc_type_acc": 0.8})
+    assert s["hyperparameters"]["loss_lambda_dt"] == 0.65
+    assert s["hyperparameters"]["mlp_heads"] is True
+    assert s["hyperparameters"]["subclass_min_train_rows"] == 12
+    assert s["test_metrics"]["doc_type_acc"] == 0.8
+    assert s["checkpoint_selection"]["gate_met"] is True
+    # gate not met -> flagged
+    s2 = _summary("rid", args, "cpu", events,
+                  {"epoch": 0, "macro_f1": -1.0, "ece": None}, {}, 1.0, 1)
+    assert s2["checkpoint_selection"]["gate_met"] is False
+    assert s2["test_metrics"] == {}

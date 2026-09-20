@@ -450,7 +450,7 @@ def assemble_enron_gt(
             continue
         records.append(_doc_record(
             filename=fn, doc_text=text, doc_type="correspondence",
-            subclass=subclass, title=str(r.get("subject") or fn),
+            subclass=subclass, title=str(r.get("subject") or ""),
             source_corpus=source_corpus, source_revision=source_revision,
             label_source=ENRON_LABEL_SOURCE, label_confidence=label_confidence,
             lineage=lineage, tier=1))
@@ -539,7 +539,7 @@ def _assemble_insurance_pool(
                             "detail": f"{subclass!r} not on the insurance head "
                                       f"{tuple(head)} (never force-fit)"})
             continue
-        title = str(r[title_col] or fn) if title_col else fn
+        title = str(r[title_col] or "") if title_col else ""
         records.append(_doc_record(
             filename=fn, doc_text=text, doc_type="insurance_claim",
             subclass=subclass, title=title, source_corpus=source_corpus,
@@ -919,7 +919,7 @@ def assemble_pseudo_labels(
         label_conf = round(min(dt_conf, sc_conf, ag_conf), 4)
         records.append(_doc_record(
             filename=fn, doc_text=text, doc_type="correspondence",
-            subclass=subclass, title=str(r.get("title") or fn),
+            subclass=subclass, title=str(r.get("title") or ""),
             source_corpus=source_corpus, source_revision=source_revision,
             label_source=PSEUDO_LABEL_SOURCE, label_confidence=label_conf,
             example_weight=_PSEUDO_EXAMPLE_WEIGHT, lineage="pseudo_enron",

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import sys
-from collections import Counter
 from pathlib import Path
 
 import pandas as pd
@@ -22,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 STAGE = ROOT / "data" / "modernbert_training" / "stage"
 sys.path.insert(0, str(ROOT / "src"))
 
-from mailroom_ml.config import MODEL_ID, MAX_TOKENS  # noqa: E402
+from mailroom_ml.config import MAX_TOKENS, MODEL_ID  # noqa: E402
 
 
 def load(cfg: str, split: str) -> pd.DataFrame:
@@ -120,7 +119,7 @@ def main() -> int:
 
     # ---- D. input format: title + "\n\n" + body -----------------------------
     # reconstruct expected prefix from the documents table
-    title_by_fn = dict(zip(docs["filename"], docs["title"]))
+    title_by_fn = dict(zip(docs["filename"], docs["title"], strict=False))
     fmt_ok = 0
     fmt_bad = []
     for r in wins.itertuples():
@@ -153,7 +152,6 @@ def main() -> int:
     }
 
     # ---- F. windowing -------------------------------------------------------
-    nw = docs[docs["split"] != "test"].groupby("filename").size()
     wins_per_doc = wins.groupby("filename").size()
     out["F_windowing"] = {
         "docs_with_windows": int(len(wins_per_doc)),

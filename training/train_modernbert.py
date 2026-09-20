@@ -378,13 +378,29 @@ def _commit_checkpoint_volume() -> None:
 
 
 def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
-                    temps: dict, summary: dict) -> None:
-    """Write the full checkpoint bundle (backbone + heads + sidecars)."""
+                    temps: dict, summary: dict, *,
+                    optimizer=None, scheduler=None, epoch: int = 0,
+                    steps_done: int = 0) -> None:
+    """Write the full checkpoint bundle (backbone + heads + sidecars).
+
+    When ``optimizer`` is given, the optimizer/scheduler state and a
+    ``resume.json`` counter file are written too, so a later ``--resume`` can
+    continue training from this exact point (not just reload weights).
+    """
     output.mkdir(parents=True, exist_ok=True)
     model.backbone.save_pretrained(output)
     tokenizer.save_pretrained(output)
     torch.save({name: head.state_dict() for name, head in model.heads.items()},
                output / "heads.pt")
+    if optimizer is not None:
+        torch.save(optimizer.state_dict(), output / "optimizer.pt")
+        if scheduler is not None:
+            torch.save(scheduler.state_dict(), output / "scheduler.pt")
+        (output / "resume.json").write_text(json.dumps({
+            "epoch": epoch,
+            "steps_done": steps_done,
+            "run_id": summary.get("run_id", ""),
+        }, sort_keys=True, indent=2))
     (output / "labels.json").write_text(
         json.dumps(maps, sort_keys=True, indent=2))
     # authentic-support sidecar: per (doc_type, subclass) train-row counts —
@@ -401,6 +417,62 @@ def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
         json.dumps(temps, sort_keys=True, indent=2))
     (output / "summary.json").write_text(
         json.dumps(summary, sort_keys=True, indent=2))
+
+
+def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
+                  steps_per_epoch: int) -> dict:
+    """Load a checkpoint bundle for ``--resume``; returns the run state.
+
+    Handles bundles saved before optimizer state existed (the 2026-09-19
+    per-epoch checkpoints): the optimizer is reconstructed fresh and the
+    scheduler is stepped to the right position. Counters come from
+    ``resume.json`` when present, else ``summary.json``'s ``epochs_run``.
+    """
+    heads_state = torch.load(resume_dir / "heads.pt", map_location=device)
+    for name, sd in heads_state.items():
+        if name not in model.heads:
+            raise RuntimeError(f"checkpoint head {name!r} not in the model")
+        model.heads[name].load_state_dict(sd)
+    resume_json = resume_dir / "resume.json"
+    if resume_json.exists():
+        rj = json.loads(resume_json.read_text())
+        epoch_done, steps_done = rj["epoch"], rj["steps_done"]
+    else:
+        summary_path = resume_dir / "summary.json"
+        epoch_done = (json.loads(summary_path.read_text()).get("epochs_run", 0)
+                      if summary_path.exists() else 0)
+        steps_done = epoch_done * steps_per_epoch
+    opt_path = resume_dir / "optimizer.pt"
+    if opt_path.exists():
+        optimizer.load_state_dict(torch.load(opt_path, map_location=device))
+    sched_path = resume_dir / "scheduler.pt"
+    if sched_path.exists():
+        scheduler.load_state_dict(torch.load(sched_path, map_location=device))
+    else:
+        for _ in range(steps_done):
+            scheduler.step()
+    events: list[dict] = []
+    selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None}
+    temps: dict[str, float] = {}
+    summary_path = resume_dir / "summary.json"
+    if summary_path.exists():
+        sj = json.loads(summary_path.read_text())
+        events = sj.get("epochs", [])
+        sel = sj.get("checkpoint_selection", {})
+        if sel.get("epoch"):
+            selected = sel
+        temps = sj.get("temperatures", {})
+    best_val = float("inf")
+    stale = 0
+    for e in events:
+        if e["val_loss"] < best_val:
+            best_val = e["val_loss"]
+            stale = 0
+        else:
+            stale += 1
+    return {"start_epoch": epoch_done + 1, "steps_done": steps_done,
+            "events": events, "selected": selected, "best_val": best_val,
+            "stale": stale, "temps": temps}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -432,6 +504,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "(visibility guardrail for long GPU runs)")
     ap.add_argument("--model", default=MODEL_ID,
                     help="backbone model id (default: the committed pin)")
+    ap.add_argument("--resume", type=Path, default=None,
+                    help="checkpoint bundle dir to resume from — continues "
+                         "at the next epoch (optimizer/scheduler state when "
+                         "present; else reconstructed from the counters)")
     return ap
 
 
@@ -505,22 +581,34 @@ def main() -> int:
     # Gradient checkpointing on CUDA: retained activations across 22 layers
     # (fp32 rotary casts + QKV) still OOM the L4 in training mode (22.9 GB at
     # batch 4); checkpointing recomputes them in backward -> 3.3 GB peak.
-    base = AutoModel.from_pretrained(args.model, torch_dtype=dtype,
-                                     attn_implementation="sdpa")
+    if args.resume:
+        # Resume: the backbone + labels come from the checkpoint bundle, not
+        # the base model id — the bundle is the self-consistent source.
+        resume_dir = Path(args.resume)
+        if not (resume_dir / "heads.pt").is_file():
+            raise SystemExit(f"--resume: no heads.pt under {resume_dir}")
+        labels_path = resume_dir / "labels.json"
+        if not labels_path.is_file():
+            raise SystemExit(f"--resume: no labels.json under {resume_dir}")
+        base = AutoModel.from_pretrained(resume_dir, torch_dtype=dtype,
+                                         attn_implementation="sdpa")
+    else:
+        base = AutoModel.from_pretrained(args.model, torch_dtype=dtype,
+                                         attn_implementation="sdpa")
+        # head configs from the published labels.json
+        local_data = Path(args.data)
+        if local_data.exists():
+            labels_path = local_data / "labels.json"
+        else:
+            from huggingface_hub import hf_hub_download
+
+            labels_path = Path(hf_hub_download(args.data, "labels.json",
+                                               repo_type="dataset",
+                                               revision=_hub_revision()))
     if device.type == "cuda":
         base.gradient_checkpointing_enable()
     base = base.to(device)
 
-    # head configs from the published labels.json
-    local_data = Path(args.data)
-    if local_data.exists():
-        labels_path = local_data / "labels.json"
-    else:
-        from huggingface_hub import hf_hub_download
-
-        labels_path = Path(hf_hub_download(args.data, "labels.json",
-                                           repo_type="dataset",
-                                           revision=_hub_revision()))
     maps = json.loads(labels_path.read_text())
     head_sizes = {name: len(cfg["labels"]) for name, cfg in maps.items()}
     model = HierarchicalClassifier(base, head_sizes).to(device)
@@ -558,12 +646,27 @@ def main() -> int:
     stale = 0
     events: list[dict] = []
     selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None}
+    start_epoch = 1
+    if args.resume:
+        resume_state = _apply_resume(Path(args.resume), model, optimizer,
+                                     scheduler, device, n_steps)
+        start_epoch = resume_state["start_epoch"]
+        steps_done = resume_state["steps_done"]
+        events = resume_state["events"]
+        selected = resume_state["selected"]
+        best_val = resume_state["best_val"]
+        stale = resume_state["stale"]
+        temps = resume_state["temps"]
+        print(f"resumed from {args.resume}: continuing at epoch "
+              f"{start_epoch} (steps_done {steps_done}, "
+              f"prior epochs {len(events)})", flush=True)
     t0 = time.time()
-    steps_done = 0
+    if not args.resume:
+        steps_done = 0
+        temps: dict[str, float] = {}
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     runs_dir = args.output.parent / "runs"
-    temps: dict[str, float] = {}
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         remaining = max(0, args.max_steps - steps_done) if args.max_steps else 0
         loss, n = train_epoch(model, make_batches(train_rows, args.batch_size, True,
                                                   heads, device),
@@ -597,11 +700,16 @@ def main() -> int:
               flush=True)
         save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
                         temps, _summary(run_id, args, device, events, selected,
-                                        temps, time.time() - t0, epoch))
-        epoch_archive = runs_dir / f"{run_id}-e{epoch}"
-        shutil.copytree(args.output, epoch_archive)
-        print(f"[trainer] epoch {epoch} checkpoint archived: {epoch_archive}",
-              flush=True)
+                                        temps, time.time() - t0, epoch),
+                        optimizer=optimizer, scheduler=scheduler,
+                        epoch=epoch, steps_done=steps_done)
+        # smoke (--max-steps) never archives: the run is a cadence probe, not
+        # a checkpoint family — keep runs/ for real epochs only.
+        if not args.max_steps:
+            epoch_archive = runs_dir / f"{run_id}-e{epoch}"
+            shutil.copytree(args.output, epoch_archive)
+            print(f"[trainer] epoch {epoch} checkpoint archived: "
+                  f"{epoch_archive}", flush=True)
         _commit_checkpoint_volume()
         if val["val_loss"] < best_val:
             best_val = val["val_loss"]
@@ -621,7 +729,9 @@ def main() -> int:
     # final save (reuses the last epoch's temperatures — no extra val pass)
     save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
                     temps, _summary(run_id, args, device, events, selected,
-                                    temps, wall, len(events)))
+                                    temps, wall, len(events)),
+                    optimizer=optimizer, scheduler=scheduler,
+                    epoch=len(events), steps_done=steps_done)
     print(f"checkpoint saved: {args.output}", flush=True)
     for p in sorted(args.output.iterdir()):
         print(f"  {p.name}", flush=True)

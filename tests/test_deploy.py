@@ -135,6 +135,126 @@ def test_train_app_sources_are_bundled() -> None:
     assert modal_app.TRAINER_SCRIPT == "/root/training/train_modernbert.py"
 
 
+def test_train_cmd_threads_log_every() -> None:
+    """The smoke passes --log-every so step lines land inside the 24-micro-
+    batch cadence window; the real run must NOT get the flag (trainer default
+    50 leaves the exact documented CLI byte-identical)."""
+    _need_modal()
+
+    from deploy import modal_app
+
+    smoke = modal_app._build_train_cmd(
+        epochs=1, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False, max_steps=24, log_every=4)
+    assert smoke[-2:] == ["--log-every", "4"]
+    real = modal_app._build_train_cmd(
+        epochs=2, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False)
+    assert "--log-every" not in real
+
+
+def test_train_cmd_threads_resume_flag() -> None:
+    """--resume reaches the trainer only when a bundle dir is given."""
+    _need_modal()
+
+    from deploy import modal_app
+
+    resumed = modal_app._build_train_cmd(
+        epochs=2, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False, resume="/checkpoints/latest")
+    assert resumed[-2:] == ["--resume", "/checkpoints/latest"]
+    fresh = modal_app._build_train_cmd(
+        epochs=2, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False)
+    assert "--resume" not in fresh
+
+
+def test_train_cmd_smoke_output_never_clobbers_latest() -> None:
+    """The smoke probe writes to /checkpoints/smoke-<ts>, never latest/ —
+    latest/ must stay the real checkpoint the resume path reads."""
+    _need_modal()
+
+    from deploy import modal_app
+
+    smoke = modal_app._build_train_cmd(
+        epochs=1, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False, max_steps=24, log_every=4,
+        output="/checkpoints/smoke-20260920-000000")
+    out_flag = smoke.index("--output")
+    assert smoke[out_flag + 1].startswith("/checkpoints/smoke-")
+    real = modal_app._build_train_cmd(
+        epochs=2, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False)
+    assert real[real.index("--output") + 1] == "/checkpoints/latest"
+
+
+# -- spawn launcher: budget guard (pure logic, no network) -------------------
+def test_spawn_budget_estimate() -> None:
+    """Estimate formula: (epochs x steps/epoch x s/step + startup) / 3600 x $/h.
+    Verified against the exact arithmetic with fixed inputs, plus the trip
+    condition: a healthy Option A-shaped cadence (2 epochs, 750 steps/epoch @
+    6s/step) must stay under the $4.32 ceiling while a slow/oversized run
+    (5 epochs @ 30s/step) must exceed it. (The true steps/epoch comes from the
+    smoke's train-windows measurement — never guessed here.)"""
+    from deploy import spawn_train as st
+
+    est = st._estimate_run_cost_usd(epochs=2, steps_per_epoch=750,
+                                    sec_per_step=6.0,
+                                    usd_per_hour=st.ALL_IN_USD_PER_HOUR,
+                                    startup_overhead_s=60 * 30)
+    hours = (2 * 750 * 6.0 + 1800) / 3600
+    assert est == hours * st.ALL_IN_USD_PER_HOUR
+    assert est < st.BUDGET_CEILING_USD, f"healthy Option A est {est:.2f} tripped"
+    # a slow/misconfigured run must trip the ceiling
+    slow = st._estimate_run_cost_usd(epochs=5, steps_per_epoch=3000,
+                                     sec_per_step=30.0)
+    assert slow > st.BUDGET_CEILING_USD
+
+
+def test_spawn_budget_all_in_rate_matches_pricing_page() -> None:
+    """2026-09-19 pricing page: L4 $0.000222/s, CPU $0.0000131/core/s,
+    memory $0.00000222/GiB/s -> L4+2 cores+10GiB = $0.9734/h."""
+    from deploy import spawn_train as st
+
+    assert st.ALL_IN_USD_PER_HOUR == round(
+        (0.000222 + 2 * 0.0000131 + 10 * 0.00000222) * 3600, 6)
+
+
+def test_spawn_cadence_parser(tmp_path) -> None:
+    """`modal app logs --timestamps` lines -> median seconds/step, and the
+    trainer's windows line -> dataset size."""
+    from deploy import spawn_train as st
+
+    lines = [
+        "2026-09-19 15:00:00 [trainer] windows: train 3000 / validation 300",
+        "2026-09-19 15:00:06   step 4 loss 2.3100",
+        "2026-09-19 15:00:12   step 8 loss 2.2400",
+        "2026-09-19 15:00:18   step 12 loss 2.1900",
+        "2026-09-19 15:00:24   step 16 loss 2.1500",
+        "2026-09-19 15:00:30   step 20 loss 2.1000",
+    ]
+    assert st._sec_per_step_from_lines(lines) == 1.5  # 6s / 4 steps
+    assert st._train_windows_from_lines(lines) == 3000
+    assert st._steps_per_epoch(3000, batch_size=4) == 750
+    # non-timestamped lines (no --timestamps) must not mis-parse
+    assert st._sec_per_step_from_lines(["step 4 loss 2.3", "step 8 loss 2.2"]) is None
+
+
+def test_spawn_metrics_roundtrip(tmp_path, monkeypatch) -> None:
+    """Smoke metrics persist + reload through the configured path (env seam)."""
+    from deploy import spawn_train as st
+
+    monkeypatch.setenv(st.SMOKE_METRICS_ENV, str(tmp_path / "m.json"))
+    # the default path may hold REAL smoke metrics from a prior smoke run on
+    # this machine — pin it to the tmp tree so the test is hermetic.
+    monkeypatch.setattr(st, "SMOKE_METRICS_DEFAULT", tmp_path / "default.json")
+    p = st._save_smoke_metrics({"sec_per_step": 1.5, "train_windows": 3000})
+    assert p.is_file()
+    assert st._load_smoke_metrics()["train_windows"] == 3000
+    monkeypatch.delenv(st.SMOKE_METRICS_ENV)
+    assert st._load_smoke_metrics() == {}
+
+
 # -- fallback serving app -----------------------------------------------------
 def test_serve_app_constructs() -> None:
     modal = _need_modal()

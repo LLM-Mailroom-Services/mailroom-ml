@@ -176,13 +176,18 @@ def _build_train_cmd(
     push_to_hub: str,
     eval_test: bool,
     max_steps: int = 0,
+    log_every: int = 0,
+    resume: str = "",
+    output: str = f"{CHECKPOINT_MOUNT}/latest",
 ) -> list[str]:
     """The exact trainer CLI invocation — the documented train_modernbert.py
     surface is held here, byte for flag, so the deploy test suite can assert it.
 
     Flags surfaced by the job: --data, --output, --epochs, --batch-size,
-    --grad-accum, --lr, --seed, --seed, --push-to-hub <repo>, --eval-test,
-    --max-steps (pre-flight smoke cap).
+    --grad-accum, --lr, --seed, --push-to-hub <repo>, --eval-test,
+    --max-steps (pre-flight smoke cap), --log-every (smoke step cadence —
+    default 0 omits the flag and the trainer's own default of 50 applies),
+    --resume <bundle dir> (continue a cut run from its last checkpoint).
     """
     cmd = [
         sys.executable,
@@ -190,7 +195,7 @@ def _build_train_cmd(
         "--data",
         TRAINING_DATA_REPO,
         "--output",
-        f"{CHECKPOINT_MOUNT}/latest",
+        output,
         "--epochs",
         str(epochs),
         "--batch-size",
@@ -208,6 +213,10 @@ def _build_train_cmd(
         cmd += ["--eval-test"]
     if max_steps:
         cmd += ["--max-steps", str(max_steps)]
+    if log_every:
+        cmd += ["--log-every", str(log_every)]
+    if resume:
+        cmd += ["--resume", resume]
     return cmd
 
 
@@ -230,6 +239,8 @@ def train(
     push_to_hub: str = "",
     eval_test: bool = True,
     max_steps: int = 0,
+    log_every: int = 0,
+    resume: str = "",
 ) -> dict:
     """Run the fine-tune inside an L4 GPU container.
 
@@ -242,6 +253,10 @@ def train(
     - checkpoint: trainer writes to /checkpoints/latest; on success the run is
       archived to /checkpoints/runs/<run-id>/ (rollback), then the Volume is
       committed once.
+    - resume: pass a bundle dir (e.g. /checkpoints/latest) to continue a cut
+      run from its last per-epoch checkpoint instead of starting over.
+    - smoke (max_steps > 0): writes to /checkpoints/smoke-<ts> so the cadence
+      probe never clobbers the real latest/ pointer.
     """
     from huggingface_hub import HfApi
 
@@ -258,7 +273,11 @@ def train(
     print(f"[mailroom-ml-train] dataset pin verified: {info.sha}", flush=True)
 
     cmd = _build_train_cmd(epochs, batch_size, grad_accum, lr, seed,
-                           push_to_hub, eval_test, max_steps)
+                           push_to_hub, eval_test, max_steps, log_every,
+                           resume,
+                           output=(f"{CHECKPOINT_MOUNT}/smoke-"
+                                   f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
+                                   if max_steps else f"{CHECKPOINT_MOUNT}/latest"))
     print("[mailroom-ml-train] " + " ".join(cmd), flush=True)
 
     # per-epoch checkpointing: the trainer commits the volume itself after

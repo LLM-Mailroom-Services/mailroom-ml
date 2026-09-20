@@ -16,6 +16,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from pathlib import Path  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
 
 import torch.nn as nn  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
@@ -27,12 +28,14 @@ from mailroom_ml.config import (  # noqa: E402
     TRAINING_DATA_REPO,
 )
 from training.train_modernbert import (  # noqa: E402
+    _apply_resume,
     build_parser,
     ece,
     fit_temperature,
     head_loss,
     load_dataset,
     macro_f1,
+    save_checkpoint,
 )
 
 pytestmark = pytest.mark.train
@@ -96,6 +99,102 @@ def test_cli_defaults_match_deploy_contract():
     assert ns.limit == 0
     assert ns.warmup_frac == 0.06
     assert ns.model == MODEL_ID
+    assert ns.resume is None
+
+
+def test_cli_accepts_resume_flag():
+    ns = build_parser().parse_args(["--resume", "/checkpoints/latest"])
+    assert ns.resume == Path("/checkpoints/latest")
+
+
+# -- resume-from-checkpoint ---------------------------------------------------
+
+class _FakeSave:
+    """Stand-in for save_pretrained on backbone/tokenizer (hermetic)."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def save_pretrained(self, d: Path) -> None:
+        (Path(d) / self.name).write_text("x")
+
+
+def _tiny_model():
+    return SimpleNamespace(
+        backbone=_FakeSave("backbone.txt"),
+        heads=nn.ModuleDict({"doc_type": nn.Linear(4, 2)}),
+    )
+
+
+def _tiny_optim_sched(model, lr: float = 1e-3):
+    opt = torch.optim.AdamW(model.heads.parameters(), lr=lr)
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0)
+    return opt, sched
+
+
+def test_resume_state_roundtrip(tmp_path):
+    """save_checkpoint with optimizer state -> --resume restores counters,
+    model weights, and the optimizer's moment estimates exactly."""
+    out = tmp_path / "ckpt"
+    model = _tiny_model()
+    opt, sched = _tiny_optim_sched(model)
+    # one real step so AdamW carries non-zero exp_avg state
+    loss = model.heads["doc_type"](torch.zeros(2, 4)).sum()
+    loss.backward()
+    opt.step()
+    opt.zero_grad()
+    save_checkpoint(out, model, _FakeSave("tokenizer.txt"),
+                    {"doc_type": {"labels": ["a", "b"]}}, {}, [], {},
+                    {"run_id": "r1"}, optimizer=opt, scheduler=sched,
+                    epoch=1, steps_done=10)
+    assert (out / "optimizer.pt").is_file()
+    assert (out / "scheduler.pt").is_file()
+    assert json.loads((out / "resume.json").read_text()) == {
+        "epoch": 1, "steps_done": 10, "run_id": "r1"}
+
+    # fresh model/optimizer/scheduler — resume must restore everything
+    model2 = _tiny_model()
+    opt2, sched2 = _tiny_optim_sched(model2)
+    state = _apply_resume(out, model2, opt2, sched2, torch.device("cpu"),
+                          steps_per_epoch=5)
+    assert state["start_epoch"] == 2
+    assert state["steps_done"] == 10
+    # model weights restored from heads.pt
+    for (n1, p1), (_, p2) in zip(
+            model.heads.named_parameters(), model2.heads.named_parameters(),
+            strict=True):
+        assert torch.equal(p1.detach(), p2.detach()), n1
+    # optimizer moments restored
+    s1, s2 = opt.state_dict()["state"], opt2.state_dict()["state"]
+    assert s1.keys() == s2.keys()
+    for k in s1:
+        assert s1[k]["step"] == s2[k]["step"]
+        assert torch.equal(s1[k]["exp_avg"], s2[k]["exp_avg"])
+        assert torch.equal(s1[k]["exp_avg_sq"], s2[k]["exp_avg_sq"])
+
+
+def test_resume_without_optimizer_state(tmp_path):
+    """Bundles from the pre-resume era (no optimizer.pt/resume.json) resume
+    from summary.json counters with a reconstructed optimizer/scheduler."""
+    out = tmp_path / "ckpt"
+    out.mkdir()
+    torch.save({"doc_type": nn.Linear(4, 2).state_dict()}, out / "heads.pt")
+    (out / "summary.json").write_text(json.dumps({
+        "epochs_run": 1,
+        "epochs": [{"epoch": 1, "loss": 2.0, "val_loss": 1.5}],
+        "checkpoint_selection": {"epoch": 1, "macro_f1": 0.8, "ece": 0.04},
+    }))
+    model = _tiny_model()
+    opt, sched = _tiny_optim_sched(model)
+    state = _apply_resume(out, model, opt, sched, torch.device("cpu"),
+                          steps_per_epoch=5)
+    assert state["start_epoch"] == 2
+    assert state["steps_done"] == 5          # 1 epoch x 5 steps/epoch
+    assert state["best_val"] == 1.5
+    assert state["stale"] == 0
+    assert state["selected"]["epoch"] == 1
+    assert sched.last_epoch == 5             # scheduler stepped into position
+    assert len(state["events"]) == 1
 
 
 # -- metric math --------------------------------------------------------------

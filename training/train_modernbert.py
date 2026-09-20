@@ -121,6 +121,19 @@ class HierarchicalClassifier(nn.Module):
         return {name: head(pooled) for name, head in self.heads.items()}
 
 
+def _hub_data_glob(data: str, split: str) -> str:
+    """The pinned ``hf://`` glob for a Hub dataset split.
+
+    The revision MUST be embedded in the path as ``@<rev>``: the ``revision=``
+    kwarg is IGNORED for ``hf://`` data_files globs, so a bare URL silently
+    resolves ``main`` from the local/stale cache — measured 2026-09-20: a bare
+    glob + revision kwarg loaded 4573 windows (the pre-clean, leaky stage)
+    while the pinned revision holds 4499. ``@<rev>`` is honored.
+    """
+    cfg = "windows" if split != "test" else "documents"
+    return f"hf://datasets/{data}@{_hub_revision()}/data/{cfg}/{split}/*.parquet"
+
+
 def load_dataset(data: str, split: str) -> list[dict]:
     """Rows from the windows config (train/validation) or documents (test).
 
@@ -142,13 +155,12 @@ def load_dataset(data: str, split: str) -> list[dict]:
         return pd.concat(frames, ignore_index=True).to_dict("records")
     # Remote Hub repo: resolve the published data/<cfg>/<split> folders
     # directly via hf:// data_files globs (robust regardless of how the
-    # datasets-server indexes the repo).
+    # datasets-server indexes the repo). The pinned revision is embedded in
+    # the URL by _hub_data_glob — see that docstring for why.
     from datasets import load_dataset as hf_load_dataset
 
-    cfg = "windows" if split != "test" else "documents"
-    glob = f"hf://datasets/{data}/data/{cfg}/{split}/*.parquet"
-    ds = hf_load_dataset("parquet", split=split, data_files={split: glob},
-                         revision=_hub_revision())
+    glob = _hub_data_glob(data, split)
+    ds = hf_load_dataset("parquet", split=split, data_files={split: glob})
     return [dict(r) for r in ds]
 
 
@@ -199,7 +211,8 @@ class LossConfig:
     weight_cap: float = 10.0
 
     def transform_weights(self, weights: dict[str, float],
-                          labels: list[str]) -> torch.Tensor:
+                          labels: list[str],
+                          device: torch.device | None = None) -> torch.Tensor:
         out = []
         for label in labels:
             w = weights.get(label, 1.0)
@@ -208,7 +221,10 @@ class LossConfig:
             elif self.weight_mode == "none":
                 w = 1.0
             out.append(min(max(w, 1.0 / self.weight_cap), self.weight_cap))
-        return torch.tensor(out, dtype=torch.float32)
+        # device is required on CUDA: F.cross_entropy's weight must live on
+        # the same device as the logits (CPU-built weights crashed the first
+        # GPU smoke, 2026-09-20).
+        return torch.tensor(out, dtype=torch.float32, device=device)
 
 
 def head_loss(model, batch, heads, device,
@@ -224,7 +240,8 @@ def head_loss(model, batch, heads, device,
     dt_ce = F.cross_entropy(
         logits["doc_type"], batch["doc_type"],
         weight=cfg.transform_weights(heads["doc_type"]["weights"],
-                                     heads["doc_type"]["labels"]),
+                                     heads["doc_type"]["labels"],
+                                     device=logits["doc_type"].device),
         label_smoothing=cfg.label_smoothing)
     sc_ces: list[torch.Tensor] = []
     for cls in heads:
@@ -235,7 +252,8 @@ def head_loss(model, batch, heads, device,
             sc_ces.append(F.cross_entropy(
                 logits[cls][sel], batch["subclass"][sel],
                 weight=cfg.transform_weights(heads[cls]["weights"],
-                                             heads[cls]["labels"])))
+                                             heads[cls]["labels"],
+                                             device=logits[cls].device)))
     if sc_ces:
         loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
             sc_ces).mean()

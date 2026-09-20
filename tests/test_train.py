@@ -27,12 +27,14 @@ from mailroom_ml.config import (  # noqa: E402
     MODEL_ID,
     RUNS_DIR,
     TRAINING_DATA_REPO,
+    TRAINING_DATA_REVISION,
 )
 from training.train_modernbert import (  # noqa: E402
     HierarchicalClassifier,
     LossConfig,
     _apply_resume,
     _apply_subclass_support_threshold,
+    _hub_data_glob,
     _scheduler_plan,
     build_parser,
     ece,
@@ -334,6 +336,27 @@ def test_loss_config_weight_modes():
     assert capped.transform_weights(weights, labels).tolist() == [0.5, 5.0]
     none = LossConfig(weight_mode="none")
     assert none.transform_weights(weights, labels).tolist() == [1.0, 1.0]
+
+
+def test_transform_weights_device_honored():
+    """Weights must land on the requested device: F.cross_entropy rejects a
+    CPU weight against CUDA logits (the first GPU smoke crashed on this)."""
+    cfg = LossConfig(weight_mode="inverse", weight_cap=10.0)
+    dev = torch.device("cpu")
+    w = cfg.transform_weights({"a": 2.0}, ["a"], device=dev)
+    assert w.device == dev
+
+
+def test_hub_data_glob_embeds_revision():
+    """The pinned revision MUST be in the hf:// path (`@<rev>`): the
+    `revision=` kwarg is ignored for hf:// globs, so a bare URL silently
+    loads the stale (pre-clean) stage — measured 2026-09-20 (4573 vs 4499)."""
+    g_train = _hub_data_glob(TRAINING_DATA_REPO, "train")
+    assert f"@{TRAINING_DATA_REVISION}" in g_train
+    assert g_train.endswith("/data/windows/train/*.parquet")
+    g_test = _hub_data_glob(TRAINING_DATA_REPO, "test")
+    assert g_test.endswith("/data/documents/test/*.parquet")
+    assert f"@{TRAINING_DATA_REVISION}" in g_test
 
 
 def test_scheduler_plan_optimizer_step_units():

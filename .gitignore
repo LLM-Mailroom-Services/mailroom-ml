@@ -16,3 +16,7 @@ artifacts/
 
 # Env
 .env
+*.log
+.playwright-mcp/page-2026-09-19T15-20-21-237Z.yml
+.playwright-mcp/page-2026-09-19T15-22-34-461Z.yml
+/.playwright-mcp

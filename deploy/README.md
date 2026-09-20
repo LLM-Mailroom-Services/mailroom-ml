@@ -3,7 +3,7 @@
 Deploy layer for the ModernBERT ingest fast-path classifier. Three pieces:
 
 | File | App | What it does |
-|---|---|---|
+| --- | --- | --- |
 | `modal_app.py` | `mailroom-ml-train` | One-shot L4 GPU training run (port of `Mailroom-Corpus-EDA @ cf096fa` `modernbert/modal_app.py`) |
 | `serve_app.py` | `mailroom-ml-serve` | **FALLBACK** ONNX int8 CPU endpoint — the PLAN's primary serving path is the local ONNX session under `artifacts/onnx/…`; do not rely on this for production |
 | `onnx_export.py` / `onnx_parity_check.py` | — | Checkpoint → ONNX (dynamic axes + int8) and the PyTorch-vs-ONNX logits parity gate |
@@ -11,8 +11,8 @@ Deploy layer for the ModernBERT ingest fast-path classifier. Three pieces:
 ## 1. Verified versions (checked 2026-09-18, before writing)
 
 | Component | Version | Evidence |
-|---|---|---|
-| Modal SDK | **1.5.5** (2026-08-28) | https://modal.com/docs/sdk/py/releases (live, fetched 2026-09-18) + PyPI json (`pypi.org/pypi/modal/json` → 1.5.5, `requires_python <3.15,>=3.10`) |
+| --- | --- | --- |
+| Modal SDK | **1.5.5** (2026-08-28) | <https://modal.com/docs/sdk/py/releases> (live, fetched 2026-09-18) + PyPI json (`pypi.org/pypi/modal/json` → 1.5.5, `requires_python <3.15,>=3.10`) |
 | GPU config | string API, e.g. `gpu="L4"` | current docs examples (flux / gpu_fallbacks / llm_inference) — the committed app's "Modal ≥1.0 configures GPUs by string" comment is **confirmed correct**; `modal.gpu.L4()` objects are gone |
 | Web endpoints | `@modal.fastapi_endpoint` | current Web Functions guide — `@modal.web_endpoint` was renamed to `fastapi_endpoint` prior to v0.73.82 |
 | `App(name, tags=)`, `Image.debian_slim(python_version=)`, `uv_pip_install`, `add_local_dir`, `.env()`, `Secret.from_dict`, `Volume.from_name(create_if_missing=True)` + `commit()`, `startup_timeout=` | current | `modal.App`/`modal.Image`/`modal.Secret`/`modal.Volume` reference pages (live) + 1.2.0 (tags) and 1.1.4 (startup_timeout) release notes |
@@ -81,7 +81,7 @@ What happens inside the container:
 ### Checkpoint persistence & rollback
 
 | Path (inside the Volume) | Meaning |
-|---|---|
+| --- | --- |
 | `/checkpoints/latest/` | stable pointer — what the export step consumes |
 | `/checkpoints/runs/<run-id>/` | per-run archive, retained forever (rollback) |
 

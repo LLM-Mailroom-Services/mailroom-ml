@@ -13,7 +13,7 @@ Corpus: `mailroom-finetune @ 19720ceb…` (modifiable duplicate; canonical
 `mailroom-dataset @ 46a4d3c2…` untouched). Model: `answerdotai/ModernBERT-base`.
 
 | Card | Owner | Status | Evidence |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | U0 recon + fact verification | orchestrator | ✅ done | §2 fact base, hub-verified 2026-09-18 |
 | U1 skeleton + config interlock | orchestrator | ✅ done | config.py all pins/constants |
 | U2 combined plan doc | orchestrator | ✅ done | docs/intake-classifier-combined-plan.md |

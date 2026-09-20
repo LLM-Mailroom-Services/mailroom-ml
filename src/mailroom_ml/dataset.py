@@ -44,6 +44,7 @@ from mailroom_ml.config import (
     WINDOW_OVERLAP_TOKENS,
 )
 from mailroom_ml.labels import SUBCLASS_BY_CLASS, label_maps, normalize_subclass
+from mailroom_ml.normalize import deterministic_normalize
 from mailroom_ml.preprocessing import build_title
 from mailroom_ml.provenance import build_manifest, record_manifest_sha
 from mailroom_ml.windows import estimate_tokens, window_document
@@ -57,6 +58,7 @@ __all__ = [
     "leakage_audit",
     "build_windows",
     "class_weights",
+    "filename_leak_audit",
     "stage",
     "verify_stage",
 ]
@@ -306,6 +308,59 @@ def leakage_audit(df: pd.DataFrame) -> dict[str, Any]:
     return result
 
 
+def filename_leak_audit(df: pd.DataFrame) -> dict[str, Any]:
+    """Label-leak audit: does the INPUT TEXT carry the label via the filename?
+
+    The 2026-09-20 pre-flight found the published set leaked the label through
+    the ``title`` fallback (``title == filename`` for 65.9% of rows; 42.8% of
+    filenames literally contain the subclass token).  This audit makes the
+    leak loud: it counts rows whose ``title`` equals the filename, and rows
+    whose ``title``/``doc_text`` contains the doc_type or subclass token.
+
+    A clean build has ``title_eq_filename == 0`` (semantic-only titles) and
+    ``title_looks_like_filename == 0``.  ``title_contains_subclass`` /
+    ``doc_text_contains_subclass`` are reported for information only — a real
+    document legitimately names its own type (a bylaws exhibit is titled
+    "BYLAWS"; a claim letter says "AUTOMOBILE CLAIMS"), so those are signal,
+    not defects.  The gate is the filename artifact.
+    """
+    def _fold(s: Any) -> str:
+        return _ALIAS_KEY_RE.sub("", str(s).lower())
+
+    title = df["title"].astype(str)
+    fn = df["filename"].astype(str)
+    text = df["doc_text"].astype(str)
+    dt = df["doc_type"].astype(str)
+    sub = df["subclass"].astype(str)
+
+    title_eq_fn = title == fn
+    # a title that still looks like a stored filename (extension / EDGAR id)
+    title_looks_fn = title.str.contains(
+        r"\.(htm|html|txt|pdf|docx?|xml)$", case=False, regex=True)
+    title_has_dt = [
+        bool(_fold(d)) and _fold(d) in _fold(t) for t, d in zip(title, dt)
+    ]
+    title_has_sub = [
+        bool(_fold(s)) and _fold(s) in _fold(t) for t, s in zip(title, sub)
+    ]
+    text_has_dt = [
+        bool(_fold(d)) and _fold(d) in _fold(t) for t, d in zip(text, dt)
+    ]
+    text_has_sub = [
+        bool(_fold(s)) and _fold(s) in _fold(t) for t, s in zip(text, sub)
+    ]
+    return {
+        "title_eq_filename": int(title_eq_fn.sum()),
+        "title_eq_filename_pct": round(100 * title_eq_fn.mean(), 2),
+        "title_looks_like_filename": int(title_looks_fn.sum()),
+        "title_contains_doc_type": int(sum(title_has_dt)),
+        "title_contains_subclass": int(sum(title_has_sub)),
+        "doc_text_contains_doc_type": int(sum(text_has_dt)),
+        "doc_text_contains_subclass": int(sum(text_has_sub)),
+        "clean": bool(not title_eq_fn.any() and not title_looks_fn.any()),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Documents / windows
 # ---------------------------------------------------------------------------
@@ -321,17 +376,23 @@ def build_documents(rows: list[dict]) -> pd.DataFrame:
     recs = []
     for r in rows:
         doc_type = str(r["expected"])
+        # Intake-representative text: run the pipeline's deterministic clerk
+        # (llm-mailroom apply_intake) at BUILD time so training input is
+        # byte-representative of inference input (BOM/CRLF/blank-runs/controls
+        # removed).  Title is semantic-only (no filename fallback — leak fix).
+        title = deterministic_normalize(build_title(r))[0]
+        doc_text = deterministic_normalize(str(r["doc_text"]))[0]
         recs.append({
             "filename": str(r["filename"]),
             "document_id": str(r.get("document_id") or ""),
             "content_sha256": str(r.get("content_sha256") or ""),
             "source_revision": str(r.get("source_revision") or FINETUNE_REVISION),
-            "title": build_title(r),
-            "doc_text": str(r["doc_text"]),
+            "title": title,
+            "doc_text": doc_text,
             "doc_type": doc_type,
             "subclass": normalize_subclass(doc_type, r.get("expected_subclass")),
             "corpus_split": str(r.get("split") or ""),
-            "token_estimate": estimate_tokens(str(r["doc_text"])),
+            "token_estimate": estimate_tokens(doc_text),
         })
     df = pd.DataFrame(recs).sort_values("filename").reset_index(drop=True)
     # corpus test rows are held out entirely; train rows get the 90/10 split.
@@ -534,7 +595,15 @@ def verify_stage(stage_dir: Path) -> dict:
     dup = docs["filename"].duplicated()
     if dup.any():
         problems.append(f"{int(dup.sum())} duplicate filenames across splits")
+    # label-leak gate: the input text must not carry the label via a filename
+    leak = filename_leak_audit(docs)
+    if not leak["clean"]:
+        problems.append(
+            f"label leak: {leak['title_eq_filename']} rows title==filename, "
+            f"{leak['title_contains_doc_type']} titles contain doc_type, "
+            f"{leak['title_contains_subclass']} titles contain subclass")
     return {"ok": not problems, "problems": problems,
             "rows": int(len(docs)),
             "splits": docs["split"].value_counts().to_dict(),
-            "counts": counts}
+            "counts": counts,
+            "leak_audit": leak}

@@ -179,6 +179,7 @@ def _build_train_cmd(
     log_every: int = 0,
     resume: str = "",
     output: str = f"{CHECKPOINT_MOUNT}/latest",
+    trainer_extra: list[str] | None = None,
 ) -> list[str]:
     """The exact trainer CLI invocation — the documented train_modernbert.py
     surface is held here, byte for flag, so the deploy test suite can assert it.
@@ -188,6 +189,9 @@ def _build_train_cmd(
     --max-steps (pre-flight smoke cap), --log-every (smoke step cadence —
     default 0 omits the flag and the trainer's own default of 50 applies),
     --resume <bundle dir> (continue a cut run from its last checkpoint).
+    ``trainer_extra`` appends arbitrary trainer flags verbatim (the
+    2026-09-20 audit levers: --loss-lambda-dt, --label-smoothing,
+    --weight-mode, --mlp-heads, --freeze-backbone-epochs, ...).
     """
     cmd = [
         sys.executable,
@@ -217,6 +221,8 @@ def _build_train_cmd(
         cmd += ["--log-every", str(log_every)]
     if resume:
         cmd += ["--resume", resume]
+    if trainer_extra:
+        cmd += list(trainer_extra)
     return cmd
 
 
@@ -241,6 +247,7 @@ def train(
     max_steps: int = 0,
     log_every: int = 0,
     resume: str = "",
+    trainer_extra: list[str] | None = None,
 ) -> dict:
     """Run the fine-tune inside an L4 GPU container.
 
@@ -277,7 +284,8 @@ def train(
                            resume,
                            output=(f"{CHECKPOINT_MOUNT}/smoke-"
                                    f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
-                                   if max_steps else f"{CHECKPOINT_MOUNT}/latest"))
+                                   if max_steps else f"{CHECKPOINT_MOUNT}/latest"),
+                           trainer_extra=trainer_extra)
     print("[mailroom-ml-train] " + " ".join(cmd), flush=True)
 
     # per-epoch checkpointing: the trainer commits the volume itself after

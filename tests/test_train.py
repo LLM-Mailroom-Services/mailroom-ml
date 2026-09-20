@@ -9,6 +9,7 @@ the CLI + math never touches the Hub.
 from __future__ import annotations
 
 import json
+import math
 
 import numpy as np
 import pytest
@@ -28,14 +29,21 @@ from mailroom_ml.config import (  # noqa: E402
     TRAINING_DATA_REPO,
 )
 from training.train_modernbert import (  # noqa: E402
+    HierarchicalClassifier,
+    LossConfig,
     _apply_resume,
+    _apply_subclass_support_threshold,
+    _scheduler_plan,
     build_parser,
     ece,
+    ece_calibrated,
     fit_temperature,
     head_loss,
     load_dataset,
     macro_f1,
+    make_batches,
     save_checkpoint,
+    train_epoch,
 )
 
 pytestmark = pytest.mark.train
@@ -150,7 +158,7 @@ def test_resume_state_roundtrip(tmp_path):
     assert (out / "optimizer.pt").is_file()
     assert (out / "scheduler.pt").is_file()
     assert json.loads((out / "resume.json").read_text()) == {
-        "epoch": 1, "steps_done": 10, "run_id": "r1"}
+        "epoch": 1, "steps_done": 10, "steps_done_micro": 0, "run_id": "r1"}
 
     # fresh model/optimizer/scheduler — resume must restore everything
     model2 = _tiny_model()
@@ -187,13 +195,16 @@ def test_resume_without_optimizer_state(tmp_path):
     model = _tiny_model()
     opt, sched = _tiny_optim_sched(model)
     state = _apply_resume(out, model, opt, sched, torch.device("cpu"),
-                          steps_per_epoch=5)
+                          n_train_rows=20, batch_size=4, grad_accum=2)
     assert state["start_epoch"] == 2
-    assert state["steps_done"] == 5          # 1 epoch x 5 steps/epoch
+    # 5 micro-batches/epoch, grad-accum 2 -> 3 OPTIMIZER steps/epoch (the
+    # 2026-09-20 audit fixed the micro-batch/optimizer-step mismatch)
+    assert state["steps_done"] == 3
+    assert state["steps_done_micro"] == 5
     assert state["best_val"] == 1.5
     assert state["stale"] == 0
     assert state["selected"]["epoch"] == 1
-    assert sched.last_epoch == 5             # scheduler stepped into position
+    assert sched.last_epoch == 3             # scheduler stepped into position
     assert len(state["events"]) == 1
 
 
@@ -236,13 +247,16 @@ def test_macro_f1_hand_computed():
 # -- conditional loss ---------------------------------------------------------
 
 def test_head_loss_conditional_subclass_structure():
-    """Subclass CE fires only on each class's own rows — 0 contribution elsewhere."""
+    """Subclass CE fires only on each class's own rows — 0 contribution
+    elsewhere; the blended loss weights doc_type by lambda_dt."""
     device = torch.device("cpu")
     heads = {
         "doc_type": {"label2id": {"contract": 0, "insurance_claim": 1},
-                     "weight": torch.ones(2)},
+                     "labels": ["contract", "insurance_claim"],
+                     "weights": {"contract": 1.0, "insurance_claim": 1.0}},
         "contract": {"label2id": {"service": 0, "license": 1},
-                     "weight": torch.ones(2)},
+                     "labels": ["service", "license"],
+                     "weights": {"service": 1.0, "license": 1.0}},
     }
     batch = {
         "input_ids": torch.zeros(4, 8, dtype=torch.long),
@@ -257,21 +271,245 @@ def test_head_loss_conditional_subclass_structure():
         "contract": torch.tensor([[5.0, 0.0], [0.0, 5.0],
                                   [0.0, 0.0], [0.0, 0.0]]),
     }
-    loss, logits = head_loss(_StubHeads(lgs), batch, heads, device)
+    cfg = LossConfig(lambda_dt=0.65)
+    loss, logits = head_loss(_StubHeads(lgs), batch, heads, device, cfg)
     sel = batch["doc_type"] == 0
-    expected = (
-        F.cross_entropy(logits["doc_type"], batch["doc_type"],
-                        weight=heads["doc_type"]["weight"])
-        + F.cross_entropy(logits["contract"][sel], batch["subclass"][sel],
-                          weight=heads["contract"]["weight"])
-    )
+    dt_ce = F.cross_entropy(logits["doc_type"], batch["doc_type"])
+    sc_ce = F.cross_entropy(logits["contract"][sel], batch["subclass"][sel])
+    expected = 0.65 * dt_ce + 0.35 * sc_ce
     assert loss.item() == pytest.approx(expected.item())
     # garbage logits on non-matching rows must contribute exactly nothing
     garbage = dict(lgs)
     garbage["contract"] = lgs["contract"].clone()
     garbage["contract"][2:] = torch.tensor([[100.0, 0.0], [-100.0, 0.0]])
-    loss2, _ = head_loss(_StubHeads(garbage), batch, heads, device)
+    loss2, _ = head_loss(_StubHeads(garbage), batch, heads, device, cfg)
     assert loss2.item() == pytest.approx(loss.item())
+
+
+def test_head_loss_lambda_extremes():
+    """lambda_dt=1.0 -> doc_type only; 0.0 -> subclass mean only."""
+    device = torch.device("cpu")
+    heads = {
+        "doc_type": {"label2id": {"contract": 0, "insurance_claim": 1},
+                     "labels": ["contract", "insurance_claim"],
+                     "weights": {"contract": 1.0, "insurance_claim": 1.0}},
+        "contract": {"label2id": {"service": 0, "license": 1},
+                     "labels": ["service", "license"],
+                     "weights": {"service": 1.0, "license": 1.0}},
+    }
+    batch = {
+        "input_ids": torch.zeros(4, 8, dtype=torch.long),
+        "attention_mask": torch.ones(4, 8, dtype=torch.long),
+        "doc_type": torch.tensor([0, 0, 1, 1]),
+        "subclass": torch.tensor([0, 1, 0, 0]),
+        "filename": ["a.txt", "b.txt", "c.txt", "d.txt"],
+    }
+    lgs = {
+        "doc_type": torch.tensor([[5.0, 0.0], [5.0, 0.0],
+                                  [5.0, 0.0], [5.0, 0.0]]),
+        "contract": torch.tensor([[5.0, 0.0], [0.0, 5.0],
+                                  [0.0, 0.0], [0.0, 0.0]]),
+    }
+    only_dt, _ = head_loss(_StubHeads(lgs), batch, heads, device,
+                           LossConfig(lambda_dt=1.0))
+    only_sc, _ = head_loss(_StubHeads(lgs), batch, heads, device,
+                           LossConfig(lambda_dt=0.0))
+    dt_ce = F.cross_entropy(lgs["doc_type"], batch["doc_type"])
+    sc_ce = F.cross_entropy(lgs["contract"][batch["doc_type"] == 0],
+                            batch["subclass"][batch["doc_type"] == 0])
+    assert only_dt.item() == pytest.approx(dt_ce.item())
+    assert only_sc.item() == pytest.approx(sc_ce.item())
+
+
+def test_loss_config_weight_modes():
+    """sqrt-inverse tames rare-class amplification; cap clamps; none = 1.0."""
+    weights = {"common": 0.5, "rare": 12.0}
+    labels = ["common", "rare"]
+    inv = LossConfig(weight_mode="inverse", weight_cap=100.0)
+    assert inv.transform_weights(weights, labels).tolist() == [0.5, 12.0]
+    sqrt = LossConfig(weight_mode="sqrt-inverse", weight_cap=100.0)
+    got = sqrt.transform_weights(weights, labels).tolist()
+    assert got[1] == pytest.approx(math.sqrt(12.0))
+    capped = LossConfig(weight_mode="inverse", weight_cap=5.0)
+    assert capped.transform_weights(weights, labels).tolist() == [0.5, 5.0]
+    none = LossConfig(weight_mode="none")
+    assert none.transform_weights(weights, labels).tolist() == [1.0, 1.0]
+
+
+def test_scheduler_plan_optimizer_step_units():
+    """total_steps/warmup are in OPTIMIZER steps — the old micro-batch units
+    made the 6% warmup consume ~48% of the run (grad-accum 8)."""
+    total, warmup = _scheduler_plan(4573, 4, 8, 2, 0.06)
+    assert total == 286          # ceil(1143/8)=143 opt-steps/epoch x 2
+    assert warmup == 17          # 6% of 286, not 6% of 2286 micro-batches
+    total2, warmup2 = _scheduler_plan(100, 16, 2, 3, 0.1)
+    assert total2 == 12          # ceil(7/2)=4 opt-steps/epoch x 3
+    assert warmup2 == 1
+
+
+def test_train_epoch_flushes_stale_gradients():
+    """10 micro-batches at grad-accum 4 -> 2 full steps + 1 flush step;
+    the trailing accumulation is optimized, not leaked into the next epoch."""
+    device = torch.device("cpu")
+    model = nn.Linear(4, 2)
+    opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0)
+    steps = []
+
+    class _SpyOpt:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def step(self):
+            steps.append(1)
+            self.inner.step()
+
+        def zero_grad(self):
+            self.inner.zero_grad()
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    spy = _SpyOpt(opt)
+    heads = {
+        "doc_type": {"label2id": {"a": 0}, "labels": ["a"],
+                     "weights": {"a": 1.0}},
+        "a": {"label2id": {"a": 0}, "labels": ["a"],
+              "weights": {"a": 1.0}},
+    }
+    rows = [{"input_ids": torch.zeros(1, 4, dtype=torch.long),
+             "attention_mask": torch.ones(1, 4, dtype=torch.long),
+             "doc_type": "a", "subclass": "a", "filename": f"f{i}.txt"}
+            for i in range(10)]
+    batches = list(make_batches(rows, 1, False, heads, device))
+    mean, endpoint, n_micro, n_opt = train_epoch(
+        model, iter(batches), spy, sched, heads, device, 4, loss_cfg=LossConfig())
+    assert n_micro == 10
+    assert n_opt == 3            # 2 full + 1 flush
+    assert len(steps) == 3
+    assert 0.0 < endpoint < mean  # endpoint excludes the early high-loss steps
+
+
+def test_mlp_heads_forward_shape():
+    """--mlp-heads builds the ModernBERT recipe heads (SiLU MLP + dropout)."""
+    base = nn.Linear(8, 8)  # stand-in backbone with hidden_size=8
+
+    class _FakeBackbone(nn.Module):
+        config = type("C", (), {"hidden_size": 8})()
+
+        def forward(self, input_ids, attention_mask):
+            return type("O", (), {"last_hidden_state": input_ids.unsqueeze(1)})()
+
+    model = HierarchicalClassifier(_FakeBackbone(), {"doc_type": 3, "x": 2},
+                                   head_kind="mlp", head_dropout=0.1)
+    assert isinstance(model.heads["doc_type"], nn.Sequential)
+    out = model(torch.zeros(2, 8, dtype=torch.long),
+                torch.ones(2, 8, dtype=torch.long))
+    assert out["doc_type"].shape == (2, 3)
+    assert out["x"].shape == (2, 2)
+    # linear heads unchanged by default
+    lin = HierarchicalClassifier(_FakeBackbone(), {"doc_type": 3})
+    assert isinstance(lin.heads["doc_type"], nn.Linear)
+
+
+def test_macro_f1_observed_only():
+    """observed_only excludes zero-row classes (e.g. inference-only
+    `unknown`) from the macro average — the old full-vocab average deflated
+    every epoch's score."""
+    lg = torch.tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0]])
+    lab = torch.tensor([0, 1])  # class 2 has zero label rows
+    full = macro_f1(lg, lab)
+    obs = macro_f1(lg, lab, observed_only=True)
+    assert full == pytest.approx(2 / 3)   # 3 classes, class 2 F1 = 0
+    assert obs == 1.0                     # 2 observed classes, both perfect
+
+
+def test_ece_calibrated_matches_scaled_logits():
+    """ece_calibrated(logits, T) == ece(logits / T) — the number the
+    selection gate compares against."""
+    rng = np.random.RandomState(3)
+    lg = torch.tensor(rng.normal(size=(500, 4)))
+    lab = torch.tensor(rng.randint(0, 4, size=500))
+    t = 2.5
+    assert ece_calibrated(lg, lab, t) == pytest.approx(
+        ece(lg / t, lab), abs=1e-6)
+
+
+def test_subclass_support_threshold_remaps_and_drops():
+    """Classes below the floor remap to `other` when present; otherwise the
+    rows leave train AND val and the head vocabulary shrinks."""
+    train = [
+        {"doc_type": "contract", "subclass": "service", "filename": "a"},
+        {"doc_type": "contract", "subclass": "service", "filename": "b"},
+        {"doc_type": "contract", "subclass": "license", "filename": "c"},
+        {"doc_type": "contract", "subclass": "license", "filename": "d"},
+        {"doc_type": "contract", "subclass": "license", "filename": "e"},
+        {"doc_type": "contract", "subclass": "rare", "filename": "f"},
+        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "g"},
+        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "h"},
+        {"doc_type": "insurance_claim", "subclass": "tiny", "filename": "i"},
+    ]
+    val = [
+        {"doc_type": "contract", "subclass": "rare", "filename": "v1"},
+        {"doc_type": "insurance_claim", "subclass": "tiny", "filename": "v2"},
+    ]
+    maps = {
+        "doc_type": {"labels": ["contract", "insurance_claim"]},
+        "contract": {"labels": ["service", "license", "rare", "other"],
+                     "label2id": {"service": 0, "license": 1, "rare": 2,
+                                  "other": 3},
+                     "id2label": {"0": "service", "1": "license",
+                                  "2": "rare", "3": "other"},
+                     "weights": {"service": 1.0, "license": 1.0,
+                                 "rare": 1.0, "other": 1.0}},
+        "insurance_claim": {"labels": ["auto", "tiny"],
+                            "label2id": {"auto": 0, "tiny": 1},
+                            "id2label": {"0": "auto", "1": "tiny"},
+                            "weights": {"auto": 1.0, "tiny": 1.0}},
+    }
+    tr, va, new_maps, info = _apply_subclass_support_threshold(
+        train, val, maps, min_rows=4)
+    # contract.rare (1 row) remapped to `other`; insurance_claim.tiny (1 row)
+    # has no `other` -> dropped entirely (train + val)
+    assert info["remapped"] == {"contract": ["rare"]}
+    assert info["dropped"] == {"insurance_claim": ["tiny"]}
+    assert info["dropped_val_rows"] == 1
+    assert all(r["subclass"] == "other" for r in tr
+               if r["doc_type"] == "contract" and r["filename"] == "f")
+    assert all(r["doc_type"] != "insurance_claim" or r["subclass"] != "tiny"
+               for r in tr)
+    assert all(r["doc_type"] != "insurance_claim" or r["subclass"] != "tiny"
+               for r in va)
+    assert new_maps["insurance_claim"]["labels"] == ["auto"]
+    assert new_maps["insurance_claim"]["label2id"] == {"auto": 0}
+    # contract.rare was remapped to `other` — zero rows remain, so it leaves
+    # the head vocabulary (a zero-row class would deflate macro-F1)
+    assert new_maps["contract"]["labels"] == ["service", "license", "other"]
+    # weights rebuilt over surviving rows
+    assert new_maps["insurance_claim"]["weights"]["auto"] == pytest.approx(1.0)
+
+
+def test_cli_accepts_audit_lever_flags():
+    ns = build_parser().parse_args([
+        "--loss-lambda-dt", "0.7", "--label-smoothing", "0.05",
+        "--weight-mode", "sqrt-inverse", "--weight-cap", "8",
+        "--mlp-heads", "--head-dropout", "0.2",
+        "--freeze-backbone-epochs", "1", "--early-stop-patience", "3",
+        "--weight-decay", "0.05", "--betas", "0.9,0.98", "--eps", "1e-6",
+        "--subclass-min-train-rows", "12",
+    ])
+    assert ns.loss_lambda_dt == 0.7
+    assert ns.label_smoothing == 0.05
+    assert ns.weight_mode == "sqrt-inverse"
+    assert ns.weight_cap == 8
+    assert ns.mlp_heads is True
+    assert ns.head_dropout == 0.2
+    assert ns.freeze_backbone_epochs == 1
+    assert ns.early_stop_patience == 3
+    assert ns.weight_decay == 0.05
+    assert ns.betas == "0.9,0.98"
+    assert ns.eps == 1e-6
+    assert ns.subclass_min_train_rows == 12
 
 
 # -- local stage loader -------------------------------------------------------

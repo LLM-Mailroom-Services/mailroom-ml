@@ -231,6 +231,16 @@ if __name__ == "__main__":
                          "/checkpoints/latest) to continue a cut run from — "
                          "the trainer resumes at the next epoch; pass the "
                          "ORIGINAL --epochs (the trainer continues to it)")
+    ap.add_argument("--trainer-extra", action="append", default=None,
+                    help="extra trainer flags passed through verbatim "
+                         "(repeatable; e.g. --trainer-extra "
+                         "--label-smoothing=0.05 --trainer-extra "
+                         "--mlp-heads). Audit levers: --loss-lambda-dt, "
+                         "--label-smoothing, --weight-mode, --weight-cap, "
+                         "--mlp-heads, --head-dropout, "
+                         "--freeze-backbone-epochs, --early-stop-patience, "
+                         "--weight-decay, --betas, --eps, "
+                         "--subclass-min-train-rows")
     args = ap.parse_args()
 
     if not os.environ.get("HF_TOKEN"):
@@ -283,6 +293,7 @@ if __name__ == "__main__":
         max_steps=SMOKE_STEPS if args.smoke else 0,
         log_every=SMOKE_LOG_EVERY if args.smoke else 0,
         resume="" if args.smoke else args.resume,
+        trainer_extra=None if args.smoke else args.trainer_extra,
     )
     print(f"spawned training call: {call.object_id}")
 

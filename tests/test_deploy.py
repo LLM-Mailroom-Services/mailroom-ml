@@ -169,6 +169,28 @@ def test_train_cmd_threads_resume_flag() -> None:
     assert "--resume" not in fresh
 
 
+def test_train_cmd_threads_trainer_extra() -> None:
+    """Audit-lever flags pass through verbatim (2026-09-20: loss rebalance,
+    label smoothing, MLP heads, freeze, subclass support threshold)."""
+    _need_modal()
+
+    from deploy import modal_app
+
+    cmd = modal_app._build_train_cmd(
+        epochs=4, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False,
+        trainer_extra=["--label-smoothing=0.05", "--mlp-heads",
+                       "--freeze-backbone-epochs", "1",
+                       "--subclass-min-train-rows", "12"])
+    assert cmd[-6:] == ["--label-smoothing=0.05", "--mlp-heads",
+                        "--freeze-backbone-epochs", "1",
+                        "--subclass-min-train-rows", "12"]
+    plain = modal_app._build_train_cmd(
+        epochs=2, batch_size=4, grad_accum=8, lr=2e-5, seed=42,
+        push_to_hub="", eval_test=False)
+    assert "--label-smoothing=0.05" not in plain
+
+
 def test_train_cmd_smoke_output_never_clobbers_latest() -> None:
     """The smoke probe writes to /checkpoints/smoke-<ts>, never latest/ —
     latest/ must stay the real checkpoint the resume path reads."""

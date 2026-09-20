@@ -57,6 +57,7 @@ import random
 import shutil
 import time
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -86,14 +87,30 @@ def _hub_revision() -> str | None:
 
 
 class HierarchicalClassifier(nn.Module):
-    """Shared ModernBERT backbone + per-head linear classifiers."""
+    """Shared ModernBERT backbone + per-head classifiers.
 
-    def __init__(self, base_model, head_sizes: dict[str, int]):
+    ``head_kind="linear"`` keeps the original single-linear heads;
+    ``head_kind="mlp"`` uses the ModernBERT classification recipe (hidden
+    SiLU MLP + dropout — what FlexBertForSequenceClassification ships).
+    """
+
+    def __init__(self, base_model, head_sizes: dict[str, int],
+                 head_kind: str = "linear", head_dropout: float = 0.1):
         super().__init__()
         self.backbone = base_model
-        self.heads = nn.ModuleDict(
-            {name: nn.Linear(base_model.config.hidden_size, n, bias=True)
-             for name, n in sorted(head_sizes.items())})
+        hidden = base_model.config.hidden_size
+        heads: dict[str, nn.Module] = {}
+        for name, n in sorted(head_sizes.items()):
+            if head_kind == "mlp":
+                heads[name] = nn.Sequential(
+                    nn.Linear(hidden, hidden),
+                    nn.SiLU(),
+                    nn.Dropout(head_dropout),
+                    nn.Linear(hidden, n),
+                )
+            else:
+                heads[name] = nn.Linear(hidden, n, bias=True)
+        self.heads = nn.ModuleDict(heads)
 
     def forward(self, input_ids, attention_mask):
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
@@ -158,6 +175,74 @@ def class_weight_tensor(weights: dict[str, float], labels: list[str],
                         dtype=torch.float32, device=device)
 
 
+@dataclass
+class LossConfig:
+    """Loss-shaping knobs (2026-09-20 audit: loss rebalance + calibration).
+
+    - ``lambda_dt``: doc_type share of the loss. The old summed loss gave
+      doc_type 1/(1+n_subclass_heads) of the gradient — the subclass heads
+      dominated the shared backbone. Weighted blend::
+          loss = λ · CE_dt + (1-λ) · mean(CE_subclass_heads)
+    - ``label_smoothing``: applied to the doc_type head only (calibration
+      lever; subclass heads keep hard targets).
+    - ``weight_mode``: "inverse" (labels.json inverse-frequency, as before),
+      "sqrt-inverse" (sqrt of the stored weights ≈ inverse-sqrt frequency —
+      tames the rare-class amplification), "none" (uniform).
+    - ``weight_cap``: clamp class weights to [1/cap, cap] after the mode
+      transform (default 10× — a rare class never out-weights a common one
+      by more than an order of magnitude).
+    """
+    lambda_dt: float = 0.65
+    label_smoothing: float = 0.0
+    weight_mode: str = "inverse"
+    weight_cap: float = 10.0
+
+    def transform_weights(self, weights: dict[str, float],
+                          labels: list[str]) -> torch.Tensor:
+        out = []
+        for label in labels:
+            w = weights.get(label, 1.0)
+            if self.weight_mode == "sqrt-inverse":
+                w = math.sqrt(max(w, 1e-6))
+            elif self.weight_mode == "none":
+                w = 1.0
+            out.append(min(max(w, 1.0 / self.weight_cap), self.weight_cap))
+        return torch.tensor(out, dtype=torch.float32)
+
+
+def head_loss(model, batch, heads, device,
+              cfg: LossConfig | None = None) -> tuple[torch.Tensor, dict]:
+    """doc_type CE on every row + subclass CE on each class's own rows.
+
+    Subclass heads are taken from the ``heads`` config (built from
+    ``labels.json`` — the data-driven single source of truth), so each class
+    head contributes only through its own rows: 0 contribution elsewhere.
+    """
+    cfg = cfg or LossConfig()
+    logits = model(batch["input_ids"], batch["attention_mask"])
+    dt_ce = F.cross_entropy(
+        logits["doc_type"], batch["doc_type"],
+        weight=cfg.transform_weights(heads["doc_type"]["weights"],
+                                     heads["doc_type"]["labels"]),
+        label_smoothing=cfg.label_smoothing)
+    sc_ces: list[torch.Tensor] = []
+    for cls in heads:
+        if cls == "doc_type":
+            continue
+        sel = batch["doc_type"] == heads["doc_type"]["label2id"][cls]
+        if sel.any():
+            sc_ces.append(F.cross_entropy(
+                logits[cls][sel], batch["subclass"][sel],
+                weight=cfg.transform_weights(heads[cls]["weights"],
+                                             heads[cls]["labels"])))
+    if sc_ces:
+        loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
+            sc_ces).mean()
+    else:
+        loss = dt_ce
+    return loss, logits
+
+
 def _pad_right(t: torch.Tensor, target_len: int) -> torch.Tensor:
     """Right-pad a 1-D tensor with zeros to ``target_len`` (no-op when at or
     over length). Used for dynamic-padding batches; pads are masked out by
@@ -190,59 +275,95 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
         }
 
 
-def head_loss(model, batch, heads, device) -> torch.Tensor:
+def head_loss(model, batch, heads, device,
+              cfg: LossConfig | None = None) -> tuple[torch.Tensor, dict]:
     """doc_type CE on every row + subclass CE on each class's own rows.
 
     Subclass heads are taken from the ``heads`` config (built from
     ``labels.json`` — the data-driven single source of truth), so each class
     head contributes only through its own rows: 0 contribution elsewhere.
     """
+    cfg = cfg or LossConfig()
     logits = model(batch["input_ids"], batch["attention_mask"])
-    loss = F.cross_entropy(logits["doc_type"], batch["doc_type"],
-                           weight=heads["doc_type"]["weight"])
+    dt_ce = F.cross_entropy(
+        logits["doc_type"], batch["doc_type"],
+        weight=cfg.transform_weights(heads["doc_type"]["weights"],
+                                     heads["doc_type"]["labels"]),
+        label_smoothing=cfg.label_smoothing)
+    sc_ces: list[torch.Tensor] = []
     for cls in heads:
         if cls == "doc_type":
             continue
         sel = batch["doc_type"] == heads["doc_type"]["label2id"][cls]
         if sel.any():
-            loss = loss + F.cross_entropy(
+            sc_ces.append(F.cross_entropy(
                 logits[cls][sel], batch["subclass"][sel],
-                weight=heads[cls]["weight"])
+                weight=cfg.transform_weights(heads[cls]["weights"],
+                                             heads[cls]["labels"])))
+    if sc_ces:
+        loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
+            sc_ces).mean()
+    else:
+        loss = dt_ce
     return loss, logits
 
 
 def train_epoch(model, batches, optimizer, scheduler, heads, device,
                 grad_accum: int, step_limit: int = 0,
-                log_every: int = 50) -> tuple[float, int]:
-    """One epoch. Returns (mean loss, steps taken).
+                log_every: int = 50,
+                loss_cfg: LossConfig | None = None) -> tuple[float, float, int, int]:
+    """One epoch. Returns (mean loss, endpoint loss, micro-steps, opt-steps).
 
     Guardrails:
     - ``log_every``: per-step progress line so a stalled/starved container is
       visible in ``modal app logs`` within seconds instead of at epoch end.
     - ``step_limit``: cap micro-batches for the pre-flight smoke run (smoke
       exercises forward+backward+optimizer without burning an epoch).
+    - Endpoint loss: the mean over the last ``grad_accum`` micro-batches —
+      the honest "where did the epoch END" number. The whole-epoch mean
+      buries convergence signal under warmup + early high-loss steps (the
+      old run's train≫val gap was mostly this measurement artifact).
+    - Stale-gradient flush: when the epoch's micro-batch count is not a
+      multiple of ``grad_accum``, the trailing micro-batches used to
+      accumulate gradients that were never optimized AND contaminated the
+      next epoch's first step. A partial optimizer step now flushes them.
     """
+    cfg = loss_cfg or LossConfig()
     model.train()
     total, n = 0.0, 0
+    opt_steps = 0
+    window: list[float] = []
     for step, batch in enumerate(batches):
-        loss, _ = head_loss(model, batch, heads, device)
+        loss, _ = head_loss(model, batch, heads, device, cfg)
         (loss / grad_accum).backward()
         if (step + 1) % grad_accum == 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+            opt_steps += 1
         total += loss.item()
         n += 1
+        window.append(loss.item())
+        if len(window) > grad_accum:
+            window.pop(0)
         if (step + 1) % log_every == 0:
             print(f"  step {step + 1} loss {loss.item():.4f}", flush=True)
         if step_limit and (step + 1) >= step_limit:
             break
-    return total / max(1, n), n
+    if n % grad_accum != 0:  # flush trailing accumulation (partial step)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        optimizer.step()
+        scheduler.step()
+        optimizer.zero_grad()
+        opt_steps += 1
+    endpoint = sum(window) / max(1, len(window))
+    return total / max(1, n), endpoint, n, opt_steps
 
 
 @torch.no_grad()
-def evaluate(model, batches, heads, maps, device) -> dict:
+def evaluate(model, batches, heads, maps, device,
+             loss_cfg: LossConfig | None = None) -> tuple[dict, dict, dict]:
     """Per-head window metrics + document-level plurality-vote metrics.
 
     The document vote mirrors the sorter's merge: doc_type by plurality over
@@ -251,7 +372,13 @@ def evaluate(model, batches, heads, maps, device) -> dict:
     doc_type vote falls on the inference-only ``unknown`` class carry no
     subclass vote (the sorter routes them to the LLM instead) — counted as a
     doc_type miss when the label differs, never a crash.
+
+    Returns ``(metrics, logits_by_head, labels_by_head)`` — the logits feed
+    temperature fitting so the selection gate can use the CALIBRATED ECE
+    (the old gate compared raw T=1 ECE, which no overconfident head can
+    pass — the gate was structurally unreachable).
     """
+    cfg = loss_cfg or LossConfig()
     model.eval()
     logits_by_head: dict[str, list] = defaultdict(list)
     labels_by_head: dict[str, list] = defaultdict(list)
@@ -260,7 +387,7 @@ def evaluate(model, batches, heads, maps, device) -> dict:
     total_loss = 0.0
     n_batches = 0
     for batch in batches:
-        loss, logits = head_loss(model, batch, heads, device)
+        loss, logits = head_loss(model, batch, heads, device, cfg)
         total_loss += loss.item()
         n_batches += 1
         dt_preds = logits["doc_type"].argmax(-1)
@@ -290,6 +417,8 @@ def evaluate(model, batches, heads, maps, device) -> dict:
             (lg.argmax(-1) == lab).float().mean().item(), 4)
         metrics[f"{name}_ece"] = round(ece(lg, lab), 4)
         metrics[f"{name}_macro_f1"] = round(macro_f1(lg, lab), 4)
+        metrics[f"{name}_macro_f1_observed"] = round(
+            macro_f1(lg, lab, observed_only=True), 4)
     dt_correct = sc_correct = 0
     for fn, votes in doc_votes.items():
         dt_label, sc_label = doc_labels[fn]
@@ -305,11 +434,12 @@ def evaluate(model, batches, heads, maps, device) -> dict:
                 sc_correct += 1
     metrics["doc_type_doc_acc"] = round(dt_correct / max(1, len(doc_votes)), 4)
     metrics["subclass_doc_acc"] = round(sc_correct / max(1, dt_correct), 4)
-    return metrics
+    return metrics, logits_by_head, labels_by_head
 
 
-def ece(logits: torch.Tensor, labels: torch.Tensor, n_bins: int = 10) -> float:
-    probs = F.softmax(logits, dim=-1)
+def _ece_from_probs(probs: torch.Tensor, labels: torch.Tensor,
+                    n_bins: int = 10) -> float:
+    """ECE binning over already-softmaxed probabilities (shared core)."""
     conf, pred = probs.max(-1)
     correct = (pred == labels).float()
     bins = torch.linspace(0, 1, n_bins + 1)
@@ -324,18 +454,35 @@ def ece(logits: torch.Tensor, labels: torch.Tensor, n_bins: int = 10) -> float:
     return total
 
 
-def macro_f1(logits: torch.Tensor, labels: torch.Tensor) -> float:
+def ece(logits: torch.Tensor, labels: torch.Tensor, n_bins: int = 10) -> float:
+    """Raw (T=1) Expected Calibration Error over equal-width bins."""
+    return _ece_from_probs(F.softmax(logits, dim=-1), labels, n_bins)
+
+
+def ece_calibrated(logits: torch.Tensor, labels: torch.Tensor,
+                   temperature: float, n_bins: int = 10) -> float:
+    """ECE after temperature scaling — the number the deployment gate
+    should compare against (the old gate used raw T=1 ECE, which is
+    structurally unreachable for any overconfident head)."""
+    return _ece_from_probs(F.softmax(logits / temperature, dim=-1),
+                           labels, n_bins)
+
+
+def macro_f1(logits: torch.Tensor, labels: torch.Tensor,
+             observed_only: bool = False) -> float:
     preds = logits.argmax(-1)
     n_classes = logits.shape[1]
     f1s = []
     for c in range(n_classes):
+        if observed_only and (labels == c).sum().item() == 0:
+            continue  # zero-row classes (e.g. inference-only `unknown`)
         tp = ((preds == c) & (labels == c)).sum().item()
         fp = ((preds == c) & (labels != c)).sum().item()
         fn = ((preds != c) & (labels == c)).sum().item()
         prec = tp / (tp + fp) if tp + fp else 0.0
         rec = tp / (tp + fn) if tp + fn else 0.0
         f1s.append(2 * prec * rec / (prec + rec) if prec + rec else 0.0)
-    return float(np.mean(f1s))
+    return float(np.mean(f1s)) if f1s else 0.0
 
 
 def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
@@ -380,12 +527,16 @@ def _commit_checkpoint_volume() -> None:
 def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
                     temps: dict, summary: dict, *,
                     optimizer=None, scheduler=None, epoch: int = 0,
-                    steps_done: int = 0) -> None:
+                    steps_done: int = 0, steps_done_micro: int = 0) -> None:
     """Write the full checkpoint bundle (backbone + heads + sidecars).
 
     When ``optimizer`` is given, the optimizer/scheduler state and a
     ``resume.json`` counter file are written too, so a later ``--resume`` can
     continue training from this exact point (not just reload weights).
+    ``steps_done`` counts OPTIMIZER steps (the scheduler's unit — the
+    2026-09-20 audit fixed the micro-batch/optimizer-step mismatch);
+    ``steps_done_micro`` is the micro-batch count for --max-steps smoke
+    accounting.
     """
     output.mkdir(parents=True, exist_ok=True)
     model.backbone.save_pretrained(output)
@@ -399,6 +550,7 @@ def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
         (output / "resume.json").write_text(json.dumps({
             "epoch": epoch,
             "steps_done": steps_done,
+            "steps_done_micro": steps_done_micro,
             "run_id": summary.get("run_id", ""),
         }, sort_keys=True, indent=2))
     (output / "labels.json").write_text(
@@ -420,13 +572,16 @@ def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
 
 
 def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
-                  steps_per_epoch: int) -> dict:
+                  n_train_rows: int, batch_size: int,
+                  grad_accum: int) -> dict:
     """Load a checkpoint bundle for ``--resume``; returns the run state.
 
     Handles bundles saved before optimizer state existed (the 2026-09-19
     per-epoch checkpoints): the optimizer is reconstructed fresh and the
     scheduler is stepped to the right position. Counters come from
     ``resume.json`` when present, else ``summary.json``'s ``epochs_run``.
+    ``steps_done`` is in OPTIMIZER steps (the scheduler's unit — the
+    2026-09-20 audit fixed the micro-batch/optimizer-step mismatch).
     """
     heads_state = torch.load(resume_dir / "heads.pt", map_location=device)
     for name, sd in heads_state.items():
@@ -437,11 +592,14 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
     if resume_json.exists():
         rj = json.loads(resume_json.read_text())
         epoch_done, steps_done = rj["epoch"], rj["steps_done"]
+        steps_done_micro = rj.get("steps_done_micro", 0)
     else:
         summary_path = resume_dir / "summary.json"
         epoch_done = (json.loads(summary_path.read_text()).get("epochs_run", 0)
                       if summary_path.exists() else 0)
-        steps_done = epoch_done * steps_per_epoch
+        steps_done = epoch_done * math.ceil(
+            math.ceil(n_train_rows / batch_size) / grad_accum)
+        steps_done_micro = epoch_done * math.ceil(n_train_rows / batch_size)
     opt_path = resume_dir / "optimizer.pt"
     if opt_path.exists():
         optimizer.load_state_dict(torch.load(opt_path, map_location=device))
@@ -471,8 +629,93 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
         else:
             stale += 1
     return {"start_epoch": epoch_done + 1, "steps_done": steps_done,
-            "events": events, "selected": selected, "best_val": best_val,
+            "steps_done_micro": steps_done_micro, "events": events,
+            "selected": selected, "best_val": best_val,
             "stale": stale, "temps": temps}
+
+
+def _scheduler_plan(n_rows: int, batch_size: int, grad_accum: int,
+                    epochs: int, warmup_frac: float) -> tuple[int, int]:
+    """Optimizer-step schedule plan -> (total_steps, warmup_steps).
+
+    The old code computed ``total_steps`` in MICRO-batch units
+    (ceil(n/batch) × epochs) while ``scheduler.step()`` fires once per
+    OPTIMIZER step — with grad-accum 8 the 6% warmup consumed ~48% of the
+    run and the LR never decayed (ended at ~0.93×peak). Effective training
+    was ~1 full-LR epoch. Both counts here are in optimizer steps.
+    """
+    micro_per_epoch = math.ceil(n_rows / batch_size)
+    opt_per_epoch = math.ceil(micro_per_epoch / grad_accum)
+    total = opt_per_epoch * epochs
+    warmup = max(1, int(total * warmup_frac))
+    return total, warmup
+
+
+def _apply_subclass_support_threshold(train_rows: list[dict],
+                                      val_rows: list[dict], maps: dict,
+                                      min_rows: int) -> tuple[list, list, dict, dict]:
+    """Drop/merge subclass classes with < ``min_rows`` train windows.
+
+    Data-side diagnosis (2026-09-20): contract/correspondence heads carry
+    3-doc classes and val cells of n=1 — macro-F1 there is coin-flip noise.
+    Classes below the support floor are remapped to the head's ``other``
+    class when one exists (the deployment's fail-open route), else dropped
+    from the head vocabulary entirely (their rows leave train AND val —
+    counted in the returned info for honesty). ``maps`` is rebuilt so the
+    checkpoint's labels.json reflects the reduced vocabulary and
+    train_counts.json stays the authentic-support source.
+    """
+    info: dict = {"remapped": {}, "dropped": {}, "dropped_val_rows": 0}
+    if min_rows <= 0:
+        return train_rows, val_rows, maps, info
+    for cls, cfg in list(maps.items()):
+        if cls == "doc_type":
+            continue
+        counts = Counter(r["subclass"] for r in train_rows
+                         if r["doc_type"] == cls)
+        low = sorted(s for s, c in counts.items() if c < min_rows)
+        if not low:
+            continue
+        low_set = set(low)
+        has_other = "other" in cfg["label2id"] and "other" not in low_set
+        for s in low:
+            if has_other:
+                info["remapped"].setdefault(cls, []).append(s)
+                for r in train_rows:
+                    if r["doc_type"] == cls and r["subclass"] == s:
+                        r["subclass"] = "other"
+                for r in val_rows:
+                    if r["doc_type"] == cls and r["subclass"] == s:
+                        r["subclass"] = "other"
+            else:
+                info["dropped"].setdefault(cls, []).append(s)
+                train_rows = [r for r in train_rows
+                              if not (r["doc_type"] == cls
+                                      and r["subclass"] == s)]
+                kept_val: list[dict] = []
+                for r in val_rows:
+                    if r["doc_type"] == cls and r["subclass"] == s:
+                        info["dropped_val_rows"] += 1
+                    else:
+                        kept_val.append(r)
+                val_rows = kept_val
+        keep = [lab for lab in cfg["labels"] if lab not in low_set]
+        if len(keep) == len(cfg["labels"]):
+            continue
+        new_cfg = {
+            "labels": keep,
+            "label2id": {lab: i for i, lab in enumerate(keep)},
+            "id2label": {str(i): lab for i, lab in enumerate(keep)},
+        }
+        new_counts = Counter(r["subclass"] for r in train_rows
+                             if r["doc_type"] == cls)
+        total = sum(new_counts.values())
+        new_cfg["weights"] = {
+            lab: (total / (len(keep) * new_counts[lab]) if new_counts[lab]
+                  else 1.0)
+            for lab in keep}
+        maps[cls] = new_cfg
+    return train_rows, val_rows, maps, info
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -508,28 +751,58 @@ def build_parser() -> argparse.ArgumentParser:
                     help="checkpoint bundle dir to resume from — continues "
                          "at the next epoch (optimizer/scheduler state when "
                          "present; else reconstructed from the counters)")
+    # ---- 2026-09-20 audit levers (loss rebalance + regularization) --------
+    ap.add_argument("--loss-lambda-dt", type=float, default=0.65,
+                    help="doc_type share of the blended loss; the old summed "
+                         "loss starved doc_type to 1/(1+n_heads) of the "
+                         "gradient (default 0.65)")
+    ap.add_argument("--label-smoothing", type=float, default=0.0,
+                    help="label smoothing on the doc_type head only "
+                         "(calibration lever; 0.05 recommended)")
+    ap.add_argument("--weight-mode", choices=["inverse", "sqrt-inverse",
+                                              "none"], default="inverse",
+                    help="class-weight transform: inverse (labels.json), "
+                         "sqrt-inverse (tames rare-class amplification), "
+                         "none (uniform)")
+    ap.add_argument("--weight-cap", type=float, default=10.0,
+                    help="clamp class weights to [1/cap, cap] after the "
+                         "mode transform")
+    ap.add_argument("--mlp-heads", action="store_true",
+                    help="use the ModernBERT classification recipe heads "
+                         "(hidden SiLU MLP + dropout) instead of linear")
+    ap.add_argument("--head-dropout", type=float, default=0.1,
+                    help="dropout inside MLP heads (--mlp-heads only)")
+    ap.add_argument("--freeze-backbone-epochs", type=int, default=0,
+                    help="freeze the backbone for the first N epochs "
+                         "(heads always train); unfreeze at epoch N+1")
+    ap.add_argument("--early-stop-patience", type=int, default=2,
+                    help="stop after this many epochs without val_loss "
+                         "improvement")
+    ap.add_argument("--weight-decay", type=float, default=0.01,
+                    help="AdamW weight decay")
+    ap.add_argument("--betas", default="0.9,0.999",
+                    help="AdamW betas (comma-separated)")
+    ap.add_argument("--eps", type=float, default=1e-8,
+                    help="AdamW epsilon")
+    ap.add_argument("--subclass-min-train-rows", type=int, default=0,
+                    help="drop/merge subclass classes with fewer train "
+                         "windows than this (remap to `other` when present, "
+                         "else drop the rows; 0 = off)")
     return ap
 
 
-def _fit_temperatures(model, val_rows, batch_size: int, heads, device) -> dict:
-    """Per-head temperature scaling on validation logits (plan §8)."""
+def _fit_temperatures_from_logits(logits_by_head: dict[str, list],
+                                  labels_by_head: dict[str, list]) -> dict:
+    """Per-head temperature scaling on validation logits (plan §8).
+
+    Fits from the logits already collected by ``evaluate`` — no second
+    forward pass. Heads with < 2 rows or < 2 unique labels stay at T = 1.0
+    (uncalibratable).
+    """
     temps: dict[str, float] = {}
-    val_logits: dict[str, list] = defaultdict(list)
-    val_labels: dict[str, list] = defaultdict(list)
-    with torch.no_grad():
-        for batch in make_batches(val_rows, batch_size, False, heads, device):
-            lg = model(batch["input_ids"], batch["attention_mask"])
-            for name, t in lg.items():
-                if name == "doc_type":
-                    val_logits[name].append(t.cpu())
-                    val_labels[name].append(batch["doc_type"].cpu())
-                else:
-                    sel = batch["doc_type"] == heads["doc_type"]["label2id"][name]
-                    val_logits[name].append(t[sel].cpu())
-                    val_labels[name].append(batch["subclass"][sel].cpu())
-    for name in val_logits:
-        lg = torch.cat(val_logits[name])
-        lab = torch.cat(val_labels[name])
+    for name in logits_by_head:
+        lg = torch.cat(logits_by_head[name])
+        lab = torch.cat(labels_by_head[name])
         if len(lab) < 2 or len(set(lab.tolist())) < 2:
             temps[name] = 1.0  # too few rows to fit T — leave uncalibrated
         else:
@@ -549,10 +822,12 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
         "epochs_requested": args.epochs,
         "training_wall_s": round(wall, 1),
         "checkpoint_selection": {
-            "rule": f"best val doc_type macro-F1 with doc_type ECE <= {ECE_BUDGET}",
+            "rule": ("best val doc_type macro-F1 (observed classes) with "
+                     f"CALIBRATED doc_type ECE <= {ECE_BUDGET}"),
             "epoch": selected["epoch"],
             "macro_f1": selected["macro_f1"],
             "ece": selected["ece"],
+            "ece_raw": selected.get("ece_raw"),
         },
         "epochs": events,
         "temperatures": {k: round(v, 3) for k, v in temps.items()},
@@ -610,30 +885,51 @@ def main() -> int:
     base = base.to(device)
 
     maps = json.loads(labels_path.read_text())
+
+    # rows load BEFORE the model: the subclass support threshold reshapes
+    # the head vocabularies (and the model's head sizes) from the data
+    raw_train = load_dataset(args.data, "train")
+    raw_val = load_dataset(args.data, "validation")
+    if args.limit:
+        raw_train = raw_train[:args.limit]
+        raw_val = raw_val[:max(1, args.limit // 4)]
+    raw_train, raw_val, maps, support_info = _apply_subclass_support_threshold(
+        raw_train, raw_val, maps, args.subclass_min_train_rows)
+    if support_info["remapped"] or support_info["dropped"]:
+        print(f"subclass support threshold ({args.subclass_min_train_rows}): "
+              f"remapped {support_info['remapped']} "
+              f"dropped {support_info['dropped']} "
+              f"(val rows dropped: {support_info['dropped_val_rows']})",
+              flush=True)
+
     head_sizes = {name: len(cfg["labels"]) for name, cfg in maps.items()}
-    model = HierarchicalClassifier(base, head_sizes).to(device)
+    model = HierarchicalClassifier(
+        base, head_sizes,
+        head_kind="mlp" if args.mlp_heads else "linear",
+        head_dropout=args.head_dropout).to(device)
 
     heads = {}
     for name, cfg in maps.items():
         heads[name] = {
             "label2id": cfg["label2id"],
-            "weight": class_weight_tensor(cfg["weights"], cfg["labels"], device),
+            "labels": cfg["labels"],
+            "weights": cfg["weights"],
         }
 
-    train_rows = tokenize_rows(load_dataset(args.data, "train"), tokenizer,
-                               args.max_length)
-    val_rows = tokenize_rows(load_dataset(args.data, "validation"), tokenizer,
-                             args.max_length)
-    if args.limit:
-        train_rows = train_rows[:args.limit]
-        val_rows = val_rows[:max(1, args.limit // 4)]
+    train_rows = tokenize_rows(raw_train, tokenizer, args.max_length)
+    val_rows = tokenize_rows(raw_val, tokenizer, args.max_length)
     print(f"windows: train {len(train_rows)} / validation {len(val_rows)}",
           flush=True)
 
-    n_steps = math.ceil(len(train_rows) / args.batch_size)
-    total_steps = n_steps * args.epochs
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    warmup = max(1, int(total_steps * args.warmup_frac))
+    # scheduler plan in OPTIMIZER steps (the old micro-batch units made the
+    # 6% warmup consume ~48% of the run and the LR never decayed)
+    total_steps, warmup = _scheduler_plan(len(train_rows), args.batch_size,
+                                          args.grad_accum, args.epochs,
+                                          args.warmup_frac)
+    betas = tuple(float(b) for b in args.betas.split(","))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
+                                  betas=betas, eps=args.eps,
+                                  weight_decay=args.weight_decay)
 
     def lr_lambda(step: int) -> float:
         if step < warmup:
@@ -642,6 +938,17 @@ def main() -> int:
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
+    if args.freeze_backbone_epochs > 0:
+        for p in model.backbone.parameters():
+            p.requires_grad = False
+        print(f"backbone frozen for the first {args.freeze_backbone_epochs} "
+              f"epoch(s); heads always train", flush=True)
+
+    loss_cfg = LossConfig(lambda_dt=args.loss_lambda_dt,
+                          label_smoothing=args.label_smoothing,
+                          weight_mode=args.weight_mode,
+                          weight_cap=args.weight_cap)
+
     best_val = float("inf")
     stale = 0
     events: list[dict] = []
@@ -649,60 +956,85 @@ def main() -> int:
     start_epoch = 1
     if args.resume:
         resume_state = _apply_resume(Path(args.resume), model, optimizer,
-                                     scheduler, device, n_steps)
+                                     scheduler, device, len(train_rows),
+                                     args.batch_size, args.grad_accum)
         start_epoch = resume_state["start_epoch"]
         steps_done = resume_state["steps_done"]
+        steps_done_micro = resume_state["steps_done_micro"]
         events = resume_state["events"]
         selected = resume_state["selected"]
         best_val = resume_state["best_val"]
         stale = resume_state["stale"]
         temps = resume_state["temps"]
         print(f"resumed from {args.resume}: continuing at epoch "
-              f"{start_epoch} (steps_done {steps_done}, "
+              f"{start_epoch} (opt-steps {steps_done}, "
               f"prior epochs {len(events)})", flush=True)
     t0 = time.time()
     if not args.resume:
         steps_done = 0
+        steps_done_micro = 0
         temps: dict[str, float] = {}
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     runs_dir = args.output.parent / "runs"
     for epoch in range(start_epoch, args.epochs + 1):
-        remaining = max(0, args.max_steps - steps_done) if args.max_steps else 0
-        loss, n = train_epoch(model, make_batches(train_rows, args.batch_size, True,
-                                                  heads, device),
-                              optimizer, scheduler, heads, device,
-                              args.grad_accum, step_limit=remaining,
-                              log_every=args.log_every)
-        steps_done += n
-        val = evaluate(model, make_batches(val_rows, args.batch_size, False,
-                                           heads, device), heads, maps, device)
-        # hardening seam: select the best val macro-F1 s.t. ECE is acceptable
-        # (the plan's deployment gate — recorded, not enforced as an exit)
-        if val["doc_type_macro_f1"] > selected["macro_f1"] \
-                and val["doc_type_ece"] <= ECE_BUDGET:
+        if args.freeze_backbone_epochs > 0 \
+                and epoch == args.freeze_backbone_epochs + 1:
+            for p in model.backbone.parameters():
+                p.requires_grad = True
+            print(f"backbone unfrozen at epoch {epoch}", flush=True)
+        remaining = max(0, args.max_steps - steps_done_micro) \
+            if args.max_steps else 0
+        loss, loss_endpoint, n_micro, n_opt = train_epoch(
+            model, make_batches(train_rows, args.batch_size, True,
+                                heads, device),
+            optimizer, scheduler, heads, device,
+            args.grad_accum, step_limit=remaining,
+            log_every=args.log_every, loss_cfg=loss_cfg)
+        steps_done += n_opt
+        steps_done_micro += n_micro
+        val, val_logits, val_labels = evaluate(
+            model, make_batches(val_rows, args.batch_size, False,
+                                heads, device), heads, maps, device,
+            loss_cfg)
+        # temperatures from the eval pass's logits (no second forward pass);
+        # the selection gate uses the CALIBRATED ECE — the old raw-T=1 gate
+        # was structurally unreachable for any overconfident head
+        temps = _fit_temperatures_from_logits(val_logits, val_labels)
+        val["doc_type_ece_calibrated"] = round(
+            ece_calibrated(torch.cat(val_logits["doc_type"]),
+                           torch.cat(val_labels["doc_type"]),
+                           temps["doc_type"]), 4)
+        # hardening seam: select the best val macro-F1 (observed classes)
+        # s.t. the CALIBRATED ECE is acceptable (recorded, not an exit)
+        if val["doc_type_macro_f1_observed"] > selected["macro_f1"] \
+                and val["doc_type_ece_calibrated"] <= ECE_BUDGET:
             selected = {"epoch": epoch,
-                        "macro_f1": val["doc_type_macro_f1"],
-                        "ece": val["doc_type_ece"]}
-        events.append({"epoch": epoch, "loss": round(loss, 4), **val})
+                        "macro_f1": val["doc_type_macro_f1_observed"],
+                        "ece": val["doc_type_ece_calibrated"],
+                        "ece_raw": val["doc_type_ece"]}
+        events.append({"epoch": epoch, "loss": round(loss, 4),
+                       "loss_endpoint": round(loss_endpoint, 4), **val})
         print(f"epoch {epoch}/{args.epochs} loss {loss:.4f} "
+              f"(endpoint {loss_endpoint:.4f}) "
               f"val_loss {val['val_loss']:.4f} "
               f"doc_type_acc {val['doc_type_window_acc']} "
               f"doc_acc {val['doc_type_doc_acc']} "
-              f"macro_f1 {val['doc_type_macro_f1']} "
-              f"ece {val['doc_type_ece']}", flush=True)
+              f"macro_f1 {val['doc_type_macro_f1_observed']} "
+              f"ece {val['doc_type_ece']} "
+              f"ece_cal {val['doc_type_ece_calibrated']}", flush=True)
         # per-epoch checkpoint: save + archive + volume commit so a kill or
         # timeout never loses more than the in-flight epoch (2026-09-19: a
         # cancelled run lost everything because the only save happened at
         # the very end). Temperatures are fitted per epoch so any epoch's
         # checkpoint is deployment-usable.
-        temps = _fit_temperatures(model, val_rows, args.batch_size, heads, device)
         print("temperatures:", {k: round(v, 3) for k, v in temps.items()},
               flush=True)
         save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
                         temps, _summary(run_id, args, device, events, selected,
                                         temps, time.time() - t0, epoch),
                         optimizer=optimizer, scheduler=scheduler,
-                        epoch=epoch, steps_done=steps_done)
+                        epoch=epoch, steps_done=steps_done,
+                        steps_done_micro=steps_done_micro)
         # smoke (--max-steps) never archives: the run is a cadence probe, not
         # a checkpoint family — keep runs/ for real epochs only.
         if not args.max_steps:
@@ -716,10 +1048,10 @@ def main() -> int:
             stale = 0
         else:
             stale += 1
-            if stale >= 2:
+            if stale >= args.early_stop_patience:
                 print(f"early stop at epoch {epoch}", flush=True)
                 break
-        if args.max_steps and steps_done >= args.max_steps:
+        if args.max_steps and steps_done_micro >= args.max_steps:
             print(f"max-steps reached ({args.max_steps}); smoke run complete",
                   flush=True)
             break
@@ -731,13 +1063,15 @@ def main() -> int:
                     temps, _summary(run_id, args, device, events, selected,
                                     temps, wall, len(events)),
                     optimizer=optimizer, scheduler=scheduler,
-                    epoch=len(events), steps_done=steps_done)
+                    epoch=len(events), steps_done=steps_done,
+                    steps_done_micro=steps_done_micro)
     print(f"checkpoint saved: {args.output}", flush=True)
     for p in sorted(args.output.iterdir()):
         print(f"  {p.name}", flush=True)
-    print(f"selection: best val macro-F1 s.t. ECE <= {ECE_BUDGET} -> "
-          f"epoch {selected['epoch']} (macro_f1 {selected['macro_f1']}, "
-          f"ece {selected['ece']})", flush=True)
+    print(f"selection: best val macro-F1 (observed) s.t. calibrated "
+          f"ECE <= {ECE_BUDGET} -> epoch {selected['epoch']} "
+          f"(macro_f1 {selected['macro_f1']}, ece {selected['ece']})",
+          flush=True)
     print(f"run summary: device={device} seed={args.seed} "
           f"epochs={len(events)} wall={wall:.1f}s data={args.data}",
           flush=True)

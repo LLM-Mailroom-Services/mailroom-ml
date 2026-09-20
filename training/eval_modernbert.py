@@ -39,7 +39,7 @@ if str(ROOT / "src") not in sys.path:
 
 from mailroom_ml.calibration import (  # noqa: E402
     apply_temperature,
-    ece,
+    ece_from_conf,
     ece_within_band,
     selective_risk_sweep,
 )
@@ -199,7 +199,10 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         },
         "window_calibration": {
             "n_windows": len(win_confs),
-            "ece": round(ece(np.asarray(win_confs), np.asarray(win_correct, dtype=int)), 4)
+            # confidence-space ECE: win_confs are already max-probabilities,
+            # not logits — ece() would softmax them a second time (AxisError)
+            "ece": round(ece_from_conf(
+                np.asarray(win_confs), np.asarray(win_correct, dtype=int)), 4)
             if win_confs else None,
             "band_ece": round(ece_within_band(
                 np.asarray(win_confs), np.asarray(win_correct, dtype=int)), 4)

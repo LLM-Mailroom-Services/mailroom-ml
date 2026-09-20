@@ -32,6 +32,7 @@ __all__ = [
     "apply_temperature",
     "softmax",
     "ece",
+    "ece_from_conf",
     "ece_within_band",
     "reliability_table",
     "selective_risk_sweep",
@@ -94,8 +95,24 @@ def ece(logits: np.ndarray, labels: np.ndarray, n_bins: int = _ECE_BANDS) -> flo
     """
     probs = softmax(logits)
     conf = probs.max(axis=1)
-    pred = probs.argmax(axis=1)
-    correct = (pred == labels).astype(np.float64)
+    correct = (probs.argmax(axis=1) == np.asarray(labels).astype(int)).astype(
+        np.float64)
+    return ece_from_conf(conf, correct, n_bins)
+
+
+def ece_from_conf(conf: np.ndarray, correct: np.ndarray,
+                  n_bins: int = _ECE_BANDS) -> float:
+    """ECE from already-computed (confidence, correctness) pairs.
+
+    The eval CLI measures window-level calibration from merged window
+    probabilities (no logits at hand) — feeding those confidences into
+    ``ece`` would softmax them a second time (an AxisError on 1-D input).
+    This is the confidence-space entry point; ``ece`` delegates to it.
+    """
+    conf = np.asarray(conf, dtype=np.float64)
+    correct = np.asarray(correct, dtype=np.float64)
+    if len(conf) == 0:
+        return 0.0
     bins = np.linspace(0.0, 1.0, n_bins + 1)
     total = 0.0
     n = len(conf)

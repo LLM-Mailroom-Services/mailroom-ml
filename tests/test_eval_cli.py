@@ -7,6 +7,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
+import pytest
+
+from mailroom_ml.calibration import ece, ece_from_conf
 from training.eval_modernbert import build_parser, stratified_sample
 
 
@@ -63,3 +67,20 @@ def test_stratified_sample_above_stratum_size_keeps_all():
     filenames = ["a", "b", "c"]
     strata = ["x"] * 3
     assert stratified_sample(filenames, strata, 100, seed=0) == filenames
+
+
+def test_ece_from_conf_matches_logit_ece():
+    """The eval CLI measures window calibration from merged probabilities —
+    ece_from_conf(conf, correct) must agree with ece() on the logits that
+    produced them (the old path softmaxed confidences a second time and
+    crashed with an AxisError on every real run)."""
+    rng = np.random.RandomState(7)
+    logits = rng.normal(size=(400, 5))
+    labels = rng.randint(0, 5, size=400)
+    probs = np.exp(logits - logits.max(axis=1, keepdims=True))
+    probs /= probs.sum(axis=1, keepdims=True)
+    conf = probs.max(axis=1)
+    correct = (probs.argmax(axis=1) == labels).astype(int)
+    assert ece_from_conf(conf, correct) == pytest.approx(ece(logits, labels))
+    # 1-D input must not crash (regression: the eval CLI's exact call shape)
+    assert 0.0 <= ece_from_conf(conf, correct) <= 1.0

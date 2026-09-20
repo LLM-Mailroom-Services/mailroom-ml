@@ -169,10 +169,11 @@ def tokenize_rows(rows: list[dict], tokenizer, max_length: int) -> list[dict]:
     } for i, r in enumerate(rows)]
 
 
-def class_weight_tensor(weights: dict[str, float], labels: list[str],
-                        device) -> torch.Tensor:
-    return torch.tensor([weights.get(label, 1.0) for label in labels],
-                        dtype=torch.float32, device=device)
+def _pad_right(t: torch.Tensor, target_len: int) -> torch.Tensor:
+    """Right-pad a 1-D tensor with zeros to ``target_len`` (no-op when at or
+    over length). Used for dynamic-padding batches; pads are masked out by
+    the attention mask, so the embedding of token 0 never contributes."""
+    return F.pad(t, (0, max(0, target_len - t.shape[0])))
 
 
 @dataclass
@@ -273,39 +274,6 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
                                       for r in sel], device=device),
             "filename": [r["filename"] for r in sel],
         }
-
-
-def head_loss(model, batch, heads, device,
-              cfg: LossConfig | None = None) -> tuple[torch.Tensor, dict]:
-    """doc_type CE on every row + subclass CE on each class's own rows.
-
-    Subclass heads are taken from the ``heads`` config (built from
-    ``labels.json`` — the data-driven single source of truth), so each class
-    head contributes only through its own rows: 0 contribution elsewhere.
-    """
-    cfg = cfg or LossConfig()
-    logits = model(batch["input_ids"], batch["attention_mask"])
-    dt_ce = F.cross_entropy(
-        logits["doc_type"], batch["doc_type"],
-        weight=cfg.transform_weights(heads["doc_type"]["weights"],
-                                     heads["doc_type"]["labels"]),
-        label_smoothing=cfg.label_smoothing)
-    sc_ces: list[torch.Tensor] = []
-    for cls in heads:
-        if cls == "doc_type":
-            continue
-        sel = batch["doc_type"] == heads["doc_type"]["label2id"][cls]
-        if sel.any():
-            sc_ces.append(F.cross_entropy(
-                logits[cls][sel], batch["subclass"][sel],
-                weight=cfg.transform_weights(heads[cls]["weights"],
-                                             heads[cls]["labels"])))
-    if sc_ces:
-        loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
-            sc_ces).mean()
-    else:
-        loss = dt_ce
-    return loss, logits
 
 
 def train_epoch(model, batches, optimizer, scheduler, heads, device,

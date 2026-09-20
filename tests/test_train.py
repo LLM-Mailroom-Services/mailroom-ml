@@ -164,7 +164,7 @@ def test_resume_state_roundtrip(tmp_path):
     model2 = _tiny_model()
     opt2, sched2 = _tiny_optim_sched(model2)
     state = _apply_resume(out, model2, opt2, sched2, torch.device("cpu"),
-                          steps_per_epoch=5)
+                          n_train_rows=20, batch_size=4, grad_accum=2)
     assert state["start_epoch"] == 2
     assert state["steps_done"] == 10
     # model weights restored from heads.pt
@@ -351,7 +351,17 @@ def test_train_epoch_flushes_stale_gradients():
     """10 micro-batches at grad-accum 4 -> 2 full steps + 1 flush step;
     the trailing accumulation is optimized, not leaked into the next epoch."""
     device = torch.device("cpu")
-    model = nn.Linear(4, 2)
+
+    class _Tiny2Arg(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.lin = nn.Linear(4, 2)
+
+        def forward(self, input_ids, attention_mask):
+            z = self.lin(input_ids.float())
+            return {"doc_type": z, "a": z[:, :1]}
+
+    model = _Tiny2Arg()
     opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
     sched = torch.optim.lr_scheduler.LambdaLR(opt, lambda s: 1.0)
     steps = []
@@ -372,13 +382,13 @@ def test_train_epoch_flushes_stale_gradients():
 
     spy = _SpyOpt(opt)
     heads = {
-        "doc_type": {"label2id": {"a": 0}, "labels": ["a"],
-                     "weights": {"a": 1.0}},
+        "doc_type": {"label2id": {"a": 0, "b": 1}, "labels": ["a", "b"],
+                     "weights": {"a": 1.0, "b": 1.0}},
         "a": {"label2id": {"a": 0}, "labels": ["a"],
               "weights": {"a": 1.0}},
     }
-    rows = [{"input_ids": torch.zeros(1, 4, dtype=torch.long),
-             "attention_mask": torch.ones(1, 4, dtype=torch.long),
+    rows = [{"input_ids": torch.zeros(4, dtype=torch.long),
+             "attention_mask": torch.ones(4, dtype=torch.long),
              "doc_type": "a", "subclass": "a", "filename": f"f{i}.txt"}
             for i in range(10)]
     batches = list(make_batches(rows, 1, False, heads, device))
@@ -392,8 +402,6 @@ def test_train_epoch_flushes_stale_gradients():
 
 def test_mlp_heads_forward_shape():
     """--mlp-heads builds the ModernBERT recipe heads (SiLU MLP + dropout)."""
-    base = nn.Linear(8, 8)  # stand-in backbone with hidden_size=8
-
     class _FakeBackbone(nn.Module):
         config = type("C", (), {"hidden_size": 8})()
 
@@ -441,13 +449,18 @@ def test_subclass_support_threshold_remaps_and_drops():
     train = [
         {"doc_type": "contract", "subclass": "service", "filename": "a"},
         {"doc_type": "contract", "subclass": "service", "filename": "b"},
-        {"doc_type": "contract", "subclass": "license", "filename": "c"},
-        {"doc_type": "contract", "subclass": "license", "filename": "d"},
+        {"doc_type": "contract", "subclass": "service", "filename": "c"},
+        {"doc_type": "contract", "subclass": "service", "filename": "d"},
         {"doc_type": "contract", "subclass": "license", "filename": "e"},
-        {"doc_type": "contract", "subclass": "rare", "filename": "f"},
-        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "g"},
-        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "h"},
-        {"doc_type": "insurance_claim", "subclass": "tiny", "filename": "i"},
+        {"doc_type": "contract", "subclass": "license", "filename": "f"},
+        {"doc_type": "contract", "subclass": "license", "filename": "g"},
+        {"doc_type": "contract", "subclass": "license", "filename": "h"},
+        {"doc_type": "contract", "subclass": "rare", "filename": "i"},
+        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "j"},
+        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "k"},
+        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "l"},
+        {"doc_type": "insurance_claim", "subclass": "auto", "filename": "m"},
+        {"doc_type": "insurance_claim", "subclass": "tiny", "filename": "n"},
     ]
     val = [
         {"doc_type": "contract", "subclass": "rare", "filename": "v1"},
@@ -475,7 +488,7 @@ def test_subclass_support_threshold_remaps_and_drops():
     assert info["dropped"] == {"insurance_claim": ["tiny"]}
     assert info["dropped_val_rows"] == 1
     assert all(r["subclass"] == "other" for r in tr
-               if r["doc_type"] == "contract" and r["filename"] == "f")
+               if r["doc_type"] == "contract" and r["filename"] == "i")
     assert all(r["doc_type"] != "insurance_claim" or r["subclass"] != "tiny"
                for r in tr)
     assert all(r["doc_type"] != "insurance_claim" or r["subclass"] != "tiny"

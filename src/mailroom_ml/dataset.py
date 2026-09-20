@@ -334,9 +334,12 @@ def filename_leak_audit(df: pd.DataFrame) -> dict[str, Any]:
     sub = df["subclass"].astype(str)
 
     title_eq_fn = title == fn
-    # a title that still looks like a stored filename (extension / EDGAR id)
+    # a title that still looks like a stored filename: an extension AND no
+    # whitespace (a real subject line may end in ".DOC" — e.g. "Memorandum for
+    # ISDA U.S.Netting Legislation.DOC" — so require the no-space shape).
     title_looks_fn = title.str.contains(
-        r"\.(htm|html|txt|pdf|docx?|xml)$", case=False, regex=True)
+        r"\.(?:htm|html|txt|pdf|docx?|xml)$", case=False, regex=True
+    ) & ~title.str.contains(" ", regex=False)
     title_has_dt = [
         bool(_fold(d)) and _fold(d) in _fold(t) for t, d in zip(title, dt)
     ]
@@ -600,8 +603,7 @@ def verify_stage(stage_dir: Path) -> dict:
     if not leak["clean"]:
         problems.append(
             f"label leak: {leak['title_eq_filename']} rows title==filename, "
-            f"{leak['title_contains_doc_type']} titles contain doc_type, "
-            f"{leak['title_contains_subclass']} titles contain subclass")
+            f"{leak['title_looks_like_filename']} titles look like filenames")
     return {"ok": not problems, "problems": problems,
             "rows": int(len(docs)),
             "splits": docs["split"].value_counts().to_dict(),

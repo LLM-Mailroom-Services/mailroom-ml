@@ -59,7 +59,18 @@ split_rule       : corpus train -> 90/10 stratified train/validation (by doc_typ
 subclass_norm    : llm-dojo-scoring normalize_corpus_subclass (DMR-066),
                     vendored in mailroom_ml/labels.py (Service/service,
                     Co_Branding/co_branding, Joint Venture _ Filing -> joint_venture)
-title_rule       : subject -> exhibit_description -> filename (title-wins)
+text_clerk       : llm-dojo-scoring deterministic_normalize (DMR-066),
+                    vendored in mailroom_ml/normalize.py — the SAME clerk
+                    llm-mailroom apply_intake runs before the classifier, so
+                    training input is byte-representative of inference input
+                    (NFC, newline unify, NBSP, zero-width, C0 controls, hyphen
+                    unwrap, blank-run collapse, horizontal collapse, trim)
+title_rule       : subject -> exhibit_description -> EMPTY (semantic-only;
+                    the filename fallback was removed 2026-09-20 — it leaked
+                    the label: 42.8% of filenames carried the subclass token,
+                    65.9% of rows had title==filename)
+leak_audit       : title==filename 0, filename-shaped titles 0 (gate in
+                    mailroom_ml.dataset.filename_leak_audit + verify_stage)
 heads            : doc_type (5 + unknown) + per-class subclass heads
                     ({", ".join(f"{k}: {len(v['labels'])}" for k, v in maps.items())})
 builder          : mailroom_ml.dataset.stage @ mailroom-ml

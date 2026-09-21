@@ -357,6 +357,78 @@ def test_unmapped_subclass_routes_llm_never_force_fits():
 
 
 # ---------------------------------------------------------------------------
+# #103 catch-all guard + support-gate fixture matrix
+# ---------------------------------------------------------------------------
+
+CONTRACT_LABELS = ["service", "license", "transportation",
+                   "non_compete_no_solicit", "attorney_demand",
+                   "mixed_cash_stock_election", "other"]
+# Verified counts from the live bundle's train_counts.json (#103 origin)
+CONTRACT_SUPPORT = {
+    "transportation": 0, "non_compete_no_solicit": 2, "attorney_demand": 2,
+    "mixed_cash_stock_election": 13, "other": 5, "service": 40,
+    "license": 30,
+}
+
+
+def _contract_bundle(subclass: str, support: dict[str, int]):
+    """Contract-doc stub bundle whose subclass head votes ``subclass``."""
+    dt = [10.0, 0.0, 0.0, 0.0, 0.0, -6.0]  # contract wins
+    sc = [0.0] * len(CONTRACT_LABELS)
+    sc[CONTRACT_LABELS.index(subclass)] = 10.0
+    maps = {
+        "doc_type": HEADS["doc_type"],
+        "contract": {
+            "labels": CONTRACT_LABELS,
+            "label2id": {k: i for i, k in enumerate(CONTRACT_LABELS)},
+            "id2label": {str(i): k for i, k in enumerate(CONTRACT_LABELS)},
+        },
+    }
+    return _stub_bundle(
+        lambda ids, mask: _logits_like(
+            "x", {"doc_type": dt, "contract": sc}, 1),
+        maps=maps, support={"contract": support})
+
+
+@pytest.mark.parametrize("subclass, support, expected_route, reason", [
+    # zero-row label in the head -> support gate routes LLM (#103 pin)
+    ("transportation", CONTRACT_SUPPORT, "llm", "insufficient_support"),
+    # sub-floor labels (2 < ROUTE_MIN_AUTHENTIC_SUPPORT=5) -> LLM
+    ("non_compete_no_solicit", CONTRACT_SUPPORT, "llm", "insufficient_support"),
+    ("attorney_demand", CONTRACT_SUPPORT, "llm", "insufficient_support"),
+    # at/above floor + thresholds clear -> fast path
+    ("mixed_cash_stock_election", CONTRACT_SUPPORT, "fast_path", "fast_path"),
+    # catch-all at the tier floor (5) -> hard-excluded regardless of support
+    ("other", CONTRACT_SUPPORT, "llm", "catchall_label"),
+])
+def test_support_gate_fixture_matrix(subclass, support, expected_route, reason):
+    """#103: the support-gate + catch-all fixture matrix from the live
+    bundle's verified counts — a future head/vocab change cannot silently
+    flip any of these routes."""
+    b = _contract_bundle(subclass, support)
+    res = classify_document(b, "T", "body", window_texts=["w"])
+    assert res["doc_type"] == "contract"
+    assert res["subclass"] == subclass
+    assert res["route"] == expected_route
+    assert res["reason"] == reason
+    if reason == "insufficient_support":
+        assert any("authentic support" in f for f in res["guard_failures"])
+    if reason == "catchall_label":
+        assert any(f"catchall_label:contract/{subclass}" in f
+                   for f in res["guard_failures"])
+
+
+def test_catchall_excluded_even_with_high_support():
+    """#103: `other` with support far above the floor still never fast-paths
+    — the catch-all exclusion is support-independent."""
+    b = _contract_bundle("other", {"other": 500})
+    res = classify_document(b, "T", "body", window_texts=["w"])
+    assert res["route"] == "llm"
+    assert res["reason"] == "catchall_label"
+    assert "catchall_label:contract/other" in res["guard_failures"]
+
+
+# ---------------------------------------------------------------------------
 # Model loading — resolution + clean failures
 # ---------------------------------------------------------------------------
 

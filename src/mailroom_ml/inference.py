@@ -37,6 +37,7 @@ from mailroom_ml.config import (
     ABSTAIN_UNKNOWN_CLASS,
     ARTIFACTS_DIR,
     BERT_INTAKE_MAX_CHARS,
+    CATCH_ALL_LABELS,
     GATE_REQUIRED_AGREEMENT,
     MAX_TOKENS,
     ROUTE_DOC_CONFIDENCE,
@@ -642,6 +643,17 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
                 f"subclass_unmapped:{dt}/{sub} (head has no `other`)")
             return result
         sub = projected
+
+        # #103 catch-all guard: a prediction on a catch-all token (e.g.
+        # `other`) is a "couldn't express it" signal — it fails the fast
+        # path REGARDLESS of authentic support (corporate_record.other = 5
+        # at the tier floor still routes LLM).  Checked before the support
+        # gate: catch-all is the stronger claim.
+        if sub in CATCH_ALL_LABELS:
+            result["reason"] = "catchall_label"
+            result["route"] = "llm"
+            result["guard_failures"].append(f"catchall_label:{dt}/{sub}")
+            return result
 
         # authentic support gate: support counts from the bundle sidecar
         counts = bundle.support_counts.get(dt, {})

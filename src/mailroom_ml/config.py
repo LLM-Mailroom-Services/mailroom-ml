@@ -130,6 +130,13 @@ FAST_PATH_ERROR_BUDGET = 0.02      # selective-risk target: P(err | fast path)
 SELECTIVE_RISK_MIN_N = 30
 HEAD_ECE_EXCLUSION_THRESHOLD = 0.10
 
+# #103 fast-path guard: catch-all tokens are heterogeneous by construction —
+# a prediction landing on one is a "couldn't express it" signal, never a
+# trustworthy label.  Any predicted subclass in this set fails the fast
+# path REGARDLESS of authentic support (corporate_record.other = 5 at the
+# tier floor still routes LLM; insurance_claim has no `other` head at all).
+CATCH_ALL_LABELS: tuple[str, ...] = ("other",)
+
 # Abstention / unknown + OOD gate (novelty flag from OOD probe, Phase 2).
 ABSTAIN_UNKNOWN_CLASS = "unknown"
 

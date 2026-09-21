@@ -47,13 +47,23 @@ _T_MAX = 10.0
 
 
 def softmax(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-    """Row-wise softmax with optional temperature (stable, log-space)."""
+    """Row-wise softmax with optional temperature (stable, log-space).
+
+    Accepts 2-D (batch) or 1-D (single row) input — the eval harness feeds
+    per-window probability rows through ``apply_temperature`` one at a time
+    (#104 regression: 1-D input crashed with an AxisError on every run).
+    """
     if temperature <= 0:
         raise ValueError(f"temperature must be > 0, got {temperature}")
-    z = logits / temperature
+    arr = np.asarray(logits, dtype=np.float64)
+    single = arr.ndim == 1
+    if single:
+        arr = arr.reshape(1, -1)
+    z = arr / temperature
     z = z - z.max(axis=1, keepdims=True)
     e = np.exp(z)
-    return e / e.sum(axis=1, keepdims=True)
+    out = e / e.sum(axis=1, keepdims=True)
+    return out[0] if single else out
 
 
 def fit_temperature(logits: np.ndarray, labels: np.ndarray) -> float:

@@ -234,12 +234,25 @@ def _onnx_session(model_dir: Path) -> tuple[str, Any]:
 def _pytorch_predict(model: Any, heads: dict[str, Any], device: Any):
     """Bind a PyTorch checkpoint to the predict_fn contract.
 
-    ``model`` is the backbone (``AutoModel``), ``heads`` the per-head
-    ``nn.Linear`` state (from ``heads.pt``); the forward replicates the
-    trainer: first-token pooling (ModernBERT has no pooler) + per-head
-    linear logits.
+    ``model`` is the backbone (``AutoModel``), ``heads`` the per-head state
+    (from ``heads.pt``); the forward replicates the trainer: first-token
+    pooling (ModernBERT has no pooler) + per-head logits.  Heads are
+    reconstructed from their state dict shape — single ``nn.Linear``
+    (``weight``/``bias`` keys) or the MLP recipe (``0.*``/``3.*`` keys:
+    Linear, SiLU, Dropout, Linear — train_modernbert.HierarchicalClassifier
+    with ``--mlp-heads``; run-2 artifacts are MLP).
     """
     import torch
+
+    def _head(state: dict, hidden: int):
+        if any(k.startswith("0.") for k in state):
+            return torch.nn.Sequential(
+                torch.nn.Linear(hidden, hidden),
+                torch.nn.SiLU(),
+                torch.nn.Dropout(0.0),
+                torch.nn.Linear(hidden, state["3.weight"].shape[0]),
+            )
+        return torch.nn.Linear(hidden, state["weight"].shape[0])
 
     def predict(input_ids: np.ndarray, attention_mask: np.ndarray):
         ids = torch.as_tensor(input_ids, device=device)
@@ -248,8 +261,14 @@ def _pytorch_predict(model: Any, heads: dict[str, Any], device: Any):
             out = model(input_ids=ids, attention_mask=mask)
             pooled = out.last_hidden_state[:, 0].float()
             return {name: head(pooled).cpu().numpy()
-                    for name, head in heads.items()}
+                    for name, head in head_modules.items()}
 
+    hidden = model.config.hidden_size
+    head_modules: dict[str, Any] = {}
+    for name, state in heads.items():
+        lin = _head(state, hidden).to(device)
+        lin.load_state_dict(state)
+        head_modules[name] = lin
     return predict
 
 

@@ -363,3 +363,33 @@ def test_onnx_parity_executes_or_skips() -> None:
         pytest.skip("artifacts not exported — run deploy/onnx_export.py first")
     result = parity.run_parity(pytorch_dir, onnx_dir, tolerance=1e-4)
     assert result["pass"] is True
+
+
+def test_head_from_state_reconstructs_linear_and_mlp() -> None:
+    """#101: heads.pt is self-describing — single-Linear heads (``weight``/
+    ``bias``) and MLP heads (``0.*``/``3.*``: Linear, SiLU, Dropout, Linear —
+    the run-2 ``--mlp-heads`` artifacts) must both reconstruct and load."""
+    torch = pytest.importorskip("torch")
+    import torch.nn as nn
+
+    from deploy.onnx_export import _head_from_state
+
+    hidden = 8
+    linear_state = {"weight": torch.randn(3, hidden), "bias": torch.randn(3)}
+    lin = _head_from_state(linear_state, hidden)
+    assert isinstance(lin, nn.Linear)
+    assert lin.out_features == 3
+    lin.load_state_dict(linear_state)
+
+    mlp_state = {
+        "0.weight": torch.randn(hidden, hidden), "0.bias": torch.randn(hidden),
+        "3.weight": torch.randn(4, hidden), "3.bias": torch.randn(4),
+    }
+    mlp = _head_from_state(mlp_state, hidden)
+    assert isinstance(mlp, nn.Sequential)
+    assert len(mlp) == 4  # Linear, SiLU, Dropout, Linear
+    assert mlp[-1].out_features == 4
+    mlp.load_state_dict(mlp_state)
+    # eval-mode forward: dropout is identity, output shape is the head's
+    x = torch.randn(2, hidden)
+    assert mlp(x).shape == (2, 4)

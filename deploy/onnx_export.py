@@ -98,6 +98,27 @@ class HierarchicalClassifier(nn.Module):
         return {name: head(pooled) for name, head in self.heads.items()}
 
 
+def _head_from_state(state: dict, hidden: int) -> nn.Module:
+    """Reconstruct a head module from its state dict (linear vs MLP).
+
+    The trainer's ``head_kind`` is not recorded in the bundle, but the
+    state dict is self-describing: single-Linear heads save ``weight``/
+    ``bias``; MLP heads (``--mlp-heads``, the ModernBERT recipe) save
+    ``0.weight``/``0.bias``/``3.weight``/``3.bias`` (Sequential: Linear,
+    SiLU, Dropout, Linear — train_modernbert.HierarchicalClassifier).
+    Dropout has no parameters; eval-mode it is identity, so the
+    reconstruction uses 0.0.
+    """
+    if any(k.startswith("0.") for k in state):
+        return nn.Sequential(
+            nn.Linear(hidden, hidden),
+            nn.SiLU(),
+            nn.Dropout(0.0),
+            nn.Linear(hidden, state["3.weight"].shape[0]),
+        )
+    return nn.Linear(hidden, state["weight"].shape[0], bias=True)
+
+
 def build_reference_model(pytorch_dir: Path):
     """Load the trainer output and rebuild the trained model (fp32, eval mode).
 
@@ -110,15 +131,15 @@ def build_reference_model(pytorch_dir: Path):
 
     base = AutoModel.from_pretrained(pytorch_dir, torch_dtype=torch.float32)
     model = HierarchicalClassifier(base, head_sizes)
-    # heads.pt is saved by the trainer (cf096fa pattern) as a nested dict
-    # {"<head>": {"weight": …, "bias": …}} — flatten to ModuleDict keys.
+    # heads.pt is saved by the trainer as {"<head>": <head state dict>} —
+    # linear or MLP depending on --mlp-heads; rebuild each head from its
+    # own state dict shape (2026-09-21: run-2 artifacts use MLP heads).
     heads_state = torch.load(pytorch_dir / "heads.pt", map_location="cpu",
                              weights_only=True)
-    model.heads.load_state_dict({
-        f"{head}.{param}": tensor
-        for head, params in heads_state.items()
-        for param, tensor in params.items()
-    })
+    for name, state in heads_state.items():
+        head = _head_from_state(state, base.config.hidden_size)
+        head.load_state_dict(state)
+        model.heads[name] = head
     model.eval()
     return model, maps
 

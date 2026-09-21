@@ -210,6 +210,32 @@ def test_resume_without_optimizer_state(tmp_path):
     assert state["selected"]["epoch"] == 1
     assert sched.last_epoch == 3             # scheduler stepped into position
     assert len(state["events"]) == 1
+    # provenance carry: this legacy bundle has no run_id/wall -> safe defaults
+    assert state["run_id"] is None
+    assert state["prior_wall_s"] == 0.0
+
+
+def test_resume_carries_original_run_identity(tmp_path):
+    """Provenance: an eval-only / continued resume keeps the ORIGINAL run's
+    run_id + accumulated wall so the artifact summary is not rewritten as a
+    fresh zero-second run (2026-09-20 recovery wrinkle)."""
+    out = tmp_path / "ckpt"
+    out.mkdir()
+    torch.save({"doc_type": nn.Linear(4, 2).state_dict()}, out / "heads.pt")
+    (out / "summary.json").write_text(json.dumps({
+        "run_id": "20260920-173810",
+        "training_wall_s": 22600.0,
+        "epochs_run": 2,
+        "epochs": [{"epoch": 1, "loss": 2.0, "val_loss": 1.5},
+                   {"epoch": 2, "loss": 1.0, "val_loss": 1.0}],
+        "checkpoint_selection": {"epoch": 2, "macro_f1": 0.9, "ece": 0.02},
+    }))
+    model = _tiny_model()
+    opt, sched = _tiny_optim_sched(model)
+    state = _apply_resume(out, model, opt, sched, torch.device("cpu"),
+                          n_train_rows=20, batch_size=4, grad_accum=2)
+    assert state["run_id"] == "20260920-173810"
+    assert state["prior_wall_s"] == 22600.0
 
 
 # -- metric math --------------------------------------------------------------

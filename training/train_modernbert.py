@@ -604,6 +604,8 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
     events: list[dict] = []
     selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None}
     temps: dict[str, float] = {}
+    prior_run_id: str | None = None
+    prior_wall_s = 0.0
     summary_path = resume_dir / "summary.json"
     if summary_path.exists():
         sj = json.loads(summary_path.read_text())
@@ -612,6 +614,11 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
         if sel.get("epoch"):
             selected = sel
         temps = sj.get("temperatures", {})
+        # provenance: the resumed epochs belong to the ORIGINAL run — carry its
+        # identity + accumulated wall so an eval-only resume does not rewrite
+        # the artifact's summary as a fresh zero-second run.
+        prior_run_id = sj.get("run_id")
+        prior_wall_s = float(sj.get("training_wall_s") or 0.0)
     best_val = float("inf")
     stale = 0
     for e in events:
@@ -623,7 +630,8 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
     return {"start_epoch": epoch_done + 1, "steps_done": steps_done,
             "steps_done_micro": steps_done_micro, "events": events,
             "selected": selected, "best_val": best_val,
-            "stale": stale, "temps": temps}
+            "stale": stale, "temps": temps,
+            "run_id": prior_run_id, "prior_wall_s": prior_wall_s}
 
 
 def _scheduler_plan(n_rows: int, batch_size: int, grad_accum: int,
@@ -1022,6 +1030,10 @@ def main() -> int:
         steps_done_micro = 0
         temps: dict[str, float] = {}
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    if args.resume and resume_state.get("run_id"):
+        # provenance: a resumed run keeps the ORIGINAL training run's identity
+        # (its epochs are that run's; an eval-only resume must not rewrite it)
+        run_id = resume_state["run_id"]
     runs_dir = args.output.parent / "runs"
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_t0 = time.time()
@@ -1109,6 +1121,8 @@ def main() -> int:
                   flush=True)
             break
     wall = time.time() - t0
+    if args.resume:
+        wall += resume_state.get("prior_wall_s", 0.0)
     print(f"training wall: {wall:.1f}s", flush=True)
 
     # held-out test eval BEFORE the final save so the metrics land in the

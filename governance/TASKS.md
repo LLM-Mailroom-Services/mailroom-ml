@@ -42,16 +42,34 @@ window-acc 0.13 vs chance 0.038, macro-F1 0.0395 ≈ chance).
 
 | Card | Owner | Status | Evidence |
 | --- | --- | --- | --- |
-| M9a-U0 mission plan + board claim | orchestrator | 🔄 in flight | this card |
-| M9a-U1 root-cause verdict (loss seam) | code-analyst | ⏳ dispatched | — |
-| M9a-U2 data/taxonomy QA (normalization, support floor) | athena | ⏳ dispatched | — |
-| M9a-U3 corpus EDA + separability + augmentation eligibility | lucius | ⏳ dispatched | — |
-| M9a-U4 eval-harness gap: per-head test macro-F1 | orchestrator/lucius | ⏳ pending | gate unmeasurable without it |
-| M9a-U5 dictionary/definitional scope (label cards, contrastive synthesis) | prompt-engineer | ⏳ pending | upstream RFC gate |
-| M9a-U6 two-arm L4 run (Arm A weighting / Arm B granularity) | modal-specialist + lucius | ⏳ pending | blocked on U4 |
-| M9a-U7 test audit (pin new loss/harness behavior) | test-suite-auditor | ⏳ pending | — |
+| M9a-U0 mission plan + board claim | orchestrator | ✅ done | this card; issue #112 comment |
+| M9a-U1 root-cause verdict (loss seam) | code-analyst | ✅ done | majority-prior collapse confirmed; insurance=head control; selection gate was doc_type-only |
+| M9a-U2 data/taxonomy QA (normalization, support floor) | athena | ✅ done | **dictionaries scope-complete + drift-free (0.00% fallthrough, 0 drift keys); prefix matcher safe** |
+| M9a-U3 corpus EDA + separability + augmentation eligibility | general (lucius protocol) | ✅ done | **lexical NB: contract macro-F1 0.529 / correspondence 0.485 vs model 0.0395/0.0845 → loss-side first** |
+| M9a-U4 eval-harness gap + selection gate | general | ✅ done | commit `1718358`; run-3 archive now selects epoch 2 |
+| M9a-U7 test audit | test-suite-auditor | ✅ done | commit 1718358 was 100% unpinned; gap list (10) delivered |
+| M9a-U7b pin selection + per_head | general | ✅ done | commit `1081a6e`; 233 passed / 3 skipped; revert now fails a test |
+| M9a-U5 dictionary/definitional scope (label cards, contrastive synthesis) | prompt-engineer | ⏳ pending | upstream RFC gate; CUAD unwired, Enron Tier-1 unbalanced |
+| M9a-U6 two-arm L4 run | modal-specialist + lucius | ⛔ **BLOCKED — budget** | smoke GREEN; est. $7.79/arm vs $4.32 ceiling; **no spend** |
 | M9a-U8 board evidence audit | board-evidence-auditor | ⏳ pending | — |
 | M9a-U9 docs/board close | atom | ⏳ pending | — |
+
+### U6 run configuration (pre-registered, smoke-validated)
+
+Arms: run-3 config except — **A**: `--weight-mode inverse --weight-cap 20
+--loss-lambda-dt 0.5`; **B**: `--weight-mode inverse --weight-cap 20
+--loss-lambda-dt 0.65`. Both `--epochs 4`, `--select-on-subclass` (default
+on). App `ap-KVX4EVKG4MI2XJ71r6Hkow` redeployed from the working tree
+(commit 1718358 confirmed live via the smoke's lexicographic-rule line).
+
+**`needs_attention` — M9a-U6 budget decision (human call).** Smoke-measured
+6.0 s/step → **$7.79 per 4-epoch arm; both arms ≈ $15.58**, vs the guard
+ceiling `$4.32` (~4.4 L4-h) and the plan's stated 1–2 L4-h one-time.
+Run-3 was 2 epochs / $4.11. `modal-specialist` correctly refused to `--force`
+past a stated money ceiling. Options: (a) both arms 4 ep ≈ $15.6;
+(b) one arm first (B — the pure weighting isolate) 4 ep ≈ $7.8; (c) both
+arms 2 ep ≈ $8.2; (d) one arm 2 ep $4.11 (fits today's ceiling).
+Awaiting operator call before any spend.
 
 **Hard governance gate:** canonical subclass surfaces are sanctioned by
 mailroom-issues #66/#67/#68 + the dojo taxonomy source. mailroom-ml CONSUMES

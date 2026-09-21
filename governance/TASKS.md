@@ -42,8 +42,8 @@ Diagnosis (evidence-backed, this session): the subclass heads exhibit
 **majority-class collapse**, not capacity failure. `insurance_claim` — the
 only near-balanced head (6 classes) — reaches macro-F1 0.77 / window-acc
 0.87; every imbalanced head collapses (`correspondence` window-acc 0.51 ≈
-email share 0.57, macro-F1 0.0845 ≈ the collapse floor; `contract`
-window-acc 0.13 vs chance 0.038, macro-F1 0.0395 ≈ chance).
+email share 0.57 train / 0.511 val, macro-F1 0.0845 ≈ the collapse floor;
+`contract` window-acc 0.13 vs chance 1/26 = 0.038, macro-F1 0.0395 ≈ chance).
 
 | Card | Owner | Status | Evidence |
 | --- | --- | --- | --- |
@@ -54,27 +54,29 @@ window-acc 0.13 vs chance 0.038, macro-F1 0.0395 ≈ chance).
 | M9a-U4 eval-harness gap + selection gate | general | ✅ done | commit `1718358`; run-3 archive now selects epoch 2 |
 | M9a-U7 test audit | test-suite-auditor | ✅ done | commit 1718358 was 100% unpinned; gap list (10) delivered |
 | M9a-U7b pin selection + per_head | general | ✅ done | commit `1081a6e`; 233 passed / 3 skipped; revert now fails a test |
-| M9a-U5 dictionary/definitional scope (label cards, contrastive synthesis) | prompt-engineer | ⏳ pending | upstream RFC gate; CUAD unwired, Enron Tier-1 unbalanced |
-| M9a-U6 two-arm L4 run | modal-specialist + lucius | ⛔ **BLOCKED — budget** | smoke GREEN; est. $7.79/arm vs $4.32 ceiling; **no spend** |
-| M9a-U8 board evidence audit | board-evidence-auditor | ⏳ pending | — |
+| M9a-U5 dictionary/definitional scope (label cards, contrastive synthesis) | prompt-engineer | ⏸ deferred (post-run) | U2 falsified dictionary-scope for the pinned corpus (0 fallthrough); only a contingent data lever if the loss-side run under-delivers. Any real dictionary change routes upstream as an RFC on #85 — human call |
+| M9a-U6 L4 run (operator chose ONE arm, 3 epochs) | modal-specialist + lucius | ⛔ **BLOCKED — budget** | smoke GREEN; 3-epoch arm ≈ $6.0 vs $4.32 guard; **no spend**; a restarted-session agent executes §6 |
+| M9a-U8 board evidence audit | general (board-evidence-auditor protocol — not callable pre-restart) | ✅ done | commit `f6a49a1` + audit: all execution claims VERIFIED (diffs, 233/3/3, issues #113–#116); 4 forward-narrative corrections landed |
 | M9a-U9 docs/board close | atom | ⏳ pending | — |
 
-### U6 run configuration (pre-registered, smoke-validated)
+### U6 run configuration (decided: ONE arm, 3 epochs — smoke-validated)
 
-Arms: run-3 config except — **A**: `--weight-mode inverse --weight-cap 20
---loss-lambda-dt 0.5`; **B**: `--weight-mode inverse --weight-cap 20
---loss-lambda-dt 0.65`. Both `--epochs 4`, `--select-on-subclass` (default
-on). App `ap-KVX4EVKG4MI2XJ71r6Hkow` redeployed from the working tree
-(commit 1718358 confirmed live via the smoke's lexicographic-rule line).
+**Operator decision:** a single arm, 3 epochs (not the earlier two-arm/4-epoch
+draft). Arm **B** — the pure weighting isolate — is the recommendation:
+run-3 config except `--weight-mode inverse --weight-cap 20
+--loss-lambda-dt 0.65`, `--epochs 3`, `--select-on-subclass` (default on).
+Arm **A** (alt, same + `--loss-lambda-dt 0.5`) adds the subclass
+gradient-share lever at ~2× reflex risk; keep it serial/second.
+App `ap-KVX4EVKG4MI2XJ71r6Hkow` redeployed from the working tree (commit
+1718358 confirmed live via the smoke's lexicographic-rule line).
 
-**`needs_attention` — M9a-U6 budget decision (human call).** Smoke-measured
-6.0 s/step → **$7.79 per 4-epoch arm; both arms ≈ $15.58**, vs the guard
-ceiling `$4.32` (~4.4 L4-h) and the plan's stated 1–2 L4-h one-time.
-Run-3 was 2 epochs / $4.11. `modal-specialist` correctly refused to `--force`
-past a stated money ceiling. Options: (a) both arms 4 ep ≈ $15.6;
-(b) one arm first (B — the pure weighting isolate) 4 ep ≈ $7.8; (c) both
-arms 2 ep ≈ $8.2; (d) one arm 2 ep $4.11 (fits today's ceiling).
-Awaiting operator call before any spend.
+**`needs_attention` — M9a-U6 budget override (human call).** Smoke-measured
+6.0 s/step, 1125 steps/epoch → one 3-epoch arm ≈ **$6.0** all-in vs the guard
+ceiling `$4.32`. Launch needs `--budget 7` (or explicit `--force`) — an
+operator-authorized override; `modal-specialist` correctly refuses to
+`--force` past a stated ceiling silently. Run-3 was 2 epochs / $4.11.
+**A restarted-session agent with the full specialist roster executes this
+section**; the exact command is in `governance/M9a-HANDOFF.md` §6.
 
 ### Structural hazards spawned as issues (2026-09-21)
 

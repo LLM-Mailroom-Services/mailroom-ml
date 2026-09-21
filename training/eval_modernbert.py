@@ -137,7 +137,10 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     selective-risk sweep — same unit as the plan's calibration surface.
 
     Returns the report dict; ``recorded_gates`` are report-only (never
-    exits non-zero on accuracy).
+    exits non-zero on accuracy).  Per-head macro-F1 is conditional on the
+    doc_type being correct: a doc whose merged doc_type is ``llm_overflow``
+    still contributes to its head's per-class ``support``, but records no
+    ``(gt, pred)`` pair, so it is excluded from the macro-F1 denominator.
     """
     filenames = docs["filename"].astype(str).tolist()
     strata = docs["doc_type"].astype(str).tolist()
@@ -194,7 +197,9 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
             # tokenizer, encode_inputs measures with the bundle's standalone
             # tokenizer — a window can measure a few tokens over budget.
             # Mirror production fail-open (classify_document routes LLM):
-            # count the doc as an overflow miss, never crash the eval.
+            # the doc still counts in its head's per-class support below, but
+            # records no conditional (gt, pred) pair, so it is excluded from
+            # the per-head macro-F1 denominator rather than scored as a miss.
             merged = {"doc_type": "llm_overflow", "subclass": None,
                       "_window_probs": []}
         dt_pred = merged["doc_type"]
@@ -212,8 +217,10 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
             cohorts[cohort]["correct_dt"] += 1
             dt_cond_denom += 1
             if gt_dt in subclass_heads:
-                # conditional per-head macro-F1 input (sc_pred is None on the
-                # llm_overflow / abstain path — counted as a miss, never a crash)
+                # conditional per-head macro-F1 input; a None sc_pred (abstain)
+                # is a miss when a pair IS recorded.  The llm_overflow path
+                # never reaches here (dt_pred != gt_dt): its docs stay in
+                # support but are excluded from the macro-F1 denominator.
                 per_head_pairs[gt_dt].append((gt_sc, sc_pred))
             if sc_pred is not None and sc_pred == gt_sc:
                 correct_sc += 1

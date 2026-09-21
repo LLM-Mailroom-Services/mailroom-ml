@@ -11,7 +11,12 @@ import numpy as np
 import pytest
 
 from mailroom_ml.calibration import ece, ece_from_conf
-from training.eval_modernbert import build_parser, stratified_sample
+from training.eval_modernbert import (
+    _macro_f1_observed,
+    _per_head_report,
+    build_parser,
+    stratified_sample,
+)
 
 
 def test_cli_surface_accepts_documented_flags():
@@ -239,3 +244,75 @@ def test_sweep_runs_with_clean_sidecar(monkeypatch):
     # 3 docs -> 3 windows -> n < min_n at every threshold -> honest refusal
     assert sr["insufficient_data"] is True
     assert sr["budget_met"] is False
+
+
+# ---------------------------------------------------------------------------
+# #112 M9a-U4 per-head test macro-F1 surface
+# ---------------------------------------------------------------------------
+
+def test_per_head_report_macro_f1_and_support_counts():
+    """`_per_head_report` reports the document-level conditional macro-F1 and
+    the unconditional per-class support; every declared label is surfaced
+    (zero-support included) and a head with no pairs is ``None``, never 0."""
+    from types import SimpleNamespace
+
+    bundle = SimpleNamespace(maps={
+        "contract": {"labels": ["a", "b", "c", "d"]},
+        "correspondence": {"labels": ["email", "letter"]},
+    })
+    pairs = {"contract": [("a", "a"), ("a", "b"), ("b", "b")]}
+    support = {"contract": {"a": 5, "b": 2, "c": 1}}
+    report = _per_head_report(bundle, ["contract", "correspondence"],
+                              pairs, support)
+    # macro-F1: a -> 0.6667, b -> 0.6667 -> mean 0.6667
+    assert report["contract"]["macro_f1"] == 0.6667
+    # support counts ALL gt docs of that head (incl. classes absent from the
+    # conditional pairs); the declared-but-unseen label d is 0.
+    assert report["contract"]["support"] == {"a": 5, "b": 2, "c": 1, "d": 0}
+    # a head with no pairs is unmeasurable, not fabricated
+    assert report["correspondence"]["macro_f1"] is None
+    assert report["correspondence"]["support"] == {"email": 0, "letter": 0}
+
+
+def test_per_head_pairs_conditional_and_overflow_excluded(monkeypatch):
+    """A wrong doc_type and an llm_overflow doc both add to per-class support
+    but record no ``(gt, pred)`` pair, so neither enters the macro-F1
+    denominator; a recorded ``None`` prediction is a miss, and an empty pair
+    list is ``None``."""
+    import pandas as pd
+
+    import training.eval_modernbert as ev
+
+    assert _macro_f1_observed([("a", None)]) == 0.0
+    assert _macro_f1_observed([]) is None
+
+    monkeypatch.setattr(ev, "window_document",
+                        lambda title, text, max_tokens: [text])
+
+    def _fake_merge(bundle, decorated, max_length):
+        text = decorated[0]
+        if "overflow" in text:
+            raise ValueError("tokenizer drift -> llm_overflow")
+        if "wrongdt" in text:
+            return {"doc_type": "correspondence", "subclass": "notice",
+                    "_window_probs": []}
+        return {"doc_type": "contract", "subclass": "a", "_window_probs": []}
+
+    monkeypatch.setattr(ev, "_merge_windows", _fake_merge)
+
+    docs = pd.DataFrame([
+        {"filename": "ok.txt", "title": "T", "doc_text": "ok",
+         "doc_type": "contract", "subclass": "a"},
+        {"filename": "wrong.txt", "title": "T", "doc_text": "wrongdt",
+         "doc_type": "contract", "subclass": "b"},
+        {"filename": "over.txt", "title": "T", "doc_text": "overflow",
+         "doc_type": "contract", "subclass": "c"},
+    ])
+    report = ev.evaluate_documents(_stub_bundle(_confident_predict), docs,
+                                   sample=0, seed=42, max_length=8192)
+    contract = report["per_head"]["contract"]
+    # support is unconditional: every gt contract doc counts, even the two
+    # that produced no pair (wrong dt_pred / llm_overflow).
+    assert contract["support"] == {"a": 1, "b": 1, "c": 1}
+    # only the doc_type-correct doc contributed a pair -> macro-F1 1.0
+    assert contract["macro_f1"] == 1.0

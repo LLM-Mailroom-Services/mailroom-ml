@@ -30,6 +30,8 @@ from mailroom_ml.config import (  # noqa: E402
     TRAINING_DATA_REVISION,
 )
 from training.train_modernbert import (  # noqa: E402
+    DOC_TYPE_GATE_TOL,
+    ECE_BUDGET,
     HierarchicalClassifier,
     LossConfig,
     _apply_resume,
@@ -37,7 +39,11 @@ from training.train_modernbert import (  # noqa: E402
     _apply_subclass_support_threshold,
     _hub_data_glob,
     _scheduler_plan,
+    _select_epoch,
+    _selection_snapshot,
     _subclass_label,
+    _subclass_objective,
+    _summary,
     build_parser,
     ece,
     ece_calibrated,
@@ -763,3 +769,202 @@ def test_summary_carries_per_head_ece_and_exclusion_policy():
                      {"epoch": 1, "macro_f1": 0.7, "ece": 0.04}, {}, 1.0, 1)
     old_policy = s_old["checkpoint_selection"]["head_exclusion_policy"]
     assert old_policy["excluded"] == {}
+
+
+# ---------------------------------------------------------------------------
+# #112 M9a-U4 lexicographic checkpoint selection (extracted pure seam)
+# ---------------------------------------------------------------------------
+
+def _epoch_val(dt: float, objective: float, *, ece: float = 0.01,
+               head: str = "contract") -> dict:
+    """A minimal ``val`` dict as the selection rule consumes it.
+
+    The subclass objective is carried both as the pre-computed
+    ``subclass_objective`` (what ``main`` sets before calling) and as the
+    single head's observed macro-F1 (what ``_selection_snapshot`` recomputes
+    from), so the two must agree.
+    """
+    return {
+        "doc_type_macro_f1_observed": dt,
+        "doc_type_ece_calibrated": ece,
+        "doc_type_ece": ece,
+        f"{head}_macro_f1_observed": objective,
+        f"{head}_ece_calibrated": ece,
+        "subclass_objective": objective,
+    }
+
+
+def test_select_epoch_prefers_better_subclass_within_doc_type_tolerance():
+    """The #112 rule: a slightly lower doc_type macro-F1 (within the
+    DOC_TYPE_GATE_TOL band) does not veto an epoch with a better subclass
+    objective — run-3's 0.9245 -> 0.9227, 0.26 -> 0.30 case."""
+    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
+                "subclass_objective": -1.0}
+    best_doc_type = float("-inf")
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.9245, 0.26), 1, selected, best_doc_type, ["contract"],
+        select_on_subclass=True)
+    assert selected["epoch"] == 1
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.9227, 0.30), 2, selected, best_doc_type, ["contract"],
+        select_on_subclass=True)
+    assert selected["epoch"] == 2
+    assert selected["subclass_objective"] == 0.30
+    assert best_doc_type == 0.9245
+
+
+def test_select_epoch_rejects_doc_type_regression_beyond_tolerance():
+    """A higher subclass objective cannot buy back a doc_type regression
+    beyond DOC_TYPE_GATE_TOL below the ECE-eligible floor."""
+    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
+                "subclass_objective": -1.0}
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.9245, 0.26), 1, selected, float("-inf"), ["contract"],
+        select_on_subclass=True)
+    assert 0.006 > DOC_TYPE_GATE_TOL  # the regression under test is rejected
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.9245 - 0.006, 0.40), 2, selected, best_doc_type,
+        ["contract"], select_on_subclass=True)
+    assert selected["epoch"] == 1
+    assert selected["subclass_objective"] == 0.26
+
+
+def test_select_epoch_requires_doc_type_ece_within_budget():
+    """An epoch over the calibrated doc_type ECE budget is ineligible even
+    with a better subclass objective — and never raises the floor."""
+    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
+                "subclass_objective": -1.0}
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.90, 0.20), 1, selected, float("-inf"), ["contract"],
+        select_on_subclass=True)
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.95, 0.90, ece=ECE_BUDGET + 0.01), 2, selected,
+        best_doc_type, ["contract"], select_on_subclass=True)
+    assert selected["epoch"] == 1
+    assert selected["subclass_objective"] == 0.20
+    assert best_doc_type == 0.90  # ineligible epoch never raises the floor
+
+
+def test_select_on_subclass_default_true_and_legacy_flag():
+    """Default is the lexicographic rule; --no-select-on-subclass restores
+    the legacy doc_type-only rule, where a higher-obj/lower-dt epoch does
+    not displace the higher-dt one."""
+    assert build_parser().parse_args([]).select_on_subclass is True
+    assert build_parser().parse_args(
+        ["--no-select-on-subclass"]).select_on_subclass is False
+
+    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
+                "subclass_objective": -1.0}
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.9245, 0.26), 1, selected, float("-inf"), ["contract"],
+        select_on_subclass=False)
+    assert selected["epoch"] == 1
+    selected, best_doc_type = _select_epoch(
+        _epoch_val(0.9227, 0.30), 2, selected, best_doc_type, ["contract"],
+        select_on_subclass=False)
+    assert selected["epoch"] == 1  # legacy rule ignores the subclass gain
+    assert selected["subclass_objective"] == 0.26
+
+
+def test_subclass_objective_ignores_absent_heads_and_empty_is_zero():
+    val = {"contract_macro_f1_observed": 0.4,
+           "correspondence_macro_f1_observed": 0.6}
+    assert _subclass_objective(
+        val, ["contract", "correspondence", "missing"]) == pytest.approx(0.5)
+    assert _subclass_objective({}, ["contract"]) == 0.0
+    assert _subclass_objective(val, []) == 0.0
+
+
+def test_selection_snapshot_carries_subclass_objective_and_per_head():
+    """The snapshot's ``per_head_macro_f1_observed`` currently INCLUDES
+    ``doc_type`` (every ``*_macro_f1_observed`` key on the epoch event), while
+    ``subclass_objective`` averages only the named subclass heads."""
+    val = {
+        "doc_type_macro_f1_observed": 0.9,
+        "doc_type_ece_calibrated": 0.02,
+        "doc_type_ece": 0.10,
+        "contract_macro_f1_observed": 0.5,
+        "contract_ece_calibrated": 0.03,
+        "correspondence_macro_f1_observed": 0.7,
+        "correspondence_ece_calibrated": 0.04,
+    }
+    snap = _selection_snapshot(val, 3, ["contract", "correspondence"])
+    assert snap["epoch"] == 3
+    assert snap["macro_f1"] == 0.9
+    assert snap["ece"] == 0.02
+    assert snap["ece_raw"] == 0.10
+    assert snap["subclass_objective"] == pytest.approx(0.6)
+    assert snap["per_head_macro_f1_observed"] == {
+        "contract": 0.5, "correspondence": 0.7, "doc_type": 0.9}
+    assert snap["per_head_ece_calibrated"] == {
+        "contract": 0.03, "correspondence": 0.04, "doc_type": 0.02}
+
+
+def test_summary_records_lexicographic_selection_metadata():
+    """With ``select_on_subclass`` the summary's rule string names the
+    lexicographic rule and the two new selection keys are populated."""
+    args = SimpleNamespace(
+        data="repo", model=MODEL_ID, seed=42, epochs=3, batch_size=4,
+        grad_accum=8, lr=2e-5, loss_lambda_dt=0.65, label_smoothing=0.05,
+        weight_mode="sqrt-inverse", weight_cap=10.0, mlp_heads=True,
+        head_dropout=0.1, subclass_min_train_rows=12, early_stop_patience=2,
+        weight_decay=0.01, betas="0.9,0.999", eps=1e-8, max_length=8192,
+        freeze_backbone_epochs=0, eval_test=True, push_to_hub="",
+        resume="", output="/tmp/x", limit=0, log_every=50, max_steps=0,
+        select_on_subclass=True,
+    )
+    selected = {
+        "epoch": 2, "macro_f1": 0.9, "ece": 0.02, "ece_raw": 0.16,
+        "subclass_objective": 0.61,
+        "per_head_macro_f1_observed": {"doc_type": 0.9, "contract": 0.5},
+    }
+    s = _summary("rid", args, "cpu", [], selected, {}, 1.0, 2)
+    sel = s["checkpoint_selection"]
+    assert "lexicographic" in sel["rule"]
+    assert sel["subclass_objective"] == 0.61
+    assert sel["per_head_macro_f1_observed"] == {
+        "doc_type": 0.9, "contract": 0.5}
+
+
+def test_resume_restores_best_doc_type_gate_floor(tmp_path):
+    """#112: --resume re-derives the doc_type gate floor as the best observed
+    doc_type macro-F1 among ECE-eligible prior epochs; no eligible event
+    leaves the gate open (``-inf``)."""
+    out = tmp_path / "ckpt"
+    out.mkdir()
+    torch.save({"doc_type": nn.Linear(4, 2).state_dict()}, out / "heads.pt")
+    (out / "summary.json").write_text(json.dumps({
+        "epochs_run": 3,
+        "epochs": [
+            {"epoch": 1, "loss": 2.0, "val_loss": 2.0,
+             "doc_type_macro_f1_observed": 0.80,
+             "doc_type_ece_calibrated": 0.02},   # eligible
+            {"epoch": 2, "loss": 1.5, "val_loss": 1.5,
+             "doc_type_macro_f1_observed": 0.95,
+             "doc_type_ece_calibrated": 0.09},   # over budget -> ignored
+            {"epoch": 3, "loss": 1.0, "val_loss": 1.0,
+             "doc_type_macro_f1_observed": 0.90,
+             "doc_type_ece_calibrated": ECE_BUDGET},  # eligible (boundary)
+        ],
+        "checkpoint_selection": {"epoch": 3, "macro_f1": 0.90, "ece": 0.05},
+    }))
+    model = _tiny_model()
+    opt, sched = _tiny_optim_sched(model)
+    state = _apply_resume(out, model, opt, sched, torch.device("cpu"),
+                          n_train_rows=20, batch_size=4, grad_accum=2)
+    assert state["best_doc_type"] == pytest.approx(0.90)
+
+    # legacy bundle: no per-event doc_type metrics -> open gate
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    torch.save({"doc_type": nn.Linear(4, 2).state_dict()}, legacy / "heads.pt")
+    (legacy / "summary.json").write_text(json.dumps({
+        "epochs_run": 1,
+        "epochs": [{"epoch": 1, "loss": 2.0, "val_loss": 1.5}],
+        "checkpoint_selection": {"epoch": 1, "macro_f1": 0.8, "ece": 0.04},
+    }))
+    model2 = _tiny_model()
+    opt2, sched2 = _tiny_optim_sched(model2)
+    state2 = _apply_resume(legacy, model2, opt2, sched2, torch.device("cpu"),
+                           n_train_rows=20, batch_size=4, grad_accum=2)
+    assert state2["best_doc_type"] == float("-inf")

@@ -522,6 +522,40 @@ def _selection_snapshot(val: dict, epoch: int, subclass_heads: list[str]) -> dic
     }
 
 
+def _select_epoch(val: dict, epoch: int, selected: dict,
+                  best_doc_type: float, subclass_heads: list[str], *,
+                  select_on_subclass: bool) -> tuple[dict, float]:
+    """The lexicographic checkpoint-selection decision (#112 M9a-U4).
+
+    Pure seam over the rule that was inline in ``main``: given an epoch's
+    validation metrics (``val`` — including the already-computed
+    ``subclass_objective``), the running ``selected`` snapshot and the
+    ECE-eligible ``best_doc_type`` floor, return the (possibly replaced)
+    snapshot and the updated floor.
+
+    With ``select_on_subclass`` the doc_type gate is preserved — CALIBRATED
+    doc_type ECE ``<= ECE_BUDGET`` and observed doc_type macro-F1 no more
+    than ``DOC_TYPE_GATE_TOL`` below the floor — and the subclass objective
+    decides the winner.  Otherwise the legacy doc_type-only rule is used
+    verbatim.  ``val`` is never mutated.
+    """
+    ece_ok = val["doc_type_ece_calibrated"] <= ECE_BUDGET
+    if select_on_subclass:
+        eligible = ece_ok and (
+            val["doc_type_macro_f1_observed"]
+            >= best_doc_type - DOC_TYPE_GATE_TOL)
+        better = eligible and (val["subclass_objective"]
+                               > selected.get("subclass_objective", -1.0))
+    else:
+        better = (val["doc_type_macro_f1_observed"] > selected["macro_f1"]
+                  and ece_ok)
+    if better:
+        selected = _selection_snapshot(val, epoch, subclass_heads)
+    if ece_ok:
+        best_doc_type = max(best_doc_type, val["doc_type_macro_f1_observed"])
+    return selected, best_doc_type
+
+
 def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
     """Platt-style temperature scaling: T minimizing NLL on validation."""
     from scipy.optimize import minimize_scalar
@@ -1188,21 +1222,9 @@ def main() -> int:
                                 if name != "doc_type")
         val["subclass_objective"] = round(
             _subclass_objective(val, subclass_heads), 4)
-        ece_ok = val["doc_type_ece_calibrated"] <= ECE_BUDGET
-        if args.select_on_subclass:
-            eligible = ece_ok and (
-                val["doc_type_macro_f1_observed"]
-                >= best_doc_type - DOC_TYPE_GATE_TOL)
-            better = eligible and (val["subclass_objective"]
-                                   > selected.get("subclass_objective", -1.0))
-        else:
-            better = (val["doc_type_macro_f1_observed"] > selected["macro_f1"]
-                      and ece_ok)
-        if better:
-            selected = _selection_snapshot(val, epoch, subclass_heads)
-        if ece_ok:
-            best_doc_type = max(best_doc_type,
-                                val["doc_type_macro_f1_observed"])
+        selected, best_doc_type = _select_epoch(
+            val, epoch, selected, best_doc_type, subclass_heads,
+            select_on_subclass=args.select_on_subclass)
         events.append({"epoch": epoch, "loss": round(loss, 4),
                        "loss_endpoint": round(loss_endpoint, 4),
                        "lr": round(scheduler.get_last_lr()[0], 8),

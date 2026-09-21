@@ -44,6 +44,8 @@ from mailroom_ml.config import (
     ROUTE_MIN_AUTHENTIC_SUPPORT,
     ROUTE_SUBCLASS_CONFIDENCE,
     ROUTE_WINDOW_AGREEMENT,
+    SUBCLASS_PROJECTIONS,
+    SUBCLASS_UNMAPPED_ROUTE,
     WINDOW_OVERLAP_TOKENS,
 )
 
@@ -58,6 +60,7 @@ __all__ = [
     "window_titles",
     "classify_windows",
     "classify_document",
+    "project_subclass",
     "TriageResult",
 ]
 
@@ -89,6 +92,13 @@ class ModelBundle:
     artifact_sha: str | None = None
     model_kind: str = "unknown"  # "onnx-int8" | "onnx-fp32" | "pytorch" | "stub"
     predict_fn: Callable[[np.ndarray, np.ndarray], dict[str, np.ndarray]] | None = None
+    # #107 head-exclusion policy (from summary.json checkpoint_selection):
+    # head name -> reason.  A subclass head whose calibrated ECE never
+    # cleared the selection budget is excluded from the fast path — its
+    # doc_type routes to the LLM instead.  Absent (pre-#107 artifacts) ->
+    # no exclusions; the doc_type selection gate still applies.
+    head_exclusions: dict[str, str] = field(default_factory=dict)
+    exclusion_policy: dict[str, Any] | None = None
 
     @property
     def label_schema_version(self) -> str:
@@ -148,6 +158,35 @@ def _load_support_counts(model_dir: Path) -> dict[str, dict[str, int]]:
                 for k, v in data.items() if isinstance(v, dict)}
     except (ValueError, TypeError, OSError):
         return {}
+
+
+def _load_head_exclusions(model_dir: Path) -> tuple[dict[str, str], dict | None]:
+    """#107 head-exclusion policy from the artifact's ``summary.json``.
+
+    Reads ``checkpoint_selection.head_exclusion_policy`` (written by the
+    trainer's ``_summary``): heads whose calibrated ECE exceeded the budget
+    are excluded from the fast path.  Absent or malformed -> no exclusions
+    (pre-#107 artifacts); the doc_type selection gate still applies.
+    """
+    p = model_dir / "summary.json"
+    if not p.is_file():
+        return {}, None
+    try:
+        sel = json.loads(p.read_text(encoding="utf-8")).get(
+            "checkpoint_selection", {})
+    except (ValueError, OSError):
+        return {}, None
+    policy = sel.get("head_exclusion_policy")
+    if not isinstance(policy, dict):
+        return {}, None
+    excluded = policy.get("excluded")
+    if not isinstance(excluded, dict):
+        return {}, policy
+    reasons = {name: f"ece_calibrated {info.get('ece_calibrated')} > "
+                     f"budget {policy.get('budget')}"
+               for name, info in excluded.items()
+               if isinstance(info, dict) and info.get("excluded")}
+    return reasons, policy
 
 
 def _load_tokenizer(model_dir: Path):
@@ -297,11 +336,14 @@ def load_bundle(model_dir: str | Path | None = None,
         raise BundleLoadError(
             f"bundle {mdir} has neither ONNX graph nor pytorch checkpoint")
 
+    head_exclusions, exclusion_policy = _load_head_exclusions(mdir)
     return ModelBundle(
         model_dir=mdir, maps=maps, temperatures=temps,
         tokenizer=tok, pad_id=pad_id,
         artifact_sha=artifact_sha, model_kind=kind, predict_fn=predict_fn,
         support_counts=_load_support_counts(mdir),
+        head_exclusions=head_exclusions,
+        exclusion_policy=exclusion_policy,
     )
 
 
@@ -470,6 +512,39 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
     }
 
 
+def project_subclass(maps: dict[str, Any], doc_type: str,
+                     subclass: str | None) -> str | None:
+    """Canonical -> head-vocab subclass projection (#107 taxonomy conformance).
+
+    The trained heads express a subset of the canonical taxonomy (observed
+    GT surfaces, #66/#67/#68).  A canonical subclass the head cannot express
+    must project deterministically — never force-fit into a sibling class:
+
+    - in-vocab label -> returned unchanged;
+    - explicit projection rule (``SUBCLASS_PROJECTIONS``, e.g.
+      ``certificate_of_formation -> other``) -> the projected label when the
+      head carries it;
+    - else a head with an ``other`` class -> ``other``;
+    - else -> ``None`` (UNMAPPED — the caller routes to the LLM per
+      ``SUBCLASS_UNMAPPED_ROUTE``; the insurance head has no ``other``, so
+      any out-of-vocab insurance subclass is unmapped, never re-mapped).
+    """
+    if subclass is None:
+        return None
+    head = maps.get(doc_type)
+    if head is None:
+        return None
+    labels = head.get("labels", [])
+    if subclass in labels:
+        return subclass
+    projected = SUBCLASS_PROJECTIONS.get(doc_type, {}).get(subclass)
+    if projected is not None and projected in labels:
+        return projected
+    if "other" in labels:
+        return "other"
+    return None
+
+
 def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
                       max_chars: int = BERT_INTAKE_MAX_CHARS,
                       max_tokens: int = MAX_TOKENS,
@@ -540,6 +615,33 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
             result["guard_failures"].append(
                 f"doc_type {dt!r} not a supported head")
             return result
+
+        # #107 head-exclusion policy: a subclass head whose calibrated ECE
+        # never cleared the selection budget is excluded from the fast path
+        # — its doc_type routes to the LLM (the subclass prediction cannot
+        # be trusted for the conditional route).
+        if dt in bundle.head_exclusions:
+            result["reason"] = "head_excluded"
+            result["route"] = "llm"
+            result["guard_failures"].append(
+                f"head_excluded:{dt} ({bundle.head_exclusions[dt]})")
+            result["quality"]["exclusion_policy"] = "present"
+            return result
+        result["quality"]["exclusion_policy"] = (
+            "present" if bundle.exclusion_policy else "absent")
+
+        # #107 taxonomy-conformance projection: a canonical subclass the
+        # head cannot express is projected (certificate_of_formation ->
+        # other) or, when the head has no `other` (insurance), UNMAPPED ->
+        # LLM.  Never force-fit into a sibling class.
+        projected = project_subclass(bundle.maps, dt, sub)
+        if sub is not None and projected is None:
+            result["reason"] = "subclass_unmapped"
+            result["route"] = SUBCLASS_UNMAPPED_ROUTE
+            result["guard_failures"].append(
+                f"subclass_unmapped:{dt}/{sub} (head has no `other`)")
+            return result
+        sub = projected
 
         # authentic support gate: support counts from the bundle sidecar
         counts = bundle.support_counts.get(dt, {})

@@ -859,8 +859,13 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
 
     Carries the FULL hyperparameter set (2026-09-20 audit R3: the artifact
     could not be tied back to its config) and the held-out test metrics
-    (R2: they were printed to stdout only and lost).
+    (R2: they were printed to stdout only and lost).  #107: the selection
+    block also carries the per-head calibrated ECE sidecar + the derived
+    head-exclusion policy — the deployment gate (inference.py) consumes it
+    to route LLM when a subclass head's calibration never cleared the
+    budget.
     """
+    per_head_ece = selected.get("per_head_ece_calibrated", {})
     return {
         "run_id": run_id,
         "data": args.data,
@@ -882,6 +887,18 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
             "ece": selected["ece"],
             "ece_raw": selected.get("ece_raw"),
             "gate_met": bool(selected["epoch"] > 0),
+            "per_head_ece_calibrated": per_head_ece,
+            "head_exclusion_policy": {
+                "rule": ("exclude a subclass head from the fast path when "
+                         f"its calibrated ECE exceeds {ECE_BUDGET} — the "
+                         "same budget the doc_type selection gate enforces"),
+                "budget": ECE_BUDGET,
+                "excluded": {
+                    name: {"excluded": ece > ECE_BUDGET,
+                           "ece_calibrated": ece}
+                    for name, ece in sorted(per_head_ece.items())
+                },
+            },
         },
         "test_metrics": test_metrics or {},
         "epochs": events,
@@ -1067,13 +1084,20 @@ def main() -> int:
                 ece_calibrated(torch.cat(val_logits[name]),
                                torch.cat(val_labels[name]), temps[name]), 4)
         # hardening seam: select the best val macro-F1 (observed classes)
-        # s.t. the CALIBRATED ECE is acceptable (recorded, not an exit)
+        # s.t. the CALIBRATED ECE is acceptable (recorded, not an exit).
+        # #107: the selection snapshot carries the per-head calibrated ECE
+        # sidecar — the artifact's head-exclusion policy derives from it, so
+        # the deployment gate can exclude subclass heads whose calibration
+        # never cleared the budget.
         if val["doc_type_macro_f1_observed"] > selected["macro_f1"] \
                 and val["doc_type_ece_calibrated"] <= ECE_BUDGET:
             selected = {"epoch": epoch,
                         "macro_f1": val["doc_type_macro_f1_observed"],
                         "ece": val["doc_type_ece_calibrated"],
-                        "ece_raw": val["doc_type_ece"]}
+                        "ece_raw": val["doc_type_ece"],
+                        "per_head_ece_calibrated": {
+                            name: val[f"{name}_ece_calibrated"]
+                            for name in sorted(val_logits)}}
         events.append({"epoch": epoch, "loss": round(loss, 4),
                        "loss_endpoint": round(loss_endpoint, 4),
                        "lr": round(scheduler.get_last_lr()[0], 8),

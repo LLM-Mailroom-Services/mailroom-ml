@@ -94,6 +94,20 @@ INSURANCE_SUBCLASSES: tuple[str, ...] = (
     "carrier", "inpatient", "outpatient", "pde", "property", "auto",
 )
 
+# #107 taxonomy-conformance projections: canonical subclass surfaces the
+# trained heads do NOT carry must project deterministically at inference
+# (never force-fit into a sibling class, never crash on an unknown key).
+#   - corporate_record: canonical 11-key surface vs the observed 10-key head
+#     (#67 — certificate_of_formation has zero observed rows) -> project to
+#     the head's `other` when the head carries one.
+#   - insurance_claim: 6-key head with NO `other` class -> any canonical
+#     subclass outside the head vocab is UNMAPPED and routes to the LLM
+#     (SUBCLASS_UNMAPPED_ROUTE), never silently re-mapped.
+SUBCLASS_PROJECTIONS: dict[str, dict[str, str]] = {
+    "corporate_record": {"certificate_of_formation": "other"},
+}
+SUBCLASS_UNMAPPED_ROUTE = "llm"
+
 # ---------------------------------------------------------------------------
 # Routing policy — PLACEHOLDERS until selective-risk analysis on the
 # calibration set quantifies the right thresholds (Plan §Calibration).  The

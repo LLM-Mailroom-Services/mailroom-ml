@@ -723,3 +723,43 @@ def test_summary_records_hyperparameters_and_test_metrics():
                   {"epoch": 0, "macro_f1": -1.0, "ece": None}, {}, 1.0, 1)
     assert s2["checkpoint_selection"]["gate_met"] is False
     assert s2["test_metrics"] == {}
+
+
+def test_summary_carries_per_head_ece_and_exclusion_policy():
+    """#107: the selection snapshot carries the per-head calibrated ECE
+    sidecar and the derived head-exclusion policy — the deployment gate's
+    data source.  Heads over the budget are flagged excluded; heads under
+    it are not; a selection without the sidecar yields an empty policy."""
+    from training.train_modernbert import ECE_BUDGET, _summary
+
+    args = SimpleNamespace(
+        data="repo", model=MODEL_ID, seed=42, epochs=3, batch_size=4,
+        grad_accum=8, lr=2e-5, loss_lambda_dt=0.65, label_smoothing=0.05,
+        weight_mode="sqrt-inverse", weight_cap=10.0, mlp_heads=True,
+        head_dropout=0.1, subclass_min_train_rows=12, early_stop_patience=2,
+        weight_decay=0.01, betas="0.9,0.999", eps=1e-8, max_length=8192,
+        freeze_backbone_epochs=0, eval_test=True, push_to_hub="",
+        resume="", output="/tmp/x", limit=0, log_every=50, max_steps=0,
+    )
+    selected = {
+        "epoch": 2, "macro_f1": 0.9, "ece": 0.02, "ece_raw": 0.16,
+        "per_head_ece_calibrated": {
+            "doc_type": 0.02, "contract": 0.09, "correspondence": 0.03,
+        },
+    }
+    s = _summary("rid", args, "cpu", [], selected, {}, 1.0, 2)
+    sel = s["checkpoint_selection"]
+    assert sel["per_head_ece_calibrated"] == {
+        "doc_type": 0.02, "contract": 0.09, "correspondence": 0.03}
+    policy = sel["head_exclusion_policy"]
+    assert policy["budget"] == ECE_BUDGET
+    assert policy["excluded"]["contract"] == {
+        "excluded": True, "ece_calibrated": 0.09}
+    assert policy["excluded"]["doc_type"] == {
+        "excluded": False, "ece_calibrated": 0.02}
+    assert policy["excluded"]["correspondence"]["excluded"] is False
+    # pre-#107 selection (no sidecar) -> empty policy, still self-describing
+    s_old = _summary("rid", args, "cpu", [],
+                     {"epoch": 1, "macro_f1": 0.7, "ece": 0.04}, {}, 1.0, 1)
+    old_policy = s_old["checkpoint_selection"]["head_exclusion_policy"]
+    assert old_policy["excluded"] == {}

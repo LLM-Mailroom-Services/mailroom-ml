@@ -25,6 +25,7 @@ from mailroom_ml.inference import (
     classify_windows,
     encode_inputs,
     load_bundle,
+    project_subclass,
     resolve_model_dir,
     window_titles,
 )
@@ -260,6 +261,99 @@ def test_abstaining_all_windows_routes_llm():
     res = classify_document(b, "T", "body", window_texts=["w", "w2"])
     assert res["doc_type"] == ABSTAIN_UNKNOWN_CLASS
     assert res["route"] == "llm"
+
+
+# ---------------------------------------------------------------------------
+# #107 taxonomy-conformance projections + head-exclusion policy
+# ---------------------------------------------------------------------------
+
+def test_project_subclass_certificate_of_formation_to_other():
+    """Canonical 11-key corporate_record surface vs the observed 10-key head
+    (#67): certificate_of_formation projects to the head's `other`."""
+    maps = {"corporate_record": {"labels": [
+        "charter_amendment", "articles_of_incorporation", "officer_certificate",
+        "indenture", "subsidiary_list", "rights_instrument",
+        "board_resolution", "bylaws", "powers_of_attorney", "other"]}}
+    assert project_subclass(maps, "corporate_record",
+                            "certificate_of_formation") == "other"
+    # in-vocab labels pass through untouched
+    assert project_subclass(maps, "corporate_record", "bylaws") == "bylaws"
+    assert project_subclass(maps, "corporate_record", None) is None
+
+
+def test_project_subclass_insurance_unmapped_returns_none():
+    """6-key insurance head with NO `other` (#68): any canonical subclass
+    outside the head vocab is unmapped (None) — the caller routes LLM,
+    never force-fits into a sibling class."""
+    maps = {"insurance_claim": {"labels": [
+        "carrier", "inpatient", "outpatient", "pde", "property", "auto"]}}
+    assert project_subclass(maps, "insurance_claim", "dental_claim") is None
+    assert project_subclass(maps, "insurance_claim", "carrier") == "carrier"
+    # a head WITH `other` still falls back to it for unknown canonicals
+    maps2 = {"contract": {"labels": ["service", "license", "other"]}}
+    assert project_subclass(maps2, "contract", "transportation") == "other"
+
+
+def test_head_exclusion_policy_routes_llm():
+    """#107: a subclass head excluded by the artifact's calibration policy
+    (calibrated ECE > budget) blocks the fast path for its doc_type."""
+    b = _stub_bundle(
+        lambda ids, mask: _logits_like(
+            "x", {"doc_type": [0.0, 0.0, 0.0, 10.0, 0.0, -6.0],
+                  "correspondence": [0.0, 0.0, 10.0, 0.0]}, 1),
+        support={"correspondence": {"notice": 12}},
+        head_exclusions={"correspondence": "ece_calibrated 0.12 > budget 0.05"},
+        exclusion_policy={"budget": 0.05})
+    res = classify_document(b, "T", "body", window_texts=["w"])
+    assert res["doc_type"] == "correspondence"
+    assert res["route"] == "llm"
+    assert res["reason"] == "head_excluded"
+    assert any("head_excluded:correspondence" in f
+               for f in res["guard_failures"])
+    assert res["quality"]["exclusion_policy"] == "present"
+
+
+def test_unexcluded_head_still_fast_paths():
+    """An artifact whose policy excludes OTHER heads leaves this one fast."""
+    b = _stub_bundle(
+        lambda ids, mask: _logits_like(
+            "x", {"doc_type": [0.0, 0.0, 0.0, 10.0, 0.0, -6.0],
+                  "correspondence": [0.0, 0.0, 10.0, 0.0]}, 1),
+        support={"correspondence": {"notice": 12}},
+        head_exclusions={"contract": "ece_calibrated 0.09 > budget 0.05"})
+    res = classify_document(b, "T", "body", window_texts=["w"])
+    assert res["route"] == "fast_path"
+    assert res["quality"]["exclusion_policy"] == "absent"
+
+
+def test_unmapped_subclass_routes_llm_never_force_fits():
+    """Drift guard: a merged subclass the head cannot express (and with no
+    `other` to project to) routes LLM — never a sibling-class force-fit."""
+    # insurance head whose id2label drifted to carry a canonical label the
+    # head vocab cannot express (the #66 parity failure mode)
+    dt = [0.0, 0.0, 0.0, 0.0, 10.0, -6.0]  # insurance_claim wins
+    maps = {
+        "doc_type": HEADS["doc_type"],
+        "insurance_claim": {
+            "labels": ["carrier", "inpatient", "outpatient", "pde",
+                       "property", "auto"],
+            "label2id": {"carrier": 0, "inpatient": 1, "outpatient": 2,
+                         "pde": 3, "property": 4, "auto": 5},
+            "id2label": {"0": "carrier", "1": "inpatient", "2": "outpatient",
+                         "3": "pde", "4": "property", "5": "dental_claim"},
+        },
+    }
+    b = _stub_bundle(
+        lambda ids, mask: _logits_like(
+            "x", {"doc_type": dt,
+                  "insurance_claim": [0.0, 0.0, 0.0, 0.0, 0.0, 10.0]}, 1),
+        maps=maps, support={"insurance_claim": {"dental_claim": 12}})
+    res = classify_document(b, "T", "body", window_texts=["w"])
+    assert res["doc_type"] == "insurance_claim"
+    assert res["route"] == "llm"
+    assert res["reason"] == "subclass_unmapped"
+    assert any("subclass_unmapped:insurance_claim/dental_claim" in f
+               for f in res["guard_failures"])
 
 
 # ---------------------------------------------------------------------------

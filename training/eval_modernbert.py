@@ -107,12 +107,14 @@ def stratified_sample(filenames, stratify: list[str], n: int, seed: int):
 
 def _load_test_docs(stage: Path):
     """Held-out test documents from the staged tree (or corpus fallback)."""
-    d = stage / "parquet" / "documents" / "test"
-    if d.is_dir() and list(d.glob("*.parquet")):
-        import pandas as pd
+    for d in (stage / "parquet" / "documents" / "test",   # legacy EDA layout
+              stage / "data" / "documents" / "test"):     # build_dataset layout
+        if d.is_dir() and list(d.glob("*.parquet")):
+            import pandas as pd
 
-        return pd.concat([pd.read_parquet(f) for f in sorted(d.glob("*.parquet"))],
-                         ignore_index=True)
+            return pd.concat(
+                [pd.read_parquet(f) for f in sorted(d.glob("*.parquet"))],
+                ignore_index=True)
     # fallback: canonical corpus snapshot (load_corpus_rows verifies the pin)
     from mailroom_ml.dataset import build_documents, load_corpus_rows
 

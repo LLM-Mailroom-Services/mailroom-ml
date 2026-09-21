@@ -1,0 +1,1191 @@
+{
+ "artifact_sha": "56a4e8919cc3ae11d6bcfc13ec012677409afff99daf167cdd4fb70a6e1754f9",
+ "checkpoint": "/checkpoints/runs/20260921-132753",
+ "cohorts": {
+  "multi-window": {
+   "doc_type_accuracy": 0.7959,
+   "mean_agreement": 0.7725,
+   "n_docs": 49,
+   "selective_risk": {
+    "band_ece": 0.0,
+    "budget_met": false,
+    "coverage": 0.6478260869565218,
+    "error_budget": 0.02,
+    "insufficient_data": false,
+    "min_n": 30,
+    "n_at_pick": null,
+    "note": "deployment threshold from selective risk on the calibration set (plan \u00a78) \u2014 replaces config BERT_INTAKE_MIN_CONFIDENCE once this analysis lands; #104: candidates require n >= min_n and the Wilson lower bound on accuracy",
+    "recommended_threshold": null,
+    "refused": false,
+    "rows": [
+     {
+      "accuracy": 0.9774,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9608695652173913,
+      "n": 221,
+      "selective_risk": 0.0519,
+      "threshold": 0.6,
+      "wilson_lower_acc": 0.9481
+     },
+     {
+      "accuracy": 0.9774,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9608695652173913,
+      "n": 221,
+      "selective_risk": 0.0519,
+      "threshold": 0.61,
+      "wilson_lower_acc": 0.9481
+     },
+     {
+      "accuracy": 0.9774,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9608695652173913,
+      "n": 221,
+      "selective_risk": 0.0519,
+      "threshold": 0.62,
+      "wilson_lower_acc": 0.9481
+     },
+     {
+      "accuracy": 0.9772,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9521739130434783,
+      "n": 219,
+      "selective_risk": 0.0523,
+      "threshold": 0.63,
+      "wilson_lower_acc": 0.9477
+     },
+     {
+      "accuracy": 0.977,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9434782608695652,
+      "n": 217,
+      "selective_risk": 0.0528,
+      "threshold": 0.64,
+      "wilson_lower_acc": 0.9472
+     },
+     {
+      "accuracy": 0.977,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9434782608695652,
+      "n": 217,
+      "selective_risk": 0.0528,
+      "threshold": 0.65,
+      "wilson_lower_acc": 0.9472
+     },
+     {
+      "accuracy": 0.9769,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9391304347826087,
+      "n": 216,
+      "selective_risk": 0.053,
+      "threshold": 0.66,
+      "wilson_lower_acc": 0.947
+     },
+     {
+      "accuracy": 0.9813,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9304347826086956,
+      "n": 214,
+      "selective_risk": 0.0471,
+      "threshold": 0.67,
+      "wilson_lower_acc": 0.9529
+     },
+     {
+      "accuracy": 0.9813,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9304347826086956,
+      "n": 214,
+      "selective_risk": 0.0471,
+      "threshold": 0.68,
+      "wilson_lower_acc": 0.9529
+     },
+     {
+      "accuracy": 0.9813,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9304347826086956,
+      "n": 214,
+      "selective_risk": 0.0471,
+      "threshold": 0.69,
+      "wilson_lower_acc": 0.9529
+     },
+     {
+      "accuracy": 0.9813,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9304347826086956,
+      "n": 214,
+      "selective_risk": 0.0471,
+      "threshold": 0.7,
+      "wilson_lower_acc": 0.9529
+     },
+     {
+      "accuracy": 0.9813,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9304347826086956,
+      "n": 214,
+      "selective_risk": 0.0471,
+      "threshold": 0.71,
+      "wilson_lower_acc": 0.9529
+     },
+     {
+      "accuracy": 0.9812,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9260869565217391,
+      "n": 213,
+      "selective_risk": 0.0473,
+      "threshold": 0.72,
+      "wilson_lower_acc": 0.9527
+     },
+     {
+      "accuracy": 0.9811,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9217391304347826,
+      "n": 212,
+      "selective_risk": 0.0475,
+      "threshold": 0.73,
+      "wilson_lower_acc": 0.9525
+     },
+     {
+      "accuracy": 0.981,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9173913043478261,
+      "n": 211,
+      "selective_risk": 0.0477,
+      "threshold": 0.74,
+      "wilson_lower_acc": 0.9523
+     },
+     {
+      "accuracy": 0.9809,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.908695652173913,
+      "n": 209,
+      "selective_risk": 0.0482,
+      "threshold": 0.75,
+      "wilson_lower_acc": 0.9518
+     },
+     {
+      "accuracy": 0.9809,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.908695652173913,
+      "n": 209,
+      "selective_risk": 0.0482,
+      "threshold": 0.76,
+      "wilson_lower_acc": 0.9518
+     },
+     {
+      "accuracy": 0.9809,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.908695652173913,
+      "n": 209,
+      "selective_risk": 0.0482,
+      "threshold": 0.77,
+      "wilson_lower_acc": 0.9518
+     },
+     {
+      "accuracy": 0.9808,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9043478260869565,
+      "n": 208,
+      "selective_risk": 0.0484,
+      "threshold": 0.78,
+      "wilson_lower_acc": 0.9516
+     },
+     {
+      "accuracy": 0.9808,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9043478260869565,
+      "n": 208,
+      "selective_risk": 0.0484,
+      "threshold": 0.79,
+      "wilson_lower_acc": 0.9516
+     },
+     {
+      "accuracy": 0.9808,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9043478260869565,
+      "n": 208,
+      "selective_risk": 0.0484,
+      "threshold": 0.8,
+      "wilson_lower_acc": 0.9516
+     },
+     {
+      "accuracy": 0.9807,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.9,
+      "n": 207,
+      "selective_risk": 0.0486,
+      "threshold": 0.81,
+      "wilson_lower_acc": 0.9514
+     },
+     {
+      "accuracy": 0.9854,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.8913043478260869,
+      "n": 205,
+      "selective_risk": 0.0421,
+      "threshold": 0.82,
+      "wilson_lower_acc": 0.9579
+     },
+     {
+      "accuracy": 0.9854,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.8913043478260869,
+      "n": 205,
+      "selective_risk": 0.0421,
+      "threshold": 0.83,
+      "wilson_lower_acc": 0.9579
+     },
+     {
+      "accuracy": 0.9853,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.8869565217391304,
+      "n": 204,
+      "selective_risk": 0.0423,
+      "threshold": 0.84,
+      "wilson_lower_acc": 0.9577
+     },
+     {
+      "accuracy": 0.9853,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.8869565217391304,
+      "n": 204,
+      "selective_risk": 0.0423,
+      "threshold": 0.85,
+      "wilson_lower_acc": 0.9577
+     },
+     {
+      "accuracy": 0.9901,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.8826086956521739,
+      "n": 203,
+      "selective_risk": 0.0352,
+      "threshold": 0.86,
+      "wilson_lower_acc": 0.9648
+     },
+     {
+      "accuracy": 0.9901,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.8782608695652174,
+      "n": 202,
+      "selective_risk": 0.0354,
+      "threshold": 0.87,
+      "wilson_lower_acc": 0.9646
+     },
+     {
+      "accuracy": 0.99,
+      "band_ece": 0.08028867221595543,
+      "coverage": 0.8739130434782608,
+      "n": 201,
+      "selective_risk": 0.0355,
+      "threshold": 0.88,
+      "wilson_lower_acc": 0.9645
+     },
+     {
+      "accuracy": 0.99,
+      "band_ece": 0.07893432942281212,
+      "coverage": 0.8695652173913043,
+      "n": 200,
+      "selective_risk": 0.0357,
+      "threshold": 0.89,
+      "wilson_lower_acc": 0.9643
+     },
+     {
+      "accuracy": 0.9898,
+      "band_ece": 0.07561099576929717,
+      "coverage": 0.8565217391304348,
+      "n": 197,
+      "selective_risk": 0.0363,
+      "threshold": 0.9,
+      "wilson_lower_acc": 0.9637
+     },
+     {
+      "accuracy": 0.9898,
+      "band_ece": 0.07493897889145286,
+      "coverage": 0.8521739130434782,
+      "n": 196,
+      "selective_risk": 0.0364,
+      "threshold": 0.91,
+      "wilson_lower_acc": 0.9636
+     },
+     {
+      "accuracy": 0.9896,
+      "band_ece": 0.0807159630092392,
+      "coverage": 0.8347826086956521,
+      "n": 192,
+      "selective_risk": 0.0372,
+      "threshold": 0.92,
+      "wilson_lower_acc": 0.9628
+     },
+     {
+      "accuracy": 0.9947,
+      "band_ece": 0.0499498096744745,
+      "coverage": 0.8217391304347826,
+      "n": 189,
+      "selective_risk": 0.0294,
+      "threshold": 0.93,
+      "wilson_lower_acc": 0.9706
+     },
+     {
+      "accuracy": 0.9946,
+      "band_ece": 0.04660203671700414,
+      "coverage": 0.808695652173913,
+      "n": 186,
+      "selective_risk": 0.0298,
+      "threshold": 0.94,
+      "wilson_lower_acc": 0.9702
+     },
+     {
+      "accuracy": 0.9945,
+      "band_ece": 0.0427432731912084,
+      "coverage": 0.7869565217391304,
+      "n": 181,
+      "selective_risk": 0.0306,
+      "threshold": 0.95,
+      "wilson_lower_acc": 0.9694
+     },
+     {
+      "accuracy": 0.9943,
+      "band_ece": 0.03592071270710695,
+      "coverage": 0.7608695652173914,
+      "n": 175,
+      "selective_risk": 0.0317,
+      "threshold": 0.96,
+      "wilson_lower_acc": 0.9683
+     },
+     {
+      "accuracy": 0.9942,
+      "band_ece": 0.0,
+      "coverage": 0.7478260869565218,
+      "n": 172,
+      "selective_risk": 0.0322,
+      "threshold": 0.97,
+      "wilson_lower_acc": 0.9678
+     },
+     {
+      "accuracy": 0.9939,
+      "band_ece": 0.0,
+      "coverage": 0.7086956521739131,
+      "n": 163,
+      "selective_risk": 0.0339,
+      "threshold": 0.98,
+      "wilson_lower_acc": 0.9661
+     },
+     {
+      "accuracy": 1.0,
+      "band_ece": 0.0,
+      "coverage": 0.6478260869565218,
+      "n": 149,
+      "selective_risk": 0.0251,
+      "threshold": 0.99,
+      "wilson_lower_acc": 0.9749
+     }
+    ],
+    "selective_risk": 0.0251
+   },
+   "window_ece": 0.0281
+  },
+  "single-window": {
+   "doc_type_accuracy": 0.9124,
+   "mean_agreement": 1.0,
+   "n_docs": 274,
+   "selective_risk": {
+    "band_ece": 0.0,
+    "budget_met": false,
+    "coverage": 0.2518248175182482,
+    "error_budget": 0.02,
+    "insufficient_data": false,
+    "min_n": 30,
+    "n_at_pick": null,
+    "note": "deployment threshold from selective risk on the calibration set (plan \u00a78) \u2014 replaces config BERT_INTAKE_MIN_CONFIDENCE once this analysis lands; #104: candidates require n >= min_n and the Wilson lower bound on accuracy",
+    "recommended_threshold": null,
+    "refused": false,
+    "rows": [
+     {
+      "accuracy": 0.9453,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9343065693430657,
+      "n": 256,
+      "selective_risk": 0.0897,
+      "threshold": 0.6,
+      "wilson_lower_acc": 0.9103
+     },
+     {
+      "accuracy": 0.9453,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9343065693430657,
+      "n": 256,
+      "selective_risk": 0.0897,
+      "threshold": 0.61,
+      "wilson_lower_acc": 0.9103
+     },
+     {
+      "accuracy": 0.9451,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9306569343065694,
+      "n": 255,
+      "selective_risk": 0.09,
+      "threshold": 0.62,
+      "wilson_lower_acc": 0.91
+     },
+     {
+      "accuracy": 0.9451,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9306569343065694,
+      "n": 255,
+      "selective_risk": 0.09,
+      "threshold": 0.63,
+      "wilson_lower_acc": 0.91
+     },
+     {
+      "accuracy": 0.9488,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.927007299270073,
+      "n": 254,
+      "selective_risk": 0.0856,
+      "threshold": 0.64,
+      "wilson_lower_acc": 0.9144
+     },
+     {
+      "accuracy": 0.9488,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.927007299270073,
+      "n": 254,
+      "selective_risk": 0.0856,
+      "threshold": 0.65,
+      "wilson_lower_acc": 0.9144
+     },
+     {
+      "accuracy": 0.9484,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9197080291970803,
+      "n": 252,
+      "selective_risk": 0.0862,
+      "threshold": 0.66,
+      "wilson_lower_acc": 0.9138
+     },
+     {
+      "accuracy": 0.9522,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.916058394160584,
+      "n": 251,
+      "selective_risk": 0.0817,
+      "threshold": 0.67,
+      "wilson_lower_acc": 0.9183
+     },
+     {
+      "accuracy": 0.9522,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.916058394160584,
+      "n": 251,
+      "selective_risk": 0.0817,
+      "threshold": 0.68,
+      "wilson_lower_acc": 0.9183
+     },
+     {
+      "accuracy": 0.952,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9124087591240876,
+      "n": 250,
+      "selective_risk": 0.082,
+      "threshold": 0.69,
+      "wilson_lower_acc": 0.918
+     },
+     {
+      "accuracy": 0.9558,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9087591240875912,
+      "n": 249,
+      "selective_risk": 0.0774,
+      "threshold": 0.7,
+      "wilson_lower_acc": 0.9226
+     },
+     {
+      "accuracy": 0.9556,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.9051094890510949,
+      "n": 248,
+      "selective_risk": 0.0777,
+      "threshold": 0.71,
+      "wilson_lower_acc": 0.9223
+     },
+     {
+      "accuracy": 0.9634,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8978102189781022,
+      "n": 246,
+      "selective_risk": 0.0681,
+      "threshold": 0.72,
+      "wilson_lower_acc": 0.9319
+     },
+     {
+      "accuracy": 0.9634,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8978102189781022,
+      "n": 246,
+      "selective_risk": 0.0681,
+      "threshold": 0.73,
+      "wilson_lower_acc": 0.9319
+     },
+     {
+      "accuracy": 0.9712,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8868613138686131,
+      "n": 243,
+      "selective_risk": 0.0583,
+      "threshold": 0.74,
+      "wilson_lower_acc": 0.9417
+     },
+     {
+      "accuracy": 0.975,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8759124087591241,
+      "n": 240,
+      "selective_risk": 0.0535,
+      "threshold": 0.75,
+      "wilson_lower_acc": 0.9465
+     },
+     {
+      "accuracy": 0.975,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8759124087591241,
+      "n": 240,
+      "selective_risk": 0.0535,
+      "threshold": 0.76,
+      "wilson_lower_acc": 0.9465
+     },
+     {
+      "accuracy": 0.975,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8759124087591241,
+      "n": 240,
+      "selective_risk": 0.0535,
+      "threshold": 0.77,
+      "wilson_lower_acc": 0.9465
+     },
+     {
+      "accuracy": 0.979,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8686131386861314,
+      "n": 238,
+      "selective_risk": 0.0482,
+      "threshold": 0.78,
+      "wilson_lower_acc": 0.9518
+     },
+     {
+      "accuracy": 0.979,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8686131386861314,
+      "n": 238,
+      "selective_risk": 0.0482,
+      "threshold": 0.79,
+      "wilson_lower_acc": 0.9518
+     },
+     {
+      "accuracy": 0.979,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8686131386861314,
+      "n": 238,
+      "selective_risk": 0.0482,
+      "threshold": 0.8,
+      "wilson_lower_acc": 0.9518
+     },
+     {
+      "accuracy": 0.9872,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8576642335766423,
+      "n": 235,
+      "selective_risk": 0.0369,
+      "threshold": 0.81,
+      "wilson_lower_acc": 0.9631
+     },
+     {
+      "accuracy": 0.9871,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8467153284671532,
+      "n": 232,
+      "selective_risk": 0.0373,
+      "threshold": 0.82,
+      "wilson_lower_acc": 0.9627
+     },
+     {
+      "accuracy": 0.9913,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8394160583941606,
+      "n": 230,
+      "selective_risk": 0.0311,
+      "threshold": 0.83,
+      "wilson_lower_acc": 0.9689
+     },
+     {
+      "accuracy": 0.9911,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8211678832116789,
+      "n": 225,
+      "selective_risk": 0.0318,
+      "threshold": 0.84,
+      "wilson_lower_acc": 0.9682
+     },
+     {
+      "accuracy": 0.991,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.8065693430656934,
+      "n": 221,
+      "selective_risk": 0.0324,
+      "threshold": 0.85,
+      "wilson_lower_acc": 0.9676
+     },
+     {
+      "accuracy": 0.9954,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.7956204379562044,
+      "n": 218,
+      "selective_risk": 0.0255,
+      "threshold": 0.86,
+      "wilson_lower_acc": 0.9745
+     },
+     {
+      "accuracy": 0.9953,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.7846715328467153,
+      "n": 215,
+      "selective_risk": 0.0259,
+      "threshold": 0.87,
+      "wilson_lower_acc": 0.9741
+     },
+     {
+      "accuracy": 0.9953,
+      "band_ece": 0.05838853834287103,
+      "coverage": 0.7700729927007299,
+      "n": 211,
+      "selective_risk": 0.0264,
+      "threshold": 0.88,
+      "wilson_lower_acc": 0.9736
+     },
+     {
+      "accuracy": 0.9952,
+      "band_ece": 0.055858981045908654,
+      "coverage": 0.7554744525547445,
+      "n": 207,
+      "selective_risk": 0.0269,
+      "threshold": 0.89,
+      "wilson_lower_acc": 0.9731
+     },
+     {
+      "accuracy": 0.9951,
+      "band_ece": 0.05529261445182398,
+      "coverage": 0.7518248175182481,
+      "n": 206,
+      "selective_risk": 0.027,
+      "threshold": 0.9,
+      "wilson_lower_acc": 0.973
+     },
+     {
+      "accuracy": 0.9949,
+      "band_ece": 0.04975099697090993,
+      "coverage": 0.7116788321167883,
+      "n": 195,
+      "selective_risk": 0.0285,
+      "threshold": 0.91,
+      "wilson_lower_acc": 0.9715
+     },
+     {
+      "accuracy": 0.9946,
+      "band_ece": 0.04487950662526756,
+      "coverage": 0.6788321167883211,
+      "n": 186,
+      "selective_risk": 0.0298,
+      "threshold": 0.92,
+      "wilson_lower_acc": 0.9702
+     },
+     {
+      "accuracy": 0.9944,
+      "band_ece": 0.04197857961327878,
+      "coverage": 0.656934306569343,
+      "n": 180,
+      "selective_risk": 0.0308,
+      "threshold": 0.93,
+      "wilson_lower_acc": 0.9692
+     },
+     {
+      "accuracy": 0.994,
+      "band_ece": 0.035656694080329385,
+      "coverage": 0.6094890510948905,
+      "n": 167,
+      "selective_risk": 0.0331,
+      "threshold": 0.94,
+      "wilson_lower_acc": 0.9669
+     },
+     {
+      "accuracy": 1.0,
+      "band_ece": 0.0389798813480101,
+      "coverage": 0.572992700729927,
+      "n": 157,
+      "selective_risk": 0.0239,
+      "threshold": 0.95,
+      "wilson_lower_acc": 0.9761
+     },
+     {
+      "accuracy": 1.0,
+      "band_ece": 0.034521221843697554,
+      "coverage": 0.5145985401459854,
+      "n": 141,
+      "selective_risk": 0.0265,
+      "threshold": 0.96,
+      "wilson_lower_acc": 0.9735
+     },
+     {
+      "accuracy": 1.0,
+      "band_ece": 0.0,
+      "coverage": 0.42700729927007297,
+      "n": 117,
+      "selective_risk": 0.0318,
+      "threshold": 0.97,
+      "wilson_lower_acc": 0.9682
+     },
+     {
+      "accuracy": 1.0,
+      "band_ece": 0.0,
+      "coverage": 0.3467153284671533,
+      "n": 95,
+      "selective_risk": 0.0389,
+      "threshold": 0.98,
+      "wilson_lower_acc": 0.9611
+     },
+     {
+      "accuracy": 1.0,
+      "band_ece": 0.0,
+      "coverage": 0.2518248175182482,
+      "n": 69,
+      "selective_risk": 0.0527,
+      "threshold": 0.99,
+      "wilson_lower_acc": 0.9473
+     }
+    ],
+    "selective_risk": 0.0527
+   },
+   "window_ece": 0.0419
+  }
+ },
+ "doc_type_accuracy": 0.8947,
+ "head_ece": {
+  "contract": 0.0443,
+  "corporate_record": 0.1346,
+  "correspondence": 0.0713,
+  "doc_type": 0.0228,
+  "insurance_claim": 0.067,
+  "merger_agreement": 0.0655
+ },
+ "model_kind": "pytorch",
+ "n_docs": 323,
+ "per_stratum_confusion": {
+  "contract->contract": 50,
+  "contract->corporate_record": 7,
+  "contract->correspondence": 1,
+  "contract->llm_overflow": 1,
+  "contract->merger_agreement": 1,
+  "corporate_record->corporate_record": 27,
+  "corporate_record->correspondence": 12,
+  "corporate_record->llm_overflow": 8,
+  "correspondence->contract": 2,
+  "correspondence->corporate_record": 2,
+  "correspondence->correspondence": 81,
+  "insurance_claim->insurance_claim": 114,
+  "merger_agreement->merger_agreement": 17
+ },
+ "recorded_gates": {
+  "P0_doc_type": {
+   "actual": 0.8947,
+   "met": false,
+   "report_only": true,
+   "threshold": 0.95
+  },
+  "P0_subclass": {
+   "actual": 0.526,
+   "met": false,
+   "report_only": true,
+   "threshold": 0.75
+  }
+ },
+ "sample": 0,
+ "seed": 42,
+ "selective_risk": {
+  "band_ece": 0.0,
+  "budget_met": true,
+  "coverage": 0.43253968253968256,
+  "error_budget": 0.02,
+  "insufficient_data": false,
+  "min_n": 30,
+  "n_at_pick": 369,
+  "note": "deployment threshold from selective risk on the calibration set (plan \u00a78) \u2014 replaces config BERT_INTAKE_MIN_CONFIDENCE once this analysis lands; #104: candidates require n >= min_n and the Wilson lower bound on accuracy",
+  "recommended_threshold": 0.93,
+  "refused": false,
+  "rows": [
+   {
+    "accuracy": 0.9602,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9464285714285714,
+    "n": 477,
+    "selective_risk": 0.0614,
+    "threshold": 0.6,
+    "wilson_lower_acc": 0.9386
+   },
+   {
+    "accuracy": 0.9602,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9464285714285714,
+    "n": 477,
+    "selective_risk": 0.0614,
+    "threshold": 0.61,
+    "wilson_lower_acc": 0.9386
+   },
+   {
+    "accuracy": 0.9601,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9444444444444444,
+    "n": 476,
+    "selective_risk": 0.0615,
+    "threshold": 0.62,
+    "wilson_lower_acc": 0.9385
+   },
+   {
+    "accuracy": 0.9599,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9404761904761905,
+    "n": 474,
+    "selective_risk": 0.0618,
+    "threshold": 0.63,
+    "wilson_lower_acc": 0.9382
+   },
+   {
+    "accuracy": 0.9618,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9345238095238095,
+    "n": 471,
+    "selective_risk": 0.0596,
+    "threshold": 0.64,
+    "wilson_lower_acc": 0.9404
+   },
+   {
+    "accuracy": 0.9618,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9345238095238095,
+    "n": 471,
+    "selective_risk": 0.0596,
+    "threshold": 0.65,
+    "wilson_lower_acc": 0.9404
+   },
+   {
+    "accuracy": 0.9615,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9285714285714286,
+    "n": 468,
+    "selective_risk": 0.06,
+    "threshold": 0.66,
+    "wilson_lower_acc": 0.94
+   },
+   {
+    "accuracy": 0.9656,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9226190476190477,
+    "n": 465,
+    "selective_risk": 0.0552,
+    "threshold": 0.67,
+    "wilson_lower_acc": 0.9448
+   },
+   {
+    "accuracy": 0.9656,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9226190476190477,
+    "n": 465,
+    "selective_risk": 0.0552,
+    "threshold": 0.68,
+    "wilson_lower_acc": 0.9448
+   },
+   {
+    "accuracy": 0.9655,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9206349206349206,
+    "n": 464,
+    "selective_risk": 0.0553,
+    "threshold": 0.69,
+    "wilson_lower_acc": 0.9447
+   },
+   {
+    "accuracy": 0.9676,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9186507936507936,
+    "n": 463,
+    "selective_risk": 0.0528,
+    "threshold": 0.7,
+    "wilson_lower_acc": 0.9472
+   },
+   {
+    "accuracy": 0.9675,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9166666666666666,
+    "n": 462,
+    "selective_risk": 0.0529,
+    "threshold": 0.71,
+    "wilson_lower_acc": 0.9471
+   },
+   {
+    "accuracy": 0.9717,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9107142857142857,
+    "n": 459,
+    "selective_risk": 0.0478,
+    "threshold": 0.72,
+    "wilson_lower_acc": 0.9522
+   },
+   {
+    "accuracy": 0.9716,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9087301587301587,
+    "n": 458,
+    "selective_risk": 0.048,
+    "threshold": 0.73,
+    "wilson_lower_acc": 0.952
+   },
+   {
+    "accuracy": 0.9758,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.9007936507936508,
+    "n": 454,
+    "selective_risk": 0.0429,
+    "threshold": 0.74,
+    "wilson_lower_acc": 0.9571
+   },
+   {
+    "accuracy": 0.9777,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8908730158730159,
+    "n": 449,
+    "selective_risk": 0.0405,
+    "threshold": 0.75,
+    "wilson_lower_acc": 0.9595
+   },
+   {
+    "accuracy": 0.9777,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8908730158730159,
+    "n": 449,
+    "selective_risk": 0.0405,
+    "threshold": 0.76,
+    "wilson_lower_acc": 0.9595
+   },
+   {
+    "accuracy": 0.9777,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8908730158730159,
+    "n": 449,
+    "selective_risk": 0.0405,
+    "threshold": 0.77,
+    "wilson_lower_acc": 0.9595
+   },
+   {
+    "accuracy": 0.9798,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8849206349206349,
+    "n": 446,
+    "selective_risk": 0.0379,
+    "threshold": 0.78,
+    "wilson_lower_acc": 0.9621
+   },
+   {
+    "accuracy": 0.9798,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8849206349206349,
+    "n": 446,
+    "selective_risk": 0.0379,
+    "threshold": 0.79,
+    "wilson_lower_acc": 0.9621
+   },
+   {
+    "accuracy": 0.9798,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8849206349206349,
+    "n": 446,
+    "selective_risk": 0.0379,
+    "threshold": 0.8,
+    "wilson_lower_acc": 0.9621
+   },
+   {
+    "accuracy": 0.9842,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.876984126984127,
+    "n": 442,
+    "selective_risk": 0.0323,
+    "threshold": 0.81,
+    "wilson_lower_acc": 0.9677
+   },
+   {
+    "accuracy": 0.9863,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8670634920634921,
+    "n": 437,
+    "selective_risk": 0.0296,
+    "threshold": 0.82,
+    "wilson_lower_acc": 0.9704
+   },
+   {
+    "accuracy": 0.9885,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8630952380952381,
+    "n": 435,
+    "selective_risk": 0.0266,
+    "threshold": 0.83,
+    "wilson_lower_acc": 0.9734
+   },
+   {
+    "accuracy": 0.9883,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8511904761904762,
+    "n": 429,
+    "selective_risk": 0.027,
+    "threshold": 0.84,
+    "wilson_lower_acc": 0.973
+   },
+   {
+    "accuracy": 0.9882,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8432539682539683,
+    "n": 425,
+    "selective_risk": 0.0272,
+    "threshold": 0.85,
+    "wilson_lower_acc": 0.9728
+   },
+   {
+    "accuracy": 0.9929,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8353174603174603,
+    "n": 421,
+    "selective_risk": 0.0207,
+    "threshold": 0.86,
+    "wilson_lower_acc": 0.9793
+   },
+   {
+    "accuracy": 0.9928,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8273809523809523,
+    "n": 417,
+    "selective_risk": 0.0209,
+    "threshold": 0.87,
+    "wilson_lower_acc": 0.9791
+   },
+   {
+    "accuracy": 0.9927,
+    "band_ece": 0.052801058586171554,
+    "coverage": 0.8174603174603174,
+    "n": 412,
+    "selective_risk": 0.0212,
+    "threshold": 0.88,
+    "wilson_lower_acc": 0.9788
+   },
+   {
+    "accuracy": 0.9926,
+    "band_ece": 0.050128013776076556,
+    "coverage": 0.8075396825396826,
+    "n": 407,
+    "selective_risk": 0.0214,
+    "threshold": 0.89,
+    "wilson_lower_acc": 0.9786
+   },
+   {
+    "accuracy": 0.9926,
+    "band_ece": 0.048148716561853315,
+    "coverage": 0.7996031746031746,
+    "n": 403,
+    "selective_risk": 0.0217,
+    "threshold": 0.9,
+    "wilson_lower_acc": 0.9783
+   },
+   {
+    "accuracy": 0.9923,
+    "band_ece": 0.042713229066003534,
+    "coverage": 0.7757936507936508,
+    "n": 391,
+    "selective_risk": 0.0223,
+    "threshold": 0.91,
+    "wilson_lower_acc": 0.9777
+   },
+   {
+    "accuracy": 0.9921,
+    "band_ece": 0.039961676266847865,
+    "coverage": 0.75,
+    "n": 378,
+    "selective_risk": 0.0231,
+    "threshold": 0.92,
+    "wilson_lower_acc": 0.9769
+   },
+   {
+    "accuracy": 0.9946,
+    "band_ece": 0.03516529226855061,
+    "coverage": 0.7321428571428571,
+    "n": 369,
+    "selective_risk": 0.0195,
+    "threshold": 0.93,
+    "wilson_lower_acc": 0.9805
+   },
+   {
+    "accuracy": 0.9943,
+    "band_ece": 0.02741702061618661,
+    "coverage": 0.7003968253968254,
+    "n": 353,
+    "selective_risk": 0.0204,
+    "threshold": 0.94,
+    "wilson_lower_acc": 0.9796
+   },
+   {
+    "accuracy": 0.997,
+    "band_ece": 0.03967111658451594,
+    "coverage": 0.6706349206349206,
+    "n": 338,
+    "selective_risk": 0.0166,
+    "threshold": 0.95,
+    "wilson_lower_acc": 0.9834
+   },
+   {
+    "accuracy": 0.9968,
+    "band_ece": 0.034676720828520746,
+    "coverage": 0.626984126984127,
+    "n": 316,
+    "selective_risk": 0.0177,
+    "threshold": 0.96,
+    "wilson_lower_acc": 0.9823
+   },
+   {
+    "accuracy": 0.9965,
+    "band_ece": 0.0,
+    "coverage": 0.5734126984126984,
+    "n": 289,
+    "selective_risk": 0.0193,
+    "threshold": 0.97,
+    "wilson_lower_acc": 0.9807
+   },
+   {
+    "accuracy": 0.9961,
+    "band_ece": 0.0,
+    "coverage": 0.5119047619047619,
+    "n": 258,
+    "selective_risk": 0.0216,
+    "threshold": 0.98,
+    "wilson_lower_acc": 0.9784
+   },
+   {
+    "accuracy": 1.0,
+    "band_ece": 0.0,
+    "coverage": 0.43253968253968256,
+    "n": 218,
+    "selective_risk": 0.0173,
+    "threshold": 0.99,
+    "wilson_lower_acc": 0.9827
+   }
+  ],
+  "selective_risk": 0.0173
+ },
+ "subclass_accuracy_conditional": 0.526,
+ "window_calibration": {
+  "band_ece": 0.0528,
+  "ece": 0.0203,
+  "n_windows": 504
+ }
+}

@@ -866,6 +866,19 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
     budget.
     """
     per_head_ece = selected.get("per_head_ece_calibrated", {})
+    if not per_head_ece:
+        # Legacy-record fallback: trainer images that predate the nested
+        # sidecar still record the per-head calibrated ECE as flat
+        # ``<head>_ece_calibrated`` keys on the selected epoch event —
+        # derive the sidecar from those (same numbers the selection rule
+        # used), so the artifact always ships an exclusion policy.
+        per_head_ece = {
+            name[:-len("_ece_calibrated")]: round(v, 6)
+            for name, v in sorted(selected.items())
+            if name.endswith("_ece_calibrated")
+        }
+        if per_head_ece:
+            per_head_ece = {k: float(v) for k, v in per_head_ece.items()}
     return {
         "run_id": run_id,
         "data": args.data,

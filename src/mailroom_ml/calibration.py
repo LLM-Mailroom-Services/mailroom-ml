@@ -35,6 +35,7 @@ __all__ = [
     "ece_from_conf",
     "ece_within_band",
     "reliability_table",
+    "wilson_lower",
     "selective_risk_sweep",
 ]
 
@@ -178,6 +179,25 @@ def reliability_table(conf: np.ndarray, correct: np.ndarray,
     return rows
 
 
+def wilson_lower(acc: float, n: int, z: float = 1.96) -> float:
+    """Wilson score lower bound on an accuracy proportion (#104 min-n guard).
+
+    The statistically honest conservative estimate: with n observations and
+    observed accuracy ``acc``, the true accuracy is >= the returned bound
+    with ~97.5% confidence (one-sided, z = 1.96).  The selective-risk sweep
+    uses ``1 - wilson_lower`` as the conservative error rate, so a handful
+    of lucky docs can never recommend a threshold.
+    """
+    if n <= 0:
+        return 0.0
+    acc = float(np.clip(acc, 0.0, 1.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (acc + z2 / (2.0 * n)) / denom
+    half = z * np.sqrt(acc * (1.0 - acc) / n + z2 / (4.0 * n * n)) / denom
+    return float(max(0.0, center - half))
+
+
 def selective_risk_sweep(
     conf: np.ndarray,
     correct: np.ndarray,
@@ -185,6 +205,7 @@ def selective_risk_sweep(
     error_budget: float = FAST_PATH_ERROR_BUDGET,
     band_lo: float = _ECE_BAND_LO,
     band_hi: float = _ECE_BAND_HI,
+    min_n: int = 30,
 ) -> dict[str, Any]:
     """Threshold sweep: P(err | fast path) per threshold + deployment pick.
 
@@ -193,8 +214,15 @@ def selective_risk_sweep(
     (selective risk — plan §8: P(err | fast path) ≤ error budget) and the
     ECE within the deployment band.
 
-    The recommended deployment threshold is the LOWEST threshold whose
-    selective risk is within budget AND band ECE within 0.05 — lower
+    #104 statistical honesty: the per-row ``selective_risk`` is the WILSON
+    upper bound on the error rate (1 - Wilson lower bound on accuracy), and
+    a row is only a recommendation candidate when it has n >= ``min_n``
+    observations — a sweep over 1 correct doc can no longer report
+    ``budget_met`` vacuously.  When no threshold reaches ``min_n`` the
+    report says ``insufficient_data`` instead of recommending.
+
+    The recommended deployment threshold is the LOWEST candidate threshold
+    whose selective risk is within budget AND band ECE within 0.05 — lower
     thresholds maximize coverage, so the sweep picks the most permissive
     threshold that still meets the error budget (initial budget 0.02 per
     ``FAST_PATH_ERROR_BUDGET``).  Deterministic: thresholds sort ascending,
@@ -202,7 +230,8 @@ def selective_risk_sweep(
 
     Returns the report dict (``calibration:classify``-shaped):
     ``rows`` (per-threshold), ``recommended_threshold``, ``selective_risk``,
-    ``band_ece``, ``coverage``, ``error_budget``, ``budget_met``.
+    ``band_ece``, ``coverage``, ``error_budget``, ``budget_met``, ``min_n``,
+    ``n_at_pick``, ``insufficient_data``.
     """
     conf = np.asarray(conf, dtype=np.float64)
     correct = np.asarray(correct, dtype=np.float64)
@@ -216,34 +245,45 @@ def selective_risk_sweep(
     for t in thresholds:
         sel = conf >= t
         n = int(sel.sum())
-        risk = float(1.0 - correct[sel].mean()) if n else 1.0
+        acc = float(correct[sel].mean()) if n else 0.0
+        acc_lower = wilson_lower(acc, n)
         rows.append({
             "threshold": float(t),
             "coverage": float(n / len(conf)) if len(conf) else 0.0,
             "n": n,
-            "selective_risk": risk,
+            "accuracy": round(acc, 4),
+            "wilson_lower_acc": round(acc_lower, 4),
+            "selective_risk": round(1.0 - acc_lower, 4),
             "band_ece": ece_within_band(conf[sel], correct[sel], band_lo, band_hi),
         })
 
     recommended: float | None = None
+    n_at_pick: int | None = None
     for r in rows:  # ascending thresholds — first within budget is the pick
-        if r["selective_risk"] <= error_budget and r["band_ece"] <= 0.05:
+        if r["n"] >= min_n and r["selective_risk"] <= error_budget \
+                and r["band_ece"] <= 0.05:
             recommended = r["threshold"]
+            n_at_pick = r["n"]
             break
 
     best = rows[-1] if rows else {}
+    max_n = max((r["n"] for r in rows), default=0)
     return {
         "rows": rows,
         "recommended_threshold": recommended,
-        "selective_risk": risk,
+        "selective_risk": best.get("selective_risk", 1.0),
         "band_ece": best.get("band_ece", 0.0),
         "coverage": best.get("coverage", 0.0),
         "error_budget": error_budget,
         "budget_met": recommended is not None,
+        "min_n": min_n,
+        "n_at_pick": n_at_pick,
+        "insufficient_data": max_n < min_n,
         "note": (
             "deployment threshold from selective risk on the calibration set "
             "(plan §8) — replaces config BERT_INTAKE_MIN_CONFIDENCE once "
-            "this analysis lands"
+            "this analysis lands; #104: candidates require n >= min_n and "
+            "the Wilson lower bound on accuracy"
         ),
     }
 

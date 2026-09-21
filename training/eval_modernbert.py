@@ -44,8 +44,10 @@ from mailroom_ml.calibration import (  # noqa: E402
     selective_risk_sweep,
 )
 from mailroom_ml.config import (  # noqa: E402
+    HEAD_ECE_EXCLUSION_THRESHOLD,
     RANDOM_STATE,
     ROUTE_DOC_CONFIDENCE,
+    SELECTIVE_RISK_MIN_N,
     STAGE_DIR,
 )
 from mailroom_ml.inference import (  # noqa: E402
@@ -146,6 +148,15 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     confusion: dict[tuple[str, str], int] = Counter()
     win_confs: list[float] = []
     win_correct: list[bool] = []
+    # #104 cohort split: single-window (agreement trivially 1.0 — the gate
+    # reduces to one miscalibrated p) vs multi-window — scored separately
+    # so the cohorts never conflate.
+    cohorts: dict[str, dict] = {
+        "single-window": {"n_docs": 0, "correct_dt": 0, "agreements": [],
+                          "win_confs": [], "win_correct": []},
+        "multi-window": {"n_docs": 0, "correct_dt": 0, "agreements": [],
+                         "win_confs": [], "win_correct": []},
+    }
 
     for r in rows:
         title = str(r.get("title") or "")
@@ -170,8 +181,12 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         dt_pred = merged["doc_type"]
         sc_pred = merged["subclass"]
         confusion[(gt_dt, dt_pred)] += 1
+        cohort = "single-window" if len(wins) == 1 else "multi-window"
+        cohorts[cohort]["n_docs"] += 1
+        cohorts[cohort]["agreements"].append(float(merged.get("agreement", 0.0)))
         if dt_pred == gt_dt:
             correct_dt += 1
+            cohorts[cohort]["correct_dt"] += 1
             dt_cond_denom += 1
             if sc_pred is not None and sc_pred == gt_sc:
                 correct_sc += 1
@@ -179,6 +194,9 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         for p in merged["_window_probs"]:
             win_confs.append(float(p.max()))
             win_correct.append(bool(np.argmax(p) == _dt_id(bundle, gt_dt)))
+            cohorts[cohort]["win_confs"].append(float(p.max()))
+            cohorts[cohort]["win_correct"].append(
+                bool(np.argmax(p) == _dt_id(bundle, gt_dt)))
 
     n = len(rows)
     acc_dt = correct_dt / n if n else 0.0
@@ -208,6 +226,8 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
                 np.asarray(win_confs), np.asarray(win_correct, dtype=int)), 4)
             if win_confs else None,
         },
+        "cohorts": _cohort_report(cohorts),
+        "head_ece": _head_ece_report(bundle),
         "recorded_gates": {
             "P0_doc_type": {"threshold": 0.95, "actual": round(acc_dt, 4),
                             "met": acc_dt >= 0.95, "report_only": True},
@@ -216,9 +236,67 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         },
     }
     if selective_risk and win_confs:
-        report["selective_risk"] = selective_risk_sweep(
-            np.asarray(win_confs), np.asarray(win_correct, dtype=int))
+        report["selective_risk"] = _sweep_or_refuse(bundle, win_confs,
+                                                    win_correct)
+        for cohort, c in cohorts.items():
+            if c["win_confs"]:
+                report.setdefault("cohorts")[cohort]["selective_risk"] = \
+                    _sweep_or_refuse(bundle, c["win_confs"], c["win_correct"])
     return report
+
+
+def _cohort_report(cohorts: dict[str, dict]) -> dict:
+    """#104 per-cohort stats: n, accuracy, mean agreement, window ECE."""
+    out: dict[str, dict] = {}
+    for name, c in cohorts.items():
+        n = c["n_docs"]
+        wc = np.asarray(c["win_confs"])
+        wk = np.asarray(c["win_correct"], dtype=int)
+        out[name] = {
+            "n_docs": n,
+            "doc_type_accuracy": round(c["correct_dt"] / n, 4) if n else None,
+            "mean_agreement": round(float(np.mean(c["agreements"])), 4)
+            if c["agreements"] else None,
+            "window_ece": round(ece_from_conf(wc, wk), 4) if len(wc) else None,
+        }
+    return out
+
+
+def _head_ece_report(bundle) -> dict:
+    """#104 per-head ECE sidecar surfaced from the bundle's exclusion policy.
+
+    Pre-#107 artifacts carry no sidecar -> every head reports ``None`` and
+    threshold passes are refused (see ``_sweep_or_refuse``).
+    """
+    policy = bundle.exclusion_policy or {}
+    excluded = policy.get("excluded") or {}
+    return {
+        name: (info.get("ece_calibrated") if isinstance(info, dict) else None)
+        for name, info in sorted(excluded.items())
+    }
+
+
+def _sweep_or_refuse(bundle, confs: list[float], correct: list[bool]) -> dict:
+    """#104: run the min-n + Wilson sweep, or refuse when the doc_type head
+    has no shipped per-head ECE or its ECE >= HEAD_ECE_EXCLUSION_THRESHOLD
+    (uncalibratable heads must not pass thresholds)."""
+    policy = bundle.exclusion_policy or {}
+    excluded = policy.get("excluded") or {}
+    dt_info = excluded.get("doc_type")
+    ece_val = dt_info.get("ece_calibrated") if isinstance(dt_info, dict) else None
+    if ece_val is None:
+        return {"refused": True,
+                "reason": "no per-head ECE sidecar in the artifact "
+                          "(pre-#107 publish)"}
+    if ece_val >= HEAD_ECE_EXCLUSION_THRESHOLD:
+        return {"refused": True,
+                "reason": f"doc_type ECE {ece_val} >= "
+                          f"{HEAD_ECE_EXCLUSION_THRESHOLD} (uncalibratable)"}
+    sweep = selective_risk_sweep(
+        np.asarray(confs), np.asarray(correct, dtype=int),
+        min_n=SELECTIVE_RISK_MIN_N)
+    sweep["refused"] = False
+    return sweep
 
 
 def _dt_id(bundle, doc_type: str) -> int:
@@ -266,16 +344,31 @@ def format_report(report: dict) -> str:
         f"  ece       : {wc['ece']}",
         f"  band ece  : {wc['band_ece']} (0.88-0.97 deployment band)",
     ]
+    lines += ["", "cohorts (#104 single- vs multi-window):"]
+    for name, c in report["cohorts"].items():
+        lines.append(
+            f"  {name:<14s} n={c['n_docs']:<4d} acc={c['doc_type_accuracy']} "
+            f"mean_agreement={c['mean_agreement']} window_ece={c['window_ece']}")
+    lines += ["", "per-head ECE sidecar (#104):"]
+    for head, ece_val in report["head_ece"].items():
+        lines.append(f"  {head:<20s} {ece_val}")
     if report.get("selective_risk"):
         sr = report["selective_risk"]
         lines += [
             "",
-            "selective risk (plan §8):",
-            f"  recommended threshold : {sr['recommended_threshold']}",
-            f"  budget met            : {sr['budget_met']} "
-            f"(P(err|fast path) <= {sr['error_budget']})",
-            f"  coverage at pick      : {sr['coverage']}",
+            "selective risk (plan §8, #104 min-n + Wilson):",
         ]
+        if sr.get("refused"):
+            lines.append(f"  REFUSED: {sr['reason']}")
+        else:
+            lines += [
+                f"  recommended threshold : {sr['recommended_threshold']}",
+                f"  budget met            : {sr['budget_met']} "
+                f"(P(err|fast path) <= {sr['error_budget']})",
+                f"  coverage at pick      : {sr['coverage']} "
+                f"(n={sr['n_at_pick']}, min_n={sr['min_n']})",
+                f"  insufficient data     : {sr['insufficient_data']}",
+            ]
     lines += ["", "recorded gates (report-only, plan §7):"]
     for name, g in report["recorded_gates"].items():
         lines.append(f"  {name:<12s} actual {g['actual']} vs "

@@ -122,6 +122,14 @@ ROUTE_MARGIN = 0.10                # winner minus runner-up, normalized
 ROUTE_MIN_AUTHENTIC_SUPPORT = 5    # real training rows required per label
 FAST_PATH_ERROR_BUDGET = 0.02      # selective-risk target: P(err | fast path)
 
+# #104 eval-harness policy: the selective-risk sweep never recommends from
+# fewer than this many observations (Wilson lower bound on accuracy), and
+# threshold passes refuse heads without a shipped per-head ECE or with ECE
+# >= this (uncalibratable heads — insurance T=0.05 bound, corporate_record
+# ECE 0.161).
+SELECTIVE_RISK_MIN_N = 30
+HEAD_ECE_EXCLUSION_THRESHOLD = 0.10
+
 # Abstention / unknown + OOD gate (novelty flag from OOD probe, Phase 2).
 ABSTAIN_UNKNOWN_CLASS = "unknown"
 

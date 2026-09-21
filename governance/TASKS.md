@@ -25,6 +25,39 @@ Corpus: `mailroom-finetune @ 19720ceb…` (modifiable duplicate; canonical
 | U6 integration + full suite | orchestrator | ⏳ pending | uv run pytest -m "not fullcorpus" |
 | U7 commit + report | orchestrator | ⏳ pending | this board |
 
+## Mission M9a — subclass-head improvement pass (mailroom-issues #112)
+
+Spawned from #107 close. Goal gate: **contract macro-F1 ≥ 0.20 AND
+correspondence ≥ 0.25 on the held-out test via the GPU eval harness, with
+doc_type accuracy ≥ 0.89 and window ECE ≤ 0.05.**
+
+Claimed by: orchestrator (primary session), 2026-09-21.
+
+Diagnosis (evidence-backed, this session): the subclass heads exhibit
+**majority-class collapse**, not capacity failure. `insurance_claim` — the
+only near-balanced head (6 classes) — reaches macro-F1 0.77 / window-acc
+0.87; every imbalanced head collapses (`correspondence` window-acc 0.51 ≈
+email share 0.57, macro-F1 0.0845 ≈ the collapse floor; `contract`
+window-acc 0.13 vs chance 0.038, macro-F1 0.0395 ≈ chance).
+
+| Card | Owner | Status | Evidence |
+| --- | --- | --- | --- |
+| M9a-U0 mission plan + board claim | orchestrator | 🔄 in flight | this card |
+| M9a-U1 root-cause verdict (loss seam) | code-analyst | ⏳ dispatched | — |
+| M9a-U2 data/taxonomy QA (normalization, support floor) | athena | ⏳ dispatched | — |
+| M9a-U3 corpus EDA + separability + augmentation eligibility | lucius | ⏳ dispatched | — |
+| M9a-U4 eval-harness gap: per-head test macro-F1 | orchestrator/lucius | ⏳ pending | gate unmeasurable without it |
+| M9a-U5 dictionary/definitional scope (label cards, contrastive synthesis) | prompt-engineer | ⏳ pending | upstream RFC gate |
+| M9a-U6 two-arm L4 run (Arm A weighting / Arm B granularity) | modal-specialist + lucius | ⏳ pending | blocked on U4 |
+| M9a-U7 test audit (pin new loss/harness behavior) | test-suite-auditor | ⏳ pending | — |
+| M9a-U8 board evidence audit | board-evidence-auditor | ⏳ pending | — |
+| M9a-U9 docs/board close | atom | ⏳ pending | — |
+
+**Hard governance gate:** canonical subclass surfaces are sanctioned by
+mailroom-issues #66/#67/#68 + the dojo taxonomy source. mailroom-ml CONSUMES
+the taxonomy; it may not unilaterally redefine it. Any real dictionary change
+routes upstream as an RFC/child issue on the #85 epic — `needs_attention`.
+
 ## Seams for the lucius session (shared contract)
 
 - `mailroom_ml.config` is the interlock — read it fresh; it now includes

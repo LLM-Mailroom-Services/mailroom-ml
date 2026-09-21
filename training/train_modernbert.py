@@ -28,8 +28,12 @@ Port of the committed predecessor (``Mailroom-Corpus-EDA @ cf096fa``,
   deterministic); early stop patience 2 on validation loss.
 - **Eval**: per-head window metrics (acc, macro-F1, ECE) + document-level
   plurality-vote metrics (the sorter's merge); hardening seam recorded in the
-  printed table + ``summary.json``: best val macro-F1 s.t. ECE <= 0.05 (the
-  plan's deployment gate — recorded, not enforced as an exit).
+  printed table + ``summary.json``: lexicographic checkpoint selection
+  (#112 M9a-U4, ``--select-on-subclass`` default on) — among epochs whose
+  observed doc_type macro-F1 holds and calibrated doc_type ECE <= 0.05,
+  pick the one maximizing the mean observed subclass macro-F1;
+  ``--no-select-on-subclass`` restores the legacy doc_type-only rule
+  (both recorded, not enforced as an exit).
 - **Calibration (plan §8)**: per-head temperature scaling on validation
   logits (scipy ``minimize_scalar``, bounded (0.05, 10.0)); heads with < 2
   rows or < 2 unique classes in val stay at T = 1.0.
@@ -79,6 +83,11 @@ from mailroom_ml.windows import window_document
 DEFAULT_DATA = TRAINING_DATA_REPO
 DEFAULT_OUTPUT = RUNS_DIR / "latest"
 ECE_BUDGET = 0.05  # plan §8 deployment gate — selection constraint, not an exit
+# #112 M9a-U4 lexicographic selection: the doc_type non-regression gate tolerates
+# a rounding-scale dip in observed doc_type macro-F1 before it rejects an epoch,
+# so a subclass-focused epoch whose doc_type merely holds within noise is not
+# discarded (run-3: 0.9245 -> 0.9227 while the subclass objective rose 0.26->0.30).
+DOC_TYPE_GATE_TOL = 0.005
 
 
 def _hub_revision() -> str | None:
@@ -477,6 +486,42 @@ def macro_f1(logits: torch.Tensor, labels: torch.Tensor,
     return float(np.mean(f1s)) if f1s else 0.0
 
 
+def _subclass_objective(val: dict, subclass_heads: list[str]) -> float:
+    """Mean observed macro-F1 across the subclass heads (#112 M9a-U4).
+
+    The lexicographic selection objective: higher = the conditional subclass
+    heads are collectively better.  Heads absent from ``val`` are ignored; an
+    empty head set scores 0.0 (no subclass evidence).
+    """
+    vals = [val[f"{h}_macro_f1_observed"] for h in subclass_heads
+            if f"{h}_macro_f1_observed" in val]
+    return float(np.mean(vals)) if vals else 0.0
+
+
+def _selection_snapshot(val: dict, epoch: int, subclass_heads: list[str]) -> dict:
+    """The selected-epoch record persisted under ``checkpoint_selection``.
+
+    Carries the legacy fields (epoch, doc_type macro-F1/ECE, per-head
+    calibrated-ECE sidecar) plus the #112 per-head observed macro-F1 and the
+    subclass objective the lexicographic rule maximized.
+    """
+    return {
+        "epoch": epoch,
+        "macro_f1": val["doc_type_macro_f1_observed"],
+        "ece": val["doc_type_ece_calibrated"],
+        "ece_raw": val["doc_type_ece"],
+        "subclass_objective": _subclass_objective(val, subclass_heads),
+        "per_head_macro_f1_observed": {
+            name[:-len("_macro_f1_observed")]: val[name]
+            for name in sorted(val)
+            if name.endswith("_macro_f1_observed")},
+        "per_head_ece_calibrated": {
+            name[:-len("_ece_calibrated")]: val[name]
+            for name in sorted(val)
+            if name.endswith("_ece_calibrated")},
+    }
+
+
 def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
     """Platt-style temperature scaling: T minimizing NLL on validation."""
     from scipy.optimize import minimize_scalar
@@ -602,7 +647,8 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
         for _ in range(steps_done):
             scheduler.step()
     events: list[dict] = []
-    selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None}
+    selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None,
+                      "subclass_objective": -1.0}
     temps: dict[str, float] = {}
     prior_run_id: str | None = None
     prior_wall_s = 0.0
@@ -627,11 +673,21 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
             stale = 0
         else:
             stale += 1
+    # #112 doc_type gate floor: the best observed doc_type macro-F1 among
+    # epochs whose calibrated ECE cleared the budget (legacy events lack the
+    # key -> ignored, so the resumed run starts with an open gate).
+    best_doc_type = float("-inf")
+    for e in events:
+        dt = e.get("doc_type_macro_f1_observed")
+        ece = e.get("doc_type_ece_calibrated")
+        if dt is not None and ece is not None and ece <= ECE_BUDGET:
+            best_doc_type = max(best_doc_type, dt)
     return {"start_epoch": epoch_done + 1, "steps_done": steps_done,
             "steps_done_micro": steps_done_micro, "events": events,
             "selected": selected, "best_val": best_val,
             "stale": stale, "temps": temps,
-            "run_id": prior_run_id, "prior_wall_s": prior_wall_s}
+            "run_id": prior_run_id, "prior_wall_s": prior_wall_s,
+            "best_doc_type": best_doc_type}
 
 
 def _scheduler_plan(n_rows: int, batch_size: int, grad_accum: int,
@@ -830,6 +886,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="drop/merge subclass classes with fewer train "
                          "windows than this (remap to `other` when present, "
                          "else drop the rows; 0 = off)")
+    # ---- #112 M9a-U4 lexicographic checkpoint selection -------------------
+    ap.add_argument("--select-on-subclass",
+                    action=argparse.BooleanOptionalAction, default=True,
+                    help="checkpoint selection: among doc_type-gate-eligible "
+                         "epochs pick the one maximizing the mean observed "
+                         "subclass macro-F1 (lexicographic). "
+                         "--no-select-on-subclass restores the legacy "
+                         "doc_type-only rule (default: on)")
     return ap
 
 
@@ -893,12 +957,21 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
             for k, v in sorted(vars(args).items())
         },
         "checkpoint_selection": {
-            "rule": ("best val doc_type macro-F1 (observed classes) with "
+            "rule": ("lexicographic: best val subclass objective (mean of the "
+                     "five observed subclass macro-F1) among epochs whose "
+                     "observed doc_type macro-F1 does not regress beyond "
+                     f"{DOC_TYPE_GATE_TOL} and whose CALIBRATED doc_type ECE "
+                     f"<= {ECE_BUDGET}"
+                     if getattr(args, "select_on_subclass", False) else
+                     "best val doc_type macro-F1 (observed classes) with "
                      f"CALIBRATED doc_type ECE <= {ECE_BUDGET}"),
             "epoch": selected["epoch"],
             "macro_f1": selected["macro_f1"],
             "ece": selected["ece"],
             "ece_raw": selected.get("ece_raw"),
+            "subclass_objective": selected.get("subclass_objective"),
+            "per_head_macro_f1_observed": selected.get(
+                "per_head_macro_f1_observed", {}),
             "gate_met": bool(selected["epoch"] > 0),
             "per_head_ece_calibrated": per_head_ece,
             "head_exclusion_policy": {
@@ -1037,7 +1110,9 @@ def main() -> int:
     best_val = float("inf")
     stale = 0
     events: list[dict] = []
-    selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None}
+    selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None,
+                      "subclass_objective": -1.0}
+    best_doc_type = float("-inf")  # #112 doc_type gate floor
     start_epoch = 1
     if args.resume:
         resume_state = _apply_resume(Path(args.resume), model, optimizer,
@@ -1051,6 +1126,7 @@ def main() -> int:
         best_val = resume_state["best_val"]
         stale = resume_state["stale"]
         temps = resume_state["temps"]
+        best_doc_type = resume_state.get("best_doc_type", best_doc_type)
         print(f"resumed from {args.resume}: continuing at epoch "
               f"{start_epoch} (opt-steps {steps_done}, "
               f"prior epochs {len(events)})", flush=True)
@@ -1096,21 +1172,37 @@ def main() -> int:
             val[f"{name}_ece_calibrated"] = round(
                 ece_calibrated(torch.cat(val_logits[name]),
                                torch.cat(val_labels[name]), temps[name]), 4)
-        # hardening seam: select the best val macro-F1 (observed classes)
-        # s.t. the CALIBRATED ECE is acceptable (recorded, not an exit).
+        # hardening seam: lexicographic checkpoint selection (#112 M9a-U4).
+        # The doc_type gate is preserved (CALIBRATED doc_type ECE <= budget;
+        # observed doc_type macro-F1 not regressing beyond DOC_TYPE_GATE_TOL
+        # below the best ECE-eligible doc_type so far).  Among gate-eligible
+        # epochs the subclass objective (mean of the five observed subclass
+        # macro-F1) decides, so a subclass-focused epoch is no longer thrown
+        # away when doc_type merely holds.  --no-select-on-subclass restores
+        # the legacy doc_type-only rule verbatim.
         # #107: the selection snapshot carries the per-head calibrated ECE
         # sidecar — the artifact's head-exclusion policy derives from it, so
         # the deployment gate can exclude subclass heads whose calibration
         # never cleared the budget.
-        if val["doc_type_macro_f1_observed"] > selected["macro_f1"] \
-                and val["doc_type_ece_calibrated"] <= ECE_BUDGET:
-            selected = {"epoch": epoch,
-                        "macro_f1": val["doc_type_macro_f1_observed"],
-                        "ece": val["doc_type_ece_calibrated"],
-                        "ece_raw": val["doc_type_ece"],
-                        "per_head_ece_calibrated": {
-                            name: val[f"{name}_ece_calibrated"]
-                            for name in sorted(val_logits)}}
+        subclass_heads = sorted(name for name in val_logits
+                                if name != "doc_type")
+        val["subclass_objective"] = round(
+            _subclass_objective(val, subclass_heads), 4)
+        ece_ok = val["doc_type_ece_calibrated"] <= ECE_BUDGET
+        if args.select_on_subclass:
+            eligible = ece_ok and (
+                val["doc_type_macro_f1_observed"]
+                >= best_doc_type - DOC_TYPE_GATE_TOL)
+            better = eligible and (val["subclass_objective"]
+                                   > selected.get("subclass_objective", -1.0))
+        else:
+            better = (val["doc_type_macro_f1_observed"] > selected["macro_f1"]
+                      and ece_ok)
+        if better:
+            selected = _selection_snapshot(val, epoch, subclass_heads)
+        if ece_ok:
+            best_doc_type = max(best_doc_type,
+                                val["doc_type_macro_f1_observed"])
         events.append({"epoch": epoch, "loss": round(loss, 4),
                        "loss_endpoint": round(loss_endpoint, 4),
                        "lr": round(scheduler.get_last_lr()[0], 8),
@@ -1251,9 +1343,10 @@ def main() -> int:
     print(f"checkpoint saved: {args.output}", flush=True)
     for p in sorted(args.output.iterdir()):
         print(f"  {p.name}", flush=True)
-    print(f"selection: best val macro-F1 (observed) s.t. calibrated "
-          f"ECE <= {ECE_BUDGET} -> epoch {selected['epoch']} "
-          f"(macro_f1 {selected['macro_f1']}, ece {selected['ece']})",
+    print(f"selection: {'lexicographic subclass objective' if args.select_on_subclass else 'best val doc_type macro-F1 (observed) s.t. calibrated ECE'}"
+          f" -> epoch {selected['epoch']} "
+          f"(macro_f1 {selected['macro_f1']}, ece {selected['ece']}, "
+          f"subclass_obj {selected.get('subclass_objective')})",
           flush=True)
     print(f"run summary: device={device} seed={args.seed} "
           f"epochs={len(events)} wall={wall:.1f}s data={args.data}",

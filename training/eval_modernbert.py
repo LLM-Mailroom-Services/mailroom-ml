@@ -15,8 +15,10 @@ Report-only harness (plan §11 surfaces 1-4):
   algorithm — no sklearn).
 - **Metrics**: doc_type + subclass accuracy, per-stratum confusion
   (plain-python counts), window-level ECE + band ECE + per-head temperature
-  from the calibration module (plan §8), plus the selective-risk sweep
-  report for the deployment threshold (``--selective-risk``).
+  from the calibration module (plan §8), per-head document-level test
+  macro-F1 + per-class support for the subclass heads (#112 M9a-U4), plus the
+  selective-risk sweep report for the deployment threshold
+  (``--selective-risk``).
 - **Report-only**: gates are recorded, never enforced as an exit (the
   P0 thresholds doc_type >= 0.95 / subclass >= 0.75 belong to the eval
   harness, plan §7 test-gate note).
@@ -143,6 +145,21 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         keep = stratified_sample(filenames, strata, sample, seed)
         docs = docs[docs["filename"].astype(str).isin(keep)].reset_index(drop=True)
 
+    # #112 M9a-U4: the per-head test macro-F1 surface.  The subclass head
+    # names are the doc_type labels minus the inference-only ``unknown`` (the
+    # data-driven source of truth — never a hard-coded list).
+    doc_type_labels = (bundle.maps.get("doc_type", {}).get("labels")
+                       or sorted(bundle.maps.get("doc_type", {})
+                                 .get("label2id", {})))
+    subclass_heads = [c for c in doc_type_labels if c != "unknown"]
+    # document-level (gt_sc, sc_pred) pairs per head, restricted to docs whose
+    # doc_type is correct for that head's class — the same conditional
+    # convention as ``subclass_accuracy_conditional`` below.
+    per_head_pairs: dict[str, list[tuple[str, str | None]]] = defaultdict(list)
+    # per-head per-class support over ALL test docs of that head's doc_type
+    # (the interpretability denominator; zero-support classes are surfaced).
+    per_head_support: dict[str, Counter] = defaultdict(Counter)
+
     rows = docs.to_dict("records")
     correct_dt = 0
     correct_sc = 0
@@ -183,6 +200,10 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         dt_pred = merged["doc_type"]
         sc_pred = merged["subclass"]
         confusion[(gt_dt, dt_pred)] += 1
+        if gt_dt in subclass_heads:
+            # support is unconditional on the prediction: every test doc of
+            # this head's doc_type contributes to its per-class support.
+            per_head_support[gt_dt][gt_sc] += 1
         cohort = "single-window" if len(wins) == 1 else "multi-window"
         cohorts[cohort]["n_docs"] += 1
         cohorts[cohort]["agreements"].append(float(merged.get("agreement", 0.0)))
@@ -190,6 +211,10 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
             correct_dt += 1
             cohorts[cohort]["correct_dt"] += 1
             dt_cond_denom += 1
+            if gt_dt in subclass_heads:
+                # conditional per-head macro-F1 input (sc_pred is None on the
+                # llm_overflow / abstain path — counted as a miss, never a crash)
+                per_head_pairs[gt_dt].append((gt_sc, sc_pred))
             if sc_pred is not None and sc_pred == gt_sc:
                 correct_sc += 1
         # window-level calibration data (doc_type head only)
@@ -230,6 +255,8 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         },
         "cohorts": _cohort_report(cohorts),
         "head_ece": _head_ece_report(bundle),
+        "per_head": _per_head_report(bundle, subclass_heads, per_head_pairs,
+                                     per_head_support),
         "recorded_gates": {
             "P0_doc_type": {"threshold": 0.95, "actual": round(acc_dt, 4),
                             "met": acc_dt >= 0.95, "report_only": True},
@@ -276,6 +303,54 @@ def _head_ece_report(bundle) -> dict:
         name: (info.get("ece_calibrated") if isinstance(info, dict) else None)
         for name, info in sorted(excluded.items())
     }
+
+
+def _macro_f1_observed(pairs: list[tuple[str, str | None]]) -> float | None:
+    """Macro-F1 over observed GT classes from document-level (gt, pred) pairs.
+
+    Mirrors the trainer's ``macro_f1(..., observed_only=True)``: zero-row
+    classes are excluded from the average, and a ``None`` prediction (the
+    llm_overflow / abstain path) is a miss.  Returns ``None`` when there are
+    no documents (an unmeasurable head, never a fabricated 0.0).
+    """
+    if not pairs:
+        return None
+    classes = sorted({gt for gt, _ in pairs})
+    f1s = []
+    for c in classes:
+        tp = sum(1 for gt, pred in pairs if gt == c and pred == c)
+        fp = sum(1 for gt, pred in pairs if gt != c and pred == c)
+        fn = sum(1 for gt, pred in pairs if gt == c and pred != c)
+        prec = tp / (tp + fp) if tp + fp else 0.0
+        rec = tp / (tp + fn) if tp + fn else 0.0
+        f1s.append(2 * prec * rec / (prec + rec) if prec + rec else 0.0)
+    return float(np.mean(f1s))
+
+
+def _per_head_report(bundle, subclass_heads: list[str],
+                     pairs_by_head: dict[str, list], support_by_head: dict,
+                     ) -> dict:
+    """#112 M9a-U4 per-head test macro-F1 + per-class support.
+
+    Every subclass head is reported (not just the predicted class's head):
+    ``macro_f1`` is the document-level conditional macro-F1 (docs whose
+    ``dt_pred == gt_dt`` for that head's class), ``support`` the per-class
+    count of held-out test docs of that doc_type (zero-support classes are
+    surfaced so a macro-F1 is interpretable).  A head with no conditional
+    docs reports ``macro_f1: null``.
+    """
+    out: dict[str, dict] = {}
+    for head in subclass_heads:
+        labels = (bundle.maps.get(head) or {}).get("labels") or []
+        support = {str(lab): 0 for lab in labels}
+        for lab, count in (support_by_head.get(head) or {}).items():
+            support[str(lab)] = int(count)
+        mf1 = _macro_f1_observed(pairs_by_head.get(head, []))
+        out[head] = {
+            "macro_f1": round(mf1, 4) if mf1 is not None else None,
+            "support": support,
+        }
+    return out
 
 
 def _sweep_or_refuse(bundle, confs: list[float], correct: list[bool]) -> dict:
@@ -354,6 +429,14 @@ def format_report(report: dict) -> str:
     lines += ["", "per-head ECE sidecar (#104):"]
     for head, ece_val in report["head_ece"].items():
         lines.append(f"  {head:<20s} {ece_val}")
+    lines += ["", "per-head test macro-F1 (#112 M9a-U4):"]
+    for head, m in report["per_head"].items():
+        support = m["support"]
+        n_obs = sum(1 for c in support.values() if c > 0)
+        lines.append(f"  {head:<20s} macro_f1={m['macro_f1']} "
+                     f"(classes={n_obs}/{len(support)})")
+        for cls in sorted(support):
+            lines.append(f"      {cls:<26s} n={support[cls]}")
     if report.get("selective_risk"):
         sr = report["selective_risk"]
         lines += [

@@ -575,3 +575,26 @@ def test_load_bundle_rejects_incomplete_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("ML_MODEL_DIR", str(d))
     with pytest.raises(BundleLoadError):
         load_bundle()
+
+
+def test_head_from_state_reconstructs_linear_and_mlp():
+    """heads.pt is self-describing: linear heads (weight/bias) and MLP heads
+    (0.*/3.* — run-3 --mlp-heads) must both load. The loader previously
+    assumed linear-only (eval harness failed on run-3: KeyError 'weight')."""
+    import torch
+
+    from mailroom_ml.inference import _head_from_state
+
+    hidden = 8
+    lin = torch.nn.Linear(hidden, 3)
+    m = _head_from_state(lin.state_dict(), hidden)
+    assert list(m.state_dict().keys()) == ["weight", "bias"]
+    assert m(torch.randn(2, hidden)).shape == (2, 3)
+
+    mlp = torch.nn.Sequential(
+        torch.nn.Linear(hidden, hidden), torch.nn.SiLU(),
+        torch.nn.Dropout(0.0), torch.nn.Linear(hidden, 5))
+    m2 = _head_from_state(mlp.state_dict(), hidden)
+    assert list(m2.state_dict().keys()) == ["0.weight", "0.bias",
+                                            "3.weight", "3.bias"]
+    assert m2(torch.randn(2, hidden)).shape == (2, 5)

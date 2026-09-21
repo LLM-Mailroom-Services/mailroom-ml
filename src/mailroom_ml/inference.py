@@ -248,28 +248,38 @@ def _onnx_session(model_dir: Path) -> tuple[str, Any]:
     raise BundleLoadError(f"no model.onnx / model_quantized.onnx under {model_dir}")
 
 
-def _pytorch_predict(model: Any, heads: dict[str, Any], device: Any):
-    """Bind a PyTorch checkpoint to the predict_fn contract.
+def _head_from_state(state: dict, hidden: int):
+    """Reconstruct a head module from its state dict (linear vs MLP).
 
-    ``model`` is the backbone (``AutoModel``), ``heads`` the per-head state
-    (from ``heads.pt``); the forward replicates the trainer: first-token
-    pooling (ModernBERT has no pooler) + per-head logits.  Heads are
-    reconstructed from their state dict shape — single ``nn.Linear``
-    (``weight``/``bias`` keys) or the MLP recipe (``0.*``/``3.*`` keys:
-    Linear, SiLU, Dropout, Linear — train_modernbert.HierarchicalClassifier
-    with ``--mlp-heads``; run-2 artifacts are MLP).
+    Single-``nn.Linear`` heads save ``weight``/``bias``; ``--mlp-heads``
+    heads save ``0.weight``/``0.bias``/``3.weight``/``3.bias`` (Sequential:
+    Linear, SiLU, Dropout, Linear — train_modernbert.HierarchicalClassifier;
+    the trained head kind is NOT recorded in the bundle, so the state dict is
+    self-describing).  Dropout has no parameters; eval-mode it is identity,
+    so the reconstruction uses 0.0.
     """
     import torch
 
-    def _head(state: dict, hidden: int):
-        if any(k.startswith("0.") for k in state):
-            return torch.nn.Sequential(
-                torch.nn.Linear(hidden, hidden),
-                torch.nn.SiLU(),
-                torch.nn.Dropout(0.0),
-                torch.nn.Linear(hidden, state["3.weight"].shape[0]),
-            )
-        return torch.nn.Linear(hidden, state["weight"].shape[0])
+    if any(k.startswith("0.") for k in state):
+        return torch.nn.Sequential(
+            torch.nn.Linear(hidden, hidden),
+            torch.nn.SiLU(),
+            torch.nn.Dropout(0.0),
+            torch.nn.Linear(hidden, state["3.weight"].shape[0]),
+        )
+    return torch.nn.Linear(hidden, state["weight"].shape[0], bias=True)
+
+
+def _pytorch_predict(model: Any, head_modules: dict[str, Any], device: Any):
+    """Bind a PyTorch checkpoint to the predict_fn contract.
+
+    ``model`` is the backbone (``AutoModel``), ``head_modules`` the
+    reconstructed per-head modules (built by ``load_bundle`` via
+    ``_head_from_state`` from ``heads.pt`` — linear or MLP, self-describing);
+    the forward replicates the trainer: first-token pooling (ModernBERT has
+    no pooler) + per-head logits.
+    """
+    import torch
 
     def predict(input_ids: np.ndarray, attention_mask: np.ndarray):
         ids = torch.as_tensor(input_ids, device=device)
@@ -280,12 +290,6 @@ def _pytorch_predict(model: Any, heads: dict[str, Any], device: Any):
             return {name: head(pooled).cpu().numpy()
                     for name, head in head_modules.items()}
 
-    hidden = model.config.hidden_size
-    head_modules: dict[str, Any] = {}
-    for name, state in heads.items():
-        lin = _head(state, hidden).to(device)
-        lin.load_state_dict(state)
-        head_modules[name] = lin
     return predict
 
 
@@ -361,8 +365,7 @@ def load_bundle(model_dir: str | Path | None = None,
             heads = torch.load(mdir / "heads.pt", map_location=device)
             head_modules: dict[str, Any] = {}
             for name, state in heads.items():
-                lin = torch.nn.Linear(model.config.hidden_size,
-                                      state["weight"].shape[0]).to(device)
+                lin = _head_from_state(state, model.config.hidden_size).to(device)
                 lin.load_state_dict(state)
                 head_modules[name] = lin
         except Exception as exc:  # noqa: BLE001 — torch/transformers load errors

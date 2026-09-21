@@ -27,6 +27,11 @@ Corpus: `mailroom-finetune @ 19720ceb…` (modifiable duplicate; canonical
 
 ## Mission M9a — subclass-head improvement pass (mailroom-issues #112)
 
+> **Post-compaction resume: read `governance/M9a-HANDOFF.md` FIRST** — it
+> carries the full diagnosis, decisions, commits, run config, and the
+> exact spawn command. Do not launch the Modal run before the operator
+> authorizes the budget.
+
 Spawned from #107 close. Goal gate: **contract macro-F1 ≥ 0.20 AND
 correspondence ≥ 0.25 on the held-out test via the GPU eval harness, with
 doc_type accuracy ≥ 0.89 and window ECE ≤ 0.05.**
@@ -70,6 +75,15 @@ past a stated money ceiling. Options: (a) both arms 4 ep ≈ $15.6;
 (b) one arm first (B — the pure weighting isolate) 4 ep ≈ $7.8; (c) both
 arms 2 ep ≈ $8.2; (d) one arm 2 ep $4.11 (fits today's ceiling).
 Awaiting operator call before any spend.
+
+### Structural hazards spawned as issues (2026-09-21)
+
+- **#113** CUAD corpus pinned but unwired (509 rows, all 25 contract keys).
+- **#114** `assemble_enron_gt` not subclass-balanced — Tier-1 would deepen
+  the email collapse. **Do not run `--tiers 1` for correspondence** first.
+- **#115** `mixture_caps` greedy/sorted-name allocator starves late-alphabet
+  subclasses.
+- **#116** contract head zero-row `other` class (26-class head, 25 weights).
 
 **Hard governance gate:** canonical subclass surfaces are sanctioned by
 mailroom-issues #66/#67/#68 + the dojo taxonomy source. mailroom-ml CONSUMES

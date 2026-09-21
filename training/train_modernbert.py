@@ -713,6 +713,45 @@ def _apply_subclass_support_threshold(train_rows: list[dict],
     return train_rows, val_rows, maps, info
 
 
+def _apply_subclass_support_plan(rows: list[dict], info: dict) -> list[dict]:
+    """Apply the train-derived support floor to ANOTHER split.
+
+    ``_apply_subclass_support_threshold`` mutates only train/val, so the
+    held-out test split kept its original subclass labels while the head
+    vocabularies were rebuilt without them — the 2026-09-20 run crashed at the
+    test eval with ``KeyError: 'affiliate'`` (a remapped contract subclass).
+    This mirrors the train/val treatment exactly: remapped subclasses become
+    the head's ``other`` (kept); dropped subclasses leave the split.
+    """
+    remapped = info.get("remapped", {})
+    dropped = info.get("dropped", {})
+    out: list[dict] = []
+    for r in rows:
+        cls, sc = r["doc_type"], r["subclass"]
+        if sc in dropped.get(cls, ()):
+            continue
+        if sc in remapped.get(cls, ()):
+            r = {**r, "subclass": "other"}
+        out.append(r)
+    return out
+
+
+def _subclass_label(heads: dict, cls: str, subclass: str) -> int | None:
+    """Resolve a row's subclass to the head's vocabulary.
+
+    Unknown subclasses fall back to the head's ``other`` (the deployment's
+    fail-open target) when it exists; ``None`` means the row is unscorable —
+    its class was dropped from the vocabulary — and must leave the metric
+    denominator rather than crash the run.
+    """
+    label2id = heads[cls]["label2id"]
+    if subclass in label2id:
+        return label2id[subclass]
+    if "other" in label2id:
+        return label2id["other"]
+    return None
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data", default=DEFAULT_DATA,
@@ -1079,7 +1118,13 @@ def main() -> int:
         test_docs = load_dataset(args.data, "test")
         if args.limit:
             test_docs = test_docs[:args.limit]
-        dt_correct = sc_correct = 0
+        # the support floor reshaped the head vocabularies from train/val, so
+        # the test split must share that vocabulary (2026-09-20 crash:
+        # KeyError 'affiliate' — a remapped contract subclass still labelled
+        # in test). Rows whose class was dropped leave the split, mirroring
+        # train/val, and any residual unknown falls back to the head's `other`.
+        test_docs = _apply_subclass_support_plan(test_docs, support_info)
+        dt_correct = sc_correct = sc_scorable = sc_unscorable = 0
         for r in test_docs:
             wins = window_document(r["title"], r["doc_text"],
                                    max_tokens=args.max_length,
@@ -1098,16 +1143,23 @@ def main() -> int:
                 if cls in heads:  # unknown (inference-only) carries no head
                     sc_votes = Counter(lg[cls].argmax(-1).tolist())
                     sc_pred = sc_votes.most_common(1)[0][0]
-                    if sc_pred == heads[cls]["label2id"][r["subclass"]]:
-                        sc_correct += 1
+                    sc_label = _subclass_label(heads, cls, r["subclass"])
+                    if sc_label is None:
+                        sc_unscorable += 1
+                    else:
+                        sc_scorable += 1
+                        if sc_pred == sc_label:
+                            sc_correct += 1
         n = len(test_docs)
         test_metrics = {
             "n_docs": n,
             "doc_type_acc": round(dt_correct / n, 4) if n else None,
             "subclass_acc_conditional": (
-                round(sc_correct / dt_correct, 4) if dt_correct else None),
+                round(sc_correct / sc_scorable, 4) if sc_scorable else None),
             "doc_type_correct": dt_correct,
             "subclass_correct": sc_correct,
+            "subclass_scorable": sc_scorable,
+            "subclass_unscorable": sc_unscorable,
         }
         print(f"test metrics: {test_metrics}", flush=True)
 

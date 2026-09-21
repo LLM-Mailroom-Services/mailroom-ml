@@ -33,9 +33,11 @@ from training.train_modernbert import (  # noqa: E402
     HierarchicalClassifier,
     LossConfig,
     _apply_resume,
+    _apply_subclass_support_plan,
     _apply_subclass_support_threshold,
     _hub_data_glob,
     _scheduler_plan,
+    _subclass_label,
     build_parser,
     ece,
     ece_calibrated,
@@ -523,6 +525,36 @@ def test_subclass_support_threshold_remaps_and_drops():
     assert new_maps["contract"]["labels"] == ["service", "license", "other"]
     # weights rebuilt over surviving rows
     assert new_maps["insurance_claim"]["weights"]["auto"] == pytest.approx(1.0)
+
+
+def test_support_plan_mirrors_train_val_on_heldout_split():
+    """The support floor must reach the held-out split too: a remapped
+    subclass becomes `other` (kept) and a dropped one leaves the split — the
+    2026-09-20 run crashed because test kept `affiliate` while the contract
+    head vocabulary no longer did (KeyError in the test eval)."""
+    info = {"remapped": {"contract": ["rare"]},
+            "dropped": {"insurance_claim": ["tiny"]}}
+    test = [
+        {"doc_type": "contract", "subclass": "rare", "filename": "t1"},
+        {"doc_type": "contract", "subclass": "service", "filename": "t2"},
+        {"doc_type": "insurance_claim", "subclass": "tiny", "filename": "t3"},
+    ]
+    out = _apply_subclass_support_plan(test, info)
+    assert [r["filename"] for r in out] == ["t1", "t2"]
+    assert out[0]["subclass"] == "other"          # remapped, row kept
+    assert test[0]["subclass"] == "rare"          # input not mutated
+
+
+def test_subclass_label_falls_back_to_other_else_unscorable():
+    heads = {
+        "contract": {"label2id": {"service": 0, "other": 1}},
+        "insurance_claim": {"label2id": {"auto": 0}},
+    }
+    assert _subclass_label(heads, "contract", "service") == 0
+    # unknown in a head that HAS `other` -> the deployment fail-open target
+    assert _subclass_label(heads, "contract", "affiliate") == 1
+    # unknown in a head WITHOUT `other` -> unscorable (leaves the denominator)
+    assert _subclass_label(heads, "insurance_claim", "tiny") is None
 
 
 def test_cli_accepts_audit_lever_flags():

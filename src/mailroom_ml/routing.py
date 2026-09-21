@@ -4,8 +4,10 @@ Implements the constellation intake-overhaul contract verbatim:
 
 - ``should_llm_intake`` — the epic gate precedence (plan §9): no text ->
   False; messy -> True; ml_triage missing/failed -> True; route != fast_path
-  -> True; else False.  ``MAILROOM_BERT_INTAKE=0`` preserves today's
-  behavior exactly (flag-off is the instant rollback, #85 M6).
+  -> True; fast_path -> skip ONLY in ``mode == "skip"`` with an allowlisted
+  gate PASS (#102) — shadow/verify always run the sorter.
+  ``MAILROOM_BERT_INTAKE=0`` preserves today's behavior exactly (flag-off is
+  the instant rollback, #85 M6).
 - ``should_bert_intake`` — M2 gate: context-fit (chars <= max, tokens <=
   8,192), not messy, model available, flag on; machine-readable ``reason``
   for observability (#87).
@@ -108,13 +110,22 @@ def should_bert_intake(text: str, stats: dict[str, Any] | None = None, *,
 def should_llm_intake(text: str, stats: dict[str, Any] | None = None,
                       ml_triage: dict[str, Any] | None = None, *,
                       flag: int | None = None,
+                      mode: str | None = None,
+                      gate: dict[str, Any] | None = None,
                       max_chars: int = BERT_INTAKE_MAX_CHARS) -> bool:
     """Epic gate precedence (plan §9): when must the LLM path run?
 
     Order: empty text -> False (nothing to do); ``stats.messy`` -> True;
     BERT flag off -> True IF oversize (today's behavior preserved: messy or
     > max chars), else False; ml_triage missing/failed/exception -> True
-    (fail-open, plan D10); route != fast_path -> True; else False.
+    (fail-open, plan D10); route != fast_path -> True.
+
+    Flag on + ``route == "fast_path"``: the sorter is skipped ONLY in
+    ``mode == "skip"`` with an allowlisted gate PASS (#102). Shadow and verify
+    never skip — the mode constrains the GATE, not the decision to compute
+    (epic ladder: shadow = sorter always runs; verify = PASS requires
+    agreement; only skip may bypass, allowlisted + PASS). A missing ``gate``
+    therefore means "run the sorter" (the safe default).
 
     ``stats`` mirrors the pipeline's ``looks_messy`` + char stats:
     ``{"messy": bool, "chars": int, "token_estimate": int}`` — the caller
@@ -135,6 +146,15 @@ def should_llm_intake(text: str, stats: dict[str, Any] | None = None,
         return bool(oversize)
     if ml_triage is None or ml_triage.get("status") == "failure" \
             or ml_triage.get("route") != "fast_path":
+        return True
+    # flag on + fast_path: only skip-mode + allowlisted + gate PASS may skip
+    if mode is None:
+        mode = _env_str("BERT_INTAKE_MODE", BERT_INTAKE_MODE)
+    if mode != "skip":
+        return True
+    if gate is None or not gate.get("eligible_for_sorter_skip"):
+        return True
+    if ml_triage.get("doc_type") not in GATE_ALLOWLISTED_START:
         return True
     return False
 

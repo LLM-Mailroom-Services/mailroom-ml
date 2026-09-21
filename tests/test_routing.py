@@ -54,9 +54,37 @@ def test_llm_gate_non_fast_path_routes_llm():
     assert should_llm_intake("text", {}, ml_triage=triage, flag=1) is True
 
 
-def test_llm_gate_fast_path_allows_skip():
-    triage = {"status": "ok", "route": "fast_path", "reason": "fast_path"}
-    assert should_llm_intake("text", {}, ml_triage=triage, flag=1) is False
+def test_llm_gate_fast_path_shadow_and_verify_never_skip():
+    """#102: flag on + fast_path must NOT suppress the sorter in shadow/verify
+    — only skip-mode with an allowlisted gate PASS may."""
+    triage = {"status": "ok", "route": "fast_path", "reason": "fast_path",
+              "doc_type": "correspondence"}
+    gate_pass = {"eligible_for_sorter_skip": True}
+    # shadow (default) and verify: sorter always runs
+    assert should_llm_intake("text", {}, ml_triage=triage, flag=1,
+                             mode="shadow", gate=gate_pass) is True
+    assert should_llm_intake("text", {}, ml_triage=triage, flag=1,
+                             mode="verify", gate=gate_pass) is True
+    # skip + allowlisted + gate PASS: may skip
+    assert should_llm_intake("text", {}, ml_triage=triage, flag=1,
+                             mode="skip", gate=gate_pass) is False
+
+
+def test_llm_gate_skip_mode_requires_allowlist_and_gate_pass():
+    """#102: skip mode alone is not enough — allowlist + gate PASS required."""
+    triage = {"status": "ok", "route": "fast_path", "reason": "fast_path",
+              "doc_type": "correspondence"}
+    # skip but no gate -> sorter runs (safe default)
+    assert should_llm_intake("text", {}, ml_triage=triage, flag=1,
+                             mode="skip") is True
+    # skip + gate FAIL -> sorter runs
+    assert should_llm_intake("text", {}, ml_triage=triage, flag=1, mode="skip",
+                             gate={"eligible_for_sorter_skip": False}) is True
+    # skip + gate PASS but NOT allowlisted -> sorter runs
+    other = {"status": "ok", "route": "fast_path", "reason": "fast_path",
+             "doc_type": "contract"}
+    assert should_llm_intake("text", {}, ml_triage=other, flag=1, mode="skip",
+                             gate={"eligible_for_sorter_skip": True}) is True
 
 
 def test_llm_gate_flag_off_ignores_ml_triage():

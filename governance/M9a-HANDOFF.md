@@ -58,7 +58,8 @@ Key results (agents: `code-analyst` U1, `athena-database-agent` U2,
    (the eval now emits `per_head.<head>.support`).
 
 Contributing mechanics (file:line):
-- `train_modernbert.py:258` — `loss = λ·CE_dt + (1-λ)·mean(sc_ces)`; λ=0.65 →
+
+- `train_modernbert.py:267` — `loss = λ·CE_dt + (1-λ)·mean(sc_ces)`; λ=0.65 →
   each subclass head gets ≈0.09 of the backbone gradient (U1).
 - `train_modernbert.py:213-227` + `labels.json` — `sqrt-inverse` + cap 10
   leaves the majority class the top effective mass.
@@ -86,7 +87,7 @@ Contributing mechanics (file:line):
 
 | commit | scope |
 |---|---|
-| `1718358` | U4 — eval emits `per_head.{head}.{macro_f1,support}`; checkpoint selection is lexicographic (`DOC_TYPE_GATE_TOL=0.005` + `ECE_BUDGET=0.05`, then maximise mean subclass macro-F1); `--select-on-subclass` default on. Verified: selects run-3 epoch 2 (`subclass_objective` 0.3003). |
+| `1718358` | U4 — eval emits `per_head.{head}.{macro_f1,support}`; checkpoint selection is lexicographic (`DOC_TYPE_GATE_TOL=0.005` + `ECE_BUDGET=0.05`, then maximise mean subclass macro-F1); `--select-on-subclass` default on. Applied to the shipped run-3 val metrics the rule **would** pick epoch 2 (objective 0.3003 vs epoch-1 0.2605) — **but this is NOT persisted**: `artifacts/pytorch/model/summary.json` (run_id `20260921-093211`) still records the legacy epoch-1 pick with the legacy rule and no `subclass_objective` key. The next run's `summary.json` is the first artifact that will encode the new rule. |
 | `1081a6e` | U7b — extracted pure `_select_epoch(...)` seam; +10 tests pinning the gate/flag/`per_head`; revert now FAILS a test. 233 passed / 3 skipped. |
 | `18b8a4f` | board claim + deployed `lucius`, `prompt-engineer`, `board-evidence-auditor` into `.opencode/agents/`. |
 | `4e1280a` | board ledger (wave 1–3 results). |
@@ -112,6 +113,7 @@ authorization).
 
 **Pre-registered arms** (run-3 config except as noted; `--select-on-subclass`
 default ON):
+
 - **Arm B (recommended single arm):** `--weight-mode inverse --weight-cap 20
   --loss-lambda-dt 0.65` — pure weighting isolate; holds doc_type gradient
   share constant → zero risk to the locked doc_type gate. Tests the primary
@@ -121,6 +123,7 @@ default ON):
   (2 levers) and spends the doc_type-risk lever (bounded by the new gate).
 
 **Cost (smoke-measured, 6.0 s/step, 1125 steps/epoch):**
+
 - 3 epochs ≈ **$6.0**; 4 epochs ≈ $7.79 per arm. Guard ceiling is **$4.32**
   → a 3-epoch run needs `--budget 7` (or explicit `--force`). Operator is
   cost-sensitive; 3 epochs is the chosen envelope.
@@ -139,6 +142,7 @@ python deploy/spawn_train.py --epochs 3 --batch-size 4 --grad-accum 8 \
   --trainer-extra=--weight-mode=inverse --trainer-extra=--weight-cap=20 \
   --trainer-extra=--loss-lambda-dt=0.65
 ```
+
 - **App:** `ap-KVX4EVKG4MI2XJ71r6Hkow`; arms are **serial** (double-launch
   guard); no arm-name label — distinguish by `run_id` + the echoed flags.
 - **Poll:** `modal app logs --follow ap-KVX4EVKG4MI2XJ71r6Hkow`; archives at
@@ -154,16 +158,23 @@ deploy extra pins `modal==1.5.5`).
 
 ## 7. Ops seams / open items
 
-- **Agent roster gap:** `lucius`, `prompt-engineer`, `board-evidence-auditor`
-  were deployed to `.opencode/agents/` (commit `18b8a4f`) but opencode fixes
-  its roster at session start — they are **live next session**. This session
-  used `general` under the lucius protocol for U3. Use the real agents
-  post-restart.
+- **Agent roster — corrected (U8 finding).** The earlier "live next session"
+  claim was imprecise. `opencode agent list` **already registers** `lucius`,
+  `prompt-engineer`, and `board-evidence-auditor` (`mode: all`) — the on-disk
+  registry is live now. What is stale is the **running session's Task roster**,
+  snapshotted at process start: dispatching `board-evidence-auditor` this
+  session returned `Unknown agent type`. A **context compaction does NOT
+  reload the roster** — only a genuine opencode process restart does. Until
+  then, run those specialists' protocols under `general` and note the
+  substitution (U3 did this under the lucius protocol; U8 did it under the
+  board-evidence-auditor protocol).
 - **Pending cards:** U5 (dictionary/definitional scope — label cards +
   contrastive synthesis; upstream RFC gate, `prompt-engineer`), U8 (board
   evidence audit, `board-evidence-auditor`), U9 (docs/board close, `atom`).
-- **Untracked junk** (not ours): `archive-browser-b4-evidence.png`,
-  `bert-panels.png`.
+- **Untracked scratch** (not ours; left in place per repo law — do not
+  delete another session's files): `archive-browser-b4-evidence.png`,
+  `bert-panels.png`. `AGENTS.md` was also untracked at the U8 audit and is
+  now authored + committed this session.
 - **Full-arm question (for the operator):** both arms buys the *interaction*
   (marginal effect of λ_dt given weighting restored) at ~2× cost and spends
   the doc_type-risk lever. One arm (B) is cheaper, isolates the primary

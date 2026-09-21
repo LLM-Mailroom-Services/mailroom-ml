@@ -12,8 +12,11 @@ Model loading (``load_bundle``): the artifact directory holds the label
 maps (``labels.json`` — ALWAYS from the bundle, never hard-coded; the
 committed ``labels.py`` canon is the guard reference only), the tokenizer
 (``tokenizer.json``), optionally per-head temperatures (``temperatures.json``
-— plan §8) and a session: ONNX (``model_quantized.onnx`` int8 preferred,
-else ``model.onnx``) via onnxruntime, or a PyTorch checkpoint
+— plan §8) and a session: ONNX ``model.onnx`` (fp32) preferred — the int8
+``model_quantized.onnx`` variant flips argmax on the doc_type/contract/
+corporate_record heads under dynamic quantization (parity gate 2026-09-21:
+argmax agreement 0.8 / 0.2 / 0.6 over the gate samples) so fp32 serves by
+default and int8 is a fallback only — or a PyTorch checkpoint
 (``model.safetensors`` + ``heads.pt``).  Resolution order: env override
 (``ML_MODEL_DIR``) > ``artifacts/pytorch/model`` > ``artifacts/onnx/model``.
 
@@ -191,10 +194,21 @@ def _load_head_exclusions(model_dir: Path) -> tuple[dict[str, str], dict | None]
 
 
 def _load_tokenizer(model_dir: Path):
-    """Standalone ``tokenizers`` Tokenizer from the bundle (no transformers)."""
+    """Standalone ``tokenizers`` Tokenizer from the bundle (no transformers).
+
+    The trainer's tokenizer.json bakes in ``padding: longest`` +
+    ``truncation: 8192`` (batch-training convenience).  Both are neutralized
+    here: padding would silently stretch every window to the full 8,192-token
+    tensor (minutes per CPU doc), and truncation would violate the
+    no-truncation doctrine (``encode_inputs`` must see the TRUE length so an
+    overflow routes to the LLM instead of being silently cut).
+    """
     from tokenizers import Tokenizer
 
-    return Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+    tok = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
+    tok.no_padding()
+    tok.no_truncation()
+    return tok
 
 
 def _resolve_pad_id(model_dir: Path, tok) -> int | None:
@@ -222,12 +236,15 @@ def _onnx_session(model_dir: Path) -> tuple[str, Any]:
 
     quant = model_dir / "model_quantized.onnx"
     fp32 = model_dir / "model.onnx"
-    if quant.is_file():
-        return ("onnx-int8", ort.InferenceSession(
-            str(quant), providers=["CPUExecutionProvider"]))
+    # fp32 first: dynamic int8 quantization flips argmax on the doc_type /
+    # contract / corporate_record heads (parity gate 2026-09-21); int8 is a
+    # fallback only so a bundle without the fp32 graph still resolves.
     if fp32.is_file():
         return ("onnx-fp32", ort.InferenceSession(
             str(fp32), providers=["CPUExecutionProvider"]))
+    if quant.is_file():
+        return ("onnx-int8", ort.InferenceSession(
+            str(quant), providers=["CPUExecutionProvider"]))
     raise BundleLoadError(f"no model.onnx / model_quantized.onnx under {model_dir}")
 
 

@@ -115,6 +115,43 @@ def test_encode_inputs_never_truncates():
         encode_inputs(b, ["x y z w v"], max_length=3)
 
 
+def test_load_tokenizer_neutralizes_baked_padding_and_truncation(tmp_path):
+    """The trainer's tokenizer.json bakes padding=longest + truncation=8192;
+    the serving loader must neutralize BOTH so every window does not pad to
+    the full 8,192-token tensor (run-3 regression: minutes-per-doc on CPU
+    fp32) and so encode_inputs sees true lengths (no-truncation doctrine)."""
+    import tokenizers as tkz
+
+    vocab = {v: i for i, v in enumerate(
+        ["<s>", "</s>", "<unk>", "<pad>", "hello", "world", "hi", "x"])}
+    tok = tkz.Tokenizer(tkz.models.WordLevel(vocab, unk_token="<unk>"))
+    tok.pre_tokenizer = tkz.pre_tokenizers.Whitespace()
+    tok.post_processor = tkz.processors.TemplateProcessing(
+        single="<s> $A </s>", pair="<s> $A </s> $B </s>",
+        special_tokens=[("<s>", 0), ("</s>", 1)])
+    tok.enable_truncation(8192)
+    tok.enable_padding(pad_id=3, pad_token="<pad>")
+    path = tmp_path / "tokenizer.json"
+    tok.save(str(path))
+
+    from mailroom_ml.inference import _load_tokenizer, encode_inputs
+
+    loaded = _load_tokenizer(tmp_path)
+    b = _stub_bundle(None, tokenizer=loaded, pad_id=3)
+
+    # Regression: a short doc encoded for serving must keep its TRUE length
+    # (4 = <s> + 2 content + </s>) — the baked padding=longest would force
+    # this to an 8192-wide tensor (fp32 CPU: minutes per document).
+    ids, mask = encode_inputs(b, ["hello world"])
+    assert ids.shape == (1, 4), f"padding not neutralized: {ids.shape}"
+    assert mask.tolist() == [[1, 1, 1, 1]]
+
+    # No-truncation doctrine: an over-long input must RAISE (route LLM),
+    # never be silently cut by the baked truncation=8192.
+    with pytest.raises(ValueError):
+        encode_inputs(b, [" ".join(["x"] * 9000)], max_length=8192)
+
+
 # ---------------------------------------------------------------------------
 # classify_windows — plurality merge + composite score
 # ---------------------------------------------------------------------------

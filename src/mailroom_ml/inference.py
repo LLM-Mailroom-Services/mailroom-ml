@@ -565,6 +565,90 @@ def project_subclass(maps: dict[str, Any], doc_type: str,
     return None
 
 
+_DEFAULT_BUNDLE_CACHE: ModelBundle | None = None
+
+
+def clear_default_bundle_cache() -> None:
+    """Drop the cached default bundle (tests, hot reload, artifact swaps)."""
+    global _DEFAULT_BUNDLE_CACHE
+    _DEFAULT_BUNDLE_CACHE = None
+
+
+def classify_document_default(
+    doc_text: str,
+    *,
+    filename: str | None = None,
+    max_chars: int = BERT_INTAKE_MAX_CHARS,
+    max_tokens: int = MAX_TOKENS,
+    overlap: int = WINDOW_OVERLAP_TOKENS,
+    window_texts: list[str] | None = None,
+    min_authentic_support: int = ROUTE_MIN_AUTHENTIC_SUPPORT,
+    doc_confidence: float = ROUTE_DOC_CONFIDENCE,
+    subclass_confidence: float = ROUTE_SUBCLASS_CONFIDENCE,
+    window_agreement: float = ROUTE_WINDOW_AGREEMENT,
+    margin_gate: float = ROUTE_MARGIN,
+    agreement_gate: float = GATE_REQUIRED_AGREEMENT,
+) -> dict[str, Any]:
+    """Default-bundle convenience entrypoint (M6a lane seam, #102/#103).
+
+    The graph lane (``agents/bert_intake.py``) calls ``classify_document(
+    doc_text, filename=...)`` — that signature never existed; the real one
+    requires a loaded ``ModelBundle`` + title. This seam is the single
+    adapter: it resolves the DEFAULT bundle (env ``ML_MODEL_DIR`` > caller
+    override > artifact defaults, cached per process), derives the title
+    from ``filename``'s stem, and forwards to :func:`classify_document`.
+
+    Fail-open by construction, same contract as the full entrypoint: a
+    missing/unloadable bundle NEVER raises — the result carries a failure
+    (``route="llm"``) with the machine-readable reason the lane's
+    missing-model markers understand (``no_model`` / ``bundle_missing`` /
+    ``model_missing``). Any classifier exception is likewise wrapped inside
+    ``classify_document`` itself.
+    """
+    global _DEFAULT_BUNDLE_CACHE
+    if _DEFAULT_BUNDLE_CACHE is None:
+        try:
+            _DEFAULT_BUNDLE_CACHE = load_bundle(None, prefer_onnx=True)
+        except BundleUnavailable as exc:
+            return {
+                "status": "failure",
+                "route": "llm",
+                "reason": "no_model",
+                "doc_type": None,
+                "subclass": None,
+                "detail": str(exc)[:200],
+                "quality": {"coverage": 0.0, "messy": False},
+                "guard_failures": [],
+            }
+        except BundleLoadError as exc:
+            return {
+                "status": "failure",
+                "route": "llm",
+                "reason": "bundle_missing" if "labels.json" in str(exc) else "model_missing",
+                "doc_type": None,
+                "subclass": None,
+                "detail": str(exc)[:200],
+                "quality": {"coverage": 0.0, "messy": False},
+                "guard_failures": [],
+            }
+    title = Path(filename).stem if filename else "untitled"
+    return classify_document(
+        _DEFAULT_BUNDLE_CACHE,
+        title,
+        doc_text,
+        max_chars=max_chars,
+        max_tokens=max_tokens,
+        overlap=overlap,
+        window_texts=window_texts,
+        min_authentic_support=min_authentic_support,
+        doc_confidence=doc_confidence,
+        subclass_confidence=subclass_confidence,
+        window_agreement=window_agreement,
+        margin_gate=margin_gate,
+        agreement_gate=agreement_gate,
+    )
+
+
 def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
                       max_chars: int = BERT_INTAKE_MAX_CHARS,
                       max_tokens: int = MAX_TOKENS,

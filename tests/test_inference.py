@@ -166,6 +166,84 @@ def _confident_doc_bundle():
     return b
 
 
+# ---------------------------------------------------------------------------
+# classify_document_default — the M6a lane seam (bundle-less entrypoint)
+# ---------------------------------------------------------------------------
+
+
+def test_default_seam_happy_path_uses_stem_title(monkeypatch):
+    from mailroom_ml.inference import (
+        classify_document_default,
+        clear_default_bundle_cache,
+    )
+
+    clear_default_bundle_cache()
+    b = _confident_doc_bundle()
+    monkeypatch.setattr("mailroom_ml.inference.load_bundle", lambda *a, **k: b)
+    res = classify_document_default(
+        "A notice demanding payment.",
+        filename="/inbox/notice_file.pdf",
+        window_texts=["notice text"],
+    )
+    assert res["status"] == "ok"
+    assert res["doc_type"] == "correspondence"
+    assert res["subclass"] == "notice"
+    assert res["route"] == "fast_path"
+    assert res["reason"] == "fast_path"
+    clear_default_bundle_cache()
+
+
+def test_default_seam_missing_bundle_fails_open_no_raise(monkeypatch):
+    from mailroom_ml.inference import (
+        BundleUnavailable,
+        classify_document_default,
+        clear_default_bundle_cache,
+    )
+
+    clear_default_bundle_cache()
+
+    def _boom(*a, **k):
+        raise BundleUnavailable("no bundle")
+
+    monkeypatch.setattr("mailroom_ml.inference.load_bundle", _boom)
+    res = classify_document_default("x", filename="y.txt")
+    assert res["status"] == "failure"
+    assert res["route"] == "llm"
+    assert res["reason"] == "no_model"  # lane marker vocabulary
+    clear_default_bundle_cache()
+
+    from mailroom_ml.inference import BundleLoadError
+
+    def _boom2(*a, **k):
+        raise BundleLoadError("bundle missing labels.json")
+
+    monkeypatch.setattr("mailroom_ml.inference.load_bundle", _boom2)
+    res2 = classify_document_default("x", filename="y.txt")
+    assert res2["reason"] == "bundle_missing"
+    clear_default_bundle_cache()
+
+
+def test_default_seam_caches_bundle(monkeypatch):
+    from mailroom_ml.inference import (
+        classify_document_default,
+        clear_default_bundle_cache,
+    )
+
+    clear_default_bundle_cache()
+    b = _confident_doc_bundle()
+    calls = []
+
+    def _counting(*a, **k):
+        calls.append(1)
+        return b
+
+    monkeypatch.setattr("mailroom_ml.inference.load_bundle", _counting)
+    classify_document_default("a", window_texts=["a"])
+    classify_document_default("b", window_texts=["b"])
+    assert len(calls) == 1  # second call reused the cached bundle
+    clear_default_bundle_cache()
+
+
 def test_fast_path_high_confidence_doc():
     b = _confident_doc_bundle()
     res = classify_document(b, "Notice", "A notice demanding payment.",

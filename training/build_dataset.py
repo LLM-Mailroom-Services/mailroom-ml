@@ -9,6 +9,10 @@ Usage:
     uv run python training/build_dataset.py --stage-only
     uv run python training/build_dataset.py --publish          # create + upload + verify
     uv run python training/build_dataset.py --publish --repo-id Lucius-Morningstar/mailroom-modernbert-training
+    uv run python training/build_dataset.py --publish --no-stage   # upload an
+        # already-assembled tree (adopted enrichment): skips stage() so the
+        # enrichment-inclusive labels.json / manifest.txt / dataset_info.json
+        # are published as-is instead of being overwritten canonical-only.
 
 Stage-only by default; ``--publish`` is OPERATOR-ONLY (never automatic):
 it creates/updates the public dataset repo, uploads the verified stage tree
@@ -33,20 +37,55 @@ ROOT = _b
 sys.path.insert(0, str(ROOT / "src"))
 
 from mailroom_ml import config as cfg  # noqa: E402
-from mailroom_ml.dataset import stage, verify_stage  # noqa: E402
+from mailroom_ml.dataset import (  # noqa: E402
+    has_adopted_enrichment,
+    refresh_dataset_info,
+    stage,
+    verify_stage,
+)
 from mailroom_ml.labels import DOC_TYPES, SUBCLASS_BY_CLASS  # noqa: E402
 
 
-def render_card(stats: dict, repo_id: str) -> str:
+def render_card(stats: dict, repo_id: str, enriched: bool = False) -> str:
     """Dataset-card markdown — documents the FULL synthetic-data fine-tuning
     layer, not just this repo's rows: corpus → finetune working copy →
-    (gated) enrichment tiers → build/publish → trainer consumption."""
+    (gated) enrichment tiers → build/publish → trainer consumption.
+
+    ``enriched`` is set by the publish CLI when the stage carries adopted
+    enrichment parquet — the card must not claim "pure-canonical baseline"
+    over an enrichment-inclusive tree (doc-currency law).
+    """
     counts = stats["counts"]
     docs = counts["documents"]
     wins = counts.get("windows", {})
     n_train = docs.get("train", 0)
     n_val = docs.get("validation", 0)
     n_test = docs.get("test", 0)
+    if enriched:
+        enrichment_note = (
+            "Synthetic enrichment (tier 1/2/3) is assembled by\n"
+            "`training/assemble_enrichment.py` from external pools (enron, cuad,\n"
+            "cms, gnotheia, bdr, insurbias, blind) with per-tier caps, a 7-gate\n"
+            "audit, and `example_weight`/`lineage`/`tier` columns. **This\n"
+            "revision ADOPTS tier-1 source-matched enrichment** (CUAD contract\n"
+            "expansion + subclass-balanced Enron correspondence). Adopted rows\n"
+            "land in `documents/train` + `windows/train` ONLY — validation and\n"
+            "the held-out test split are never touched (ladder rule). Per-row\n"
+            "provenance is in `enrichment_provenance.parquet`; every rejected or\n"
+            "cut row is in `enrichment_audit.jsonl`; the manifest's\n"
+            "`# ---- enrichment ----` block records the pools, caps and counts."
+        )
+    else:
+        enrichment_note = (
+            "Synthetic enrichment (tier 1/2/3) is assembled by\n"
+            "`training/assemble_enrichment.py` from external pools (enron, cuad,\n"
+            "cms, gnotheia, bdr, insurbias, blind) with per-tier caps, a 7-gate\n"
+            "audit, and `example_weight`/`lineage`/`tier` columns. **No\n"
+            "enrichment tier is adopted into this dataset yet** — adoption is\n"
+            "gated by the plan's §6.1 A/B ladder (an adopted tier must beat the\n"
+            "no-enrichment baseline on the held-out test split before it ships\n"
+            "here). This revision is the pure-canonical baseline."
+        )
     return f"""---
 license: cc-by-4.0
 language:
@@ -99,13 +138,7 @@ THIS REPO (mailroom-modernbert-training) @ pinned revision
 Lucius-Morningstar/mailroom-modernbert-classifier   (trained checkpoint)
 ```
 
-Synthetic enrichment (tier 1/2/3) is assembled by
-`training/assemble_enrichment.py from external pools (enron, cms, gnotheia,
-bdr, insurbias, blind) with per-tier caps, a 7-gate audit, and
-`example_weight`/`lineage`/`tier` columns. **No enrichment tier is adopted
-into this dataset yet** — adoption is gated by the plan's §6.1 A/B ladder
-(an adopted tier must beat the no-enrichment baseline on the held-out test
-split before it ships here). This revision is the pure-canonical baseline.
+{enrichment_note}
 
 ## Rows
 
@@ -145,6 +178,8 @@ split before it ships here). This revision is the pure-canonical baseline.
   by `doc_type`, seed 42, deterministic `RandomState` shuffle — no sklearn
   dependency, byte-identical rebuilds).
 - Corpus `test` (323) → held out entirely.
+- Adopted tier-1 enrichment rows (when this revision is enriched) are
+  appended to **train only** — validation and test are never touched.
 
 ## Input construction
 
@@ -183,15 +218,51 @@ def main(argv: list[str] | None = None) -> int:
                     help="build the staged tree (default; --publish not given)")
     ap.add_argument("--no-windows", action="store_true",
                     help="skip the windows config (documents only)")
+    ap.add_argument("--no-stage", action="store_true",
+                    help="publish an ALREADY-assembled stage tree as-is (skip "
+                         "stage(); required when the tree carries adopted "
+                         "enrichment — stage() would rewrite the sidecars "
+                         "canonical-only over it). Requires --publish.")
     args = ap.parse_args(argv)
 
-    try:
-        stats = stage(cfg.STAGE_DIR, with_windows=not args.no_windows)
-    except FileNotFoundError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 2
-    print(f"staged: {json.dumps(stats['counts'], sort_keys=True)}")
-    print(f"manifest sha256: {stats['manifest_sha256']}")
+    if args.no_stage:
+        if not args.publish:
+            print("ERROR: --no-stage only affects the publish path — add "
+                  "--publish (there is nothing to do otherwise)", file=sys.stderr)
+            return 2
+        if not (cfg.STAGE_DIR / "manifest.txt").exists():
+            print(f"ERROR: --no-stage: no staged tree at {cfg.STAGE_DIR} — run "
+                  "training/build_dataset.py --stage-only first", file=sys.stderr)
+            return 2
+        # refresh dataset_info.json from the FULL tree (canonical stage() +
+        # adopted enrichment parquet) before upload — assemble_enrichment.py
+        # adds rows without touching it.
+        enriched = has_adopted_enrichment(cfg.STAGE_DIR)
+        stats = refresh_dataset_info(cfg.STAGE_DIR)
+        print(f"using existing stage (no re-stage): "
+              f"{json.dumps(stats['counts'], sort_keys=True)}")
+    else:
+        enriched = has_adopted_enrichment(cfg.STAGE_DIR)
+        if enriched and args.publish:
+            print(
+                "ERROR: the stage carries adopted enrichment but --publish "
+                "would re-run stage(), rewriting labels.json / dataset_info.json "
+                "/ manifest.txt canonical-only while the enrichment parquet "
+                "stays — an inconsistent publish. Re-run with: "
+                "--publish --no-stage", file=sys.stderr)
+            return 2
+        try:
+            stats = stage(cfg.STAGE_DIR, with_windows=not args.no_windows)
+        except FileNotFoundError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+        print(f"staged: {json.dumps(stats['counts'], sort_keys=True)}")
+        print(f"manifest sha256: {stats['manifest_sha256']}")
+        if enriched:
+            print("WARNING: stage carried enrichment parquet; re-staged the "
+                  "canonical sidecars over it. Run "
+                  "training/assemble_enrichment.py to regenerate, or publish "
+                  "an enriched tree with --publish --no-stage.", file=sys.stderr)
 
     check = verify_stage(cfg.STAGE_DIR)
     if not check["ok"]:
@@ -214,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"repo ready: https://huggingface.co/datasets/{args.repo_id}")
 
     (cfg.STAGE_DIR / "README.md").write_text(
-        render_card(stats, args.repo_id), encoding="utf-8")
+        render_card(stats, args.repo_id, enriched=enriched), encoding="utf-8")
 
     commit = api.upload_folder(
         folder_path=str(cfg.STAGE_DIR),

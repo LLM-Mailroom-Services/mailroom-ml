@@ -52,7 +52,7 @@ sys.path.insert(0, str(ROOT / "src"))
 import pandas as pd  # noqa: E402
 
 from mailroom_ml import config as cfg  # noqa: E402
-from mailroom_ml.dataset import verify_stage  # noqa: E402
+from mailroom_ml.dataset import refresh_dataset_info, verify_stage  # noqa: E402
 from mailroom_ml.enrichment import (  # noqa: E402
     DOCS_SCHEMA_COLUMNS,
     AuditStore,
@@ -605,6 +605,11 @@ def main(argv: list[str] | None = None) -> int:
         f"labels       : regenerated over {len(merged)} documents",
     ])
     append_manifest_block(args.stage / "manifest.txt", block)
+
+    # dataset_info.json must advertise the enrichment-inclusive row counts
+    # (stage() wrote it canonical-only; the trainers' globs already see the
+    # enrichment parquet, but a published stage would otherwise under-report).
+    refresh_dataset_info(args.stage)
 
     check = verify_stage(args.stage)
     if not check["ok"]:

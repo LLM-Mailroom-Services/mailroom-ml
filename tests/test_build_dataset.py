@@ -8,6 +8,7 @@ base path never touches the Hub at all.
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -173,3 +174,62 @@ def _corrupt(tmp_path: Path, filename: str) -> str:
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text("corrupted-bytes-0000", encoding="utf-8")
     return str(p)
+
+
+def _write_enrichment(stage_dir: Path, n: int = 2) -> None:
+    """Drop a schema-valid enrichment parquet beside the canonical train file
+    (the publish-order hazard's object of interest)."""
+    d = stage_dir / "data" / "documents" / "train"
+    extra = pd.read_parquet(d / "train-00000-of-00001.parquet").head(n).copy()
+    extra["filename"] = [f"zzzz-enrich-{i}" for i in range(len(extra))]
+    extra["split"] = "train"
+    extra.to_parquet(d / "enrichment-00000-of-00001.parquet")
+
+
+def test_no_stage_without_publish_errors(tmp_path, monkeypatch, capsys):
+    _patch_stage(monkeypatch, tmp_path)
+    assert build_dataset.main(["--no-stage"]) == 2
+    assert "only affects the publish path" in capsys.readouterr().err
+
+
+def test_no_stage_requires_an_existing_tree(tmp_path, monkeypatch, capsys):
+    _patch_stage(monkeypatch, tmp_path)  # stage dir created but empty
+    _install_fake_hub(monkeypatch, tmp_path / "stage")
+    assert build_dataset.main(["--publish", "--no-stage"]) == 2
+    assert "no staged tree" in capsys.readouterr().err
+
+
+def test_publish_refuses_to_restage_an_enriched_tree(
+        tmp_path, monkeypatch, capsys):
+    """--publish without --no-stage over a tree carrying enrichment would
+    rewrite labels.json/dataset_info.json canonical-only: refuse loudly."""
+    stage_dir = _patch_stage(monkeypatch, tmp_path)
+    assert build_dataset.main(["--stage-only", "--no-windows"]) == 0
+    _write_enrichment(stage_dir, n=1)
+    _install_fake_hub(monkeypatch, stage_dir)
+    assert build_dataset.main(["--publish", "--repo-id", "fake/x"]) == 2
+    assert "inconsistent publish" in capsys.readouterr().err
+
+
+def test_no_stage_publishes_enriched_tree_verbatim(
+        tmp_path, monkeypatch, capsys):
+    stage_dir = _patch_stage(monkeypatch, tmp_path)
+    assert build_dataset.main(["--stage-only", "--no-windows"]) == 0
+    _write_enrichment(stage_dir, n=2)
+    api = _install_fake_hub(monkeypatch, stage_dir)
+    exit_code = build_dataset.main(
+        ["--publish", "--no-stage", "--repo-id", "fake/enriched"])
+    assert exit_code == 0
+    # dataset_info.json advertises the enrichment-inclusive total, not the
+    # canonical-only count stage() wrote.
+    info = json.loads((stage_dir / "dataset_info.json").read_text())
+    canonical_train = len(_documents_split(stage_dir, "train"))
+    assert canonical_train == len(fixture_rows()) - 1
+    assert info["documents"]["splits"]["train"]["num_examples"] == canonical_train + 2
+    # the card tells the truth about adoption (doc-currency law)
+    readme = (stage_dir / "README.md").read_text()
+    assert "ADOPTS tier-1" in readme
+    assert "pure-canonical baseline" not in readme
+    # uploaded once, sidecars byte-verified
+    assert len(api.uploaded) == 1
+    assert "WARNING" not in capsys.readouterr().out

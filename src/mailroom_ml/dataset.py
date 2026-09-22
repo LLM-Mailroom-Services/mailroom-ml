@@ -46,7 +46,7 @@ from mailroom_ml.config import (
 from mailroom_ml.labels import SUBCLASS_BY_CLASS, label_maps, normalize_subclass
 from mailroom_ml.normalize import deterministic_normalize
 from mailroom_ml.preprocessing import build_title
-from mailroom_ml.provenance import build_manifest, record_manifest_sha
+from mailroom_ml.provenance import build_manifest, record_manifest_sha, sha256_bytes
 from mailroom_ml.windows import estimate_tokens, window_document
 
 __all__ = [
@@ -61,6 +61,9 @@ __all__ = [
     "filename_leak_audit",
     "stage",
     "verify_stage",
+    "stage_stats",
+    "refresh_dataset_info",
+    "has_adopted_enrichment",
 ]
 
 _PARQUET_DIR = DATA_DIR / "parquet"
@@ -552,6 +555,67 @@ def _write_dataset_info(stage_dir: Path, counts: dict[str, dict[str, int]]) -> N
     info = {cfg: _config(cfg, splits) for cfg, splits in counts.items()}
     (stage_dir / "dataset_info.json").write_text(
         json.dumps(info, indent=2) + "\n", encoding="utf-8")
+
+
+_ENRICHMENT_GLOBS = ("data/documents/train/enrichment-*",
+                     "data/windows/train/enrichment-*")
+
+
+def has_adopted_enrichment(stage_dir: Path) -> bool:
+    """True when the stage carries adopted enrichment parquet (tier rows).
+
+    ``assemble_enrichment.py`` writes the enrichment parquet BESIDE the
+    canonical ``train-*.parquet``, so a stage carrying it is an
+    enrichment-inclusive revision, not the pure-canonical baseline.  The
+    publish CLI uses this to refuse a re-staging publish: ``stage()`` would
+    rewrite the sidecars canonical-only over an enriched tree (the
+    publish-order hazard).
+    """
+    return any(list(stage_dir.glob(pattern)) for pattern in _ENRICHMENT_GLOBS)
+
+
+def stage_stats(stage_dir: Path) -> dict:
+    """Count the ACTUAL staged tree — every parquet file per config/split.
+
+    ``verify_stage`` reads only ``files[0]`` per split (it checks schema/split
+    invariants, not totals); the enrichment parquet lives beside the canonical
+    file, so a post-enrichment ``documents/train`` (or ``windows/train``) holds
+    two files and its true row count is their sum.  Returns the same shape as
+    ``stage()`` (``counts`` + ``manifest_sha256``) so the publish CLI can
+    consume either path.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for cfg_name, splits in (("documents", ("train", "validation", "test")),
+                             ("windows", ("train", "validation"))):
+        base = stage_dir / "data" / cfg_name
+        if not base.exists():
+            continue
+        per_split: dict[str, int] = {}
+        for split in splits:
+            files = sorted((base / split).glob("*.parquet"))
+            if files:
+                per_split[split] = sum(len(pd.read_parquet(f)) for f in files)
+        if per_split:
+            counts[cfg_name] = per_split
+    manifest = stage_dir / "manifest.txt"
+    return {"counts": counts,
+            "manifest_sha256": sha256_bytes(manifest.read_bytes())
+            if manifest.exists() else ""}
+
+
+def refresh_dataset_info(stage_dir: Path) -> dict:
+    """Rewrite ``dataset_info.json`` from the ACTUAL staged tree.
+
+    ``stage()`` writes it canonical-only; ``assemble_enrichment.py`` then adds
+    rows to ``documents/train`` (and ``windows/train``) without touching it, so
+    an uploaded enriched stage would advertise the canonical ``num_examples``.
+    Call this after any enrichment write (and from the publish CLI's
+    ``--no-stage`` path).  Returns ``stage_stats(stage_dir)``.
+    """
+    stats = stage_stats(stage_dir)
+    if stats["counts"]:
+        _write_dataset_info(stage_dir, stats["counts"])
+    return stats
 
 
 def verify_stage(stage_dir: Path) -> dict:

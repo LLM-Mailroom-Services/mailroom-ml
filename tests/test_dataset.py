@@ -8,6 +8,8 @@ the build CLI / snapshot download).
 """
 from __future__ import annotations
 
+import json
+
 import pandas as pd
 import pytest
 
@@ -18,9 +20,12 @@ from mailroom_ml.dataset import (
     build_windows,
     dedup_by_sha,
     grouped_split,
+    has_adopted_enrichment,
     leakage_audit,
     load_corpus_rows,
+    refresh_dataset_info,
     stage,
+    stage_stats,
     stratified_split,
     verify_stage,
 )
@@ -111,6 +116,30 @@ def test_stage_documents_only(tmp_path):
     assert not (tmp_path / "data" / "windows").exists()
     check = verify_stage(tmp_path)
     assert check["ok"], check["problems"]
+
+
+def test_stage_stats_sums_all_files_and_refresh_info(tmp_path):
+    """The enrichment parquet lives BESIDE the canonical one; the true train
+    count is the sum, and dataset_info.json must advertise it after
+    refresh (stage() writes it canonical-only)."""
+    stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    assert not has_adopted_enrichment(tmp_path)
+    n_train = stage_stats(tmp_path)["counts"]["documents"]["train"]
+
+    d = tmp_path / "data" / "documents" / "train"
+    extra = pd.read_parquet(d / "train-00000-of-00001.parquet").head(2).copy()
+    extra["filename"] = ["zzzz-extra-0", "zzzz-extra-1"]
+    extra["split"] = "train"
+    extra.to_parquet(d / "enrichment-00000-of-00001.parquet")
+
+    assert has_adopted_enrichment(tmp_path)
+    assert stage_stats(tmp_path)["counts"]["documents"]["train"] == n_train + 2
+    # verify_stage still passes over the enriched tree (rows checks all files)
+    assert verify_stage(tmp_path)["rows"] == len(fixture_rows()) + 2
+
+    refresh_dataset_info(tmp_path)
+    info = json.loads((tmp_path / "dataset_info.json").read_text())
+    assert info["documents"]["splits"]["train"]["num_examples"] == n_train + 2
 
 
 @requires_transformers

@@ -274,6 +274,31 @@ def test_per_head_report_macro_f1_and_support_counts():
     assert report["correspondence"]["support"] == {"email": 0, "letter": 0}
 
 
+def test_macro_f1_observed_excludes_declared_zero_support_class():
+    """#116: a class declared in the head's ``labels`` but absent from the
+    scored pairs (contract ``other`` / doc_type ``unknown``) never enters the
+    macro-F1 denominator — the head is scored over observed GT only.  Without
+    this the 26-class contract head would be deflated by the zero-support
+    fallback token on every read."""
+    # direct: the pairs observe only a/b, so the average is over those two —
+    # an omitted class cannot contribute a fabricated 0.0
+    assert _macro_f1_observed([("a", "a"), ("b", "b")]) == 1.0
+
+    # through the labels-aware report: `other` is surfaced with support 0 but
+    # excluded from macro_f1 (a full-vocab average would have been 2/3)
+    from types import SimpleNamespace
+
+    bundle = SimpleNamespace(maps={
+        "contract": {"labels": ["a", "b", "other"]},
+    })
+    report = _per_head_report(
+        bundle, ["contract"],
+        {"contract": [("a", "a"), ("b", "b")]},
+        {"contract": {"a": 3, "b": 2}})
+    assert report["contract"]["support"] == {"a": 3, "b": 2, "other": 0}
+    assert report["contract"]["macro_f1"] == 1.0
+
+
 def test_per_head_pairs_conditional_and_overflow_excluded(monkeypatch):
     """A wrong doc_type and an llm_overflow doc both add to per-class support
     but record no ``(gt, pred)`` pair, so neither enters the macro-F1

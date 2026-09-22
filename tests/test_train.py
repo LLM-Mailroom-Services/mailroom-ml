@@ -22,6 +22,7 @@ from types import SimpleNamespace  # noqa: E402
 import torch.nn as nn  # noqa: E402
 import torch.nn.functional as F  # noqa: E402
 
+from conftest import fixture_rows  # noqa: E402
 from mailroom_ml.config import (  # noqa: E402
     MAX_TOKENS,
     MODEL_ID,
@@ -29,6 +30,8 @@ from mailroom_ml.config import (  # noqa: E402
     TRAINING_DATA_REPO,
     TRAINING_DATA_REVISION,
 )
+from mailroom_ml.dataset import build_documents  # noqa: E402
+from mailroom_ml.labels import label_maps  # noqa: E402
 from training.train_modernbert import (  # noqa: E402
     DOC_TYPE_GATE_TOL,
     ECE_BUDGET,
@@ -487,6 +490,29 @@ def test_macro_f1_observed_only():
     obs = macro_f1(lg, lab, observed_only=True)
     assert full == pytest.approx(2 / 3)   # 3 classes, class 2 F1 = 0
     assert obs == 1.0                     # 2 observed classes, both perfect
+
+
+def test_inference_only_class_zero_support_excluded_and_default_weight():
+    """#116: contract ``other`` (and doc_type ``unknown``) is present in the
+    head's ``labels`` but absent from ``weights`` — it is recorded in
+    ``inference_only`` and excluded from the observed macro-F1 average.  Its
+    CE weight silently defaults to 1.0 (``transform_weights`` uses
+    ``weights.get(label, 1.0)`` and it has no positive rows), the asymmetry
+    that surprises every macro-F1 reader."""
+    maps = label_maps(build_documents(fixture_rows()))
+    contract = maps["contract"]
+    assert "other" in contract["labels"]
+    assert "other" in contract["inference_only"]
+    assert "other" not in contract["weights"]
+    # observed-only scoring over a head whose labels exceed its observed GT:
+    # the zero-support class never enters the denominator
+    lg = torch.tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0]])
+    lab = torch.tensor([0, 1])  # class index 2 = the zero-support token
+    assert macro_f1(lg, lab, observed_only=True) == 1.0
+    assert macro_f1(lg, lab) == pytest.approx(2 / 3)
+    # the missing weight defaults to 1.0 (silent — the trap)
+    w = LossConfig().transform_weights(contract["weights"], ["other"])
+    assert w.item() == pytest.approx(1.0)
 
 
 def test_ece_calibrated_matches_scaled_logits():

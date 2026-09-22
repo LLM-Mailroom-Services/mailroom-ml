@@ -114,3 +114,54 @@ def test_json_serializable_maps():
     docs = build_documents(fixture_rows())
     round_tripped = json.loads(json.dumps(label_maps(docs), sort_keys=True))
     assert round_tripped["doc_type"]["labels"] == list(DOC_TYPES) + ["unknown"]
+
+
+# ---------------------------------------------------------------------------
+# #116: the zero-train-support asymmetry, made machine-readable
+# ---------------------------------------------------------------------------
+
+def test_inference_only_is_labels_minus_weights_for_every_head():
+    """Every head's ``inference_only`` is EXACTLY ``labels \\ weights`` keys.
+
+    The asymmetry (a label in the head's ``labels`` with no entry in
+    ``weights``) is the #116 defect made explicit: contract carries 26 labels
+    but 25 train-derived weights, so one label has zero train support.  This
+    test pins the derived field to the difference for every head, so a revert
+    that drops the field or hard-codes the wrong set FAILS.
+    """
+    docs = build_documents(fixture_rows())
+    maps = label_maps(docs)
+    for head, cfg in maps.items():
+        labels, weights = set(cfg["labels"]), set(cfg["weights"])
+        assert labels >= weights, head  # weights are a subset of the labels
+        assert set(cfg["inference_only"]) == labels - weights, head
+        # order is deterministic: the labels order, filtered to the unsupported
+        assert cfg["inference_only"] == [lab for lab in cfg["labels"]
+                                         if lab not in weights], head
+
+
+def test_contract_other_and_doc_type_unknown_are_inference_only():
+    """The two sanctioned fallback tokens are recorded as inference-only and
+    are NOT dropped from the head: contract ``other`` (the CUAD fallback for
+    unseen families — zero train/val/test rows) and doc_type ``unknown``
+    (OOD/abstention)."""
+    docs = build_documents(fixture_rows())
+    maps = label_maps(docs)
+    assert "other" in maps["contract"]["labels"]
+    assert "other" in maps["contract"]["inference_only"]
+    assert "other" not in maps["contract"]["weights"]
+    assert "unknown" in maps["doc_type"]["labels"]
+    assert "unknown" in maps["doc_type"]["inference_only"]
+    assert "unknown" not in maps["doc_type"]["weights"]
+
+
+def test_inference_only_documented_in_every_head_note():
+    """A head with an inference-only key documents it in its ``note``; the
+    contract head states the CUAD-fallback / macro-F1 exclusion plainly."""
+    maps = label_maps(build_documents(fixture_rows()))
+    for cls, cfg in maps.items():
+        if cfg["inference_only"]:
+            assert "inference_only=" in cfg["note"], cls
+    contract_note = maps["contract"]["note"]
+    assert "CUAD fallback token" in contract_note
+    assert "excluded from macro-F1" in contract_note

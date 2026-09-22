@@ -260,17 +260,38 @@ def label_maps(docs_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
     dataset module's import graph acyclic).  Each head carries a ``note``
     documenting its derivation source (observed-vs-canonical) and the
     corpus revision.
+
+    ``inference_only`` (per head) is the derived, machine-readable record of
+    the **zero-train-support asymmetry** (mailroom-issues #116): the labels
+    present in ``labels`` but ABSENT from ``weights`` — i.e. no train row ever
+    carried them, so they contribute no class weight and are excluded from
+    train-time macro-F1.  This captures both sanctioned fallback tokens:
+    contract ``other`` (the CUAD fallback for unseen families) and doc_type
+    ``unknown`` (OOD/abstention).  The set is derived (never hard-coded), so
+    any head whose canonical enum is a superset of its train support is
+    documented the same way.
     """
     from mailroom_ml.dataset import class_weights
 
+    def _inference_only(labels: list[str], weights: dict[str, float]) -> list[str]:
+        """Labels in ``labels`` with no train support (absent from weights)."""
+        return [lab for lab in labels if lab not in weights]
+
     heads: dict[str, dict[str, Any]] = {}
     doc_labels = list(DOC_TYPES) + ["unknown"]  # unknown = inference-only
+    doc_weights = class_weights(docs_df, "doc_type")
+    doc_inference_only = _inference_only(doc_labels, doc_weights)
     heads["doc_type"] = {
         "labels": doc_labels,
         "id2label": {i: k for i, k in enumerate(doc_labels)},
         "label2id": {k: i for i, k in enumerate(doc_labels)},
-        "weights": class_weights(docs_df, "doc_type"),
-        "note": "unknown is inference-time only (zero training rows)",
+        "weights": doc_weights,
+        "inference_only": doc_inference_only,
+        "note": (
+            "unknown is inference-time only (zero training rows); "
+            f"inference_only={doc_inference_only} "
+            "(excluded from train-time macro-F1)"
+        ),
     }
     surfaces = observed_label_surfaces(docs_df)
     for cls in DOC_TYPES:
@@ -279,15 +300,31 @@ def label_maps(docs_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
             "canonical-enum" if cls in ("contract", "merger_agreement")
             else "observed-gt"
         )
+        weights = class_weights(docs_df[docs_df["doc_type"] == cls], "subclass")
+        inference_only = _inference_only(labels, weights)
+        note = (
+            f"fires only when doc_type predicts this class; surface="
+            f"{surface_source} (observed over split != test), "
+            f"corpus_revision={FINETUNE_REVISION}"
+        )
+        if inference_only:
+            note += (
+                f"; inference_only={inference_only} (labels present in "
+                "`labels` but absent from `weights` = zero train support; "
+                "excluded from train-time macro-F1)"
+            )
+        if cls == "contract" and "other" in inference_only:
+            note += (
+                "; contract `other` is the CUAD fallback token for unseen "
+                "families — zero train/val/test rows, inference-only, "
+                "excluded from macro-F1"
+            )
         heads[cls] = {
             "labels": labels,
             "id2label": {i: k for i, k in enumerate(labels)},
             "label2id": {k: i for i, k in enumerate(labels)},
-            "weights": class_weights(docs_df[docs_df["doc_type"] == cls], "subclass"),
-            "note": (
-                f"fires only when doc_type predicts this class; surface="
-                f"{surface_source} (observed over split != test), "
-                f"corpus_revision={FINETUNE_REVISION}"
-            ),
+            "weights": weights,
+            "inference_only": inference_only,
+            "note": note,
         }
     return heads

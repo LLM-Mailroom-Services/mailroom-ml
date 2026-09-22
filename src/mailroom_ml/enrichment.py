@@ -46,6 +46,7 @@ label_confidence, example_weight, lineage, tier``.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 from collections.abc import Iterable
@@ -59,6 +60,8 @@ from mailroom_ml.config import (
     BDR_REVISION,
     CMS_POOL_REPO,
     CMS_POOL_REVISION,
+    CUAD_FULL_REPO,
+    CUAD_FULL_REVISION,
     ENRON_DEDUP_REPO,
     ENRON_DEDUP_REVISION,
     GNOTHEIA_REPO,
@@ -91,6 +94,7 @@ __all__ = [
     "AuditStore",
     "content_sha256",
     "assemble_enron_gt",
+    "assemble_cuad_pool",
     "assemble_cms_pool",
     "assemble_gnotheia_pool",
     "assemble_bdr_pool",
@@ -150,10 +154,43 @@ TAIL_PRIORITY: tuple[str, ...] = (
 
 ENRON_LINEAGE_COLS: tuple[str, ...] = ("aeslc_join", "llm_zero_shot")
 ENRON_LABEL_SOURCE = "enron_gt"
+CUAD_LABEL_SOURCE = "cuad_full"
 PSEUDO_LABEL_SOURCE = "pseudo_enron"
 SYNTHETIC_LABEL_SOURCE = "synthetic_card"
 
+# Cap policy for the CUAD contract pool (issue #113): contract had no tier
+# entry, so the §6.2 source-matched rule is reused — the pool may add at most
+# ``cap_mult`` x the current contract TRAIN rows *in total* (i.e. a new-row
+# allowance of ``cap_mult - 1`` x today's mass).  CLI knob: ``cuad_cap_mult``.
+CUAD_CAP_MULT = 2.0
+
+# Tier-1 Enron rows are source-matched authentic GT (``label_source=
+# enron_gt``), never synthetic, so neither the Tier-3 synthesis tier table
+# nor the §6.5 synthetic global share applies.  Neutralising the tier table
+# to a flat x1 leaves only the per-subclass share bound (added <= authentic)
+# in force — the "no subclass more than doubled" guard used to balance the
+# Enron pool; the §6.2 global cap + balanced stratification already bound
+# the batch total.
+_TIER1_SHARE_ONLY_TIERS: tuple[tuple[int, int], ...] = ((0, 1),)
+
 _FALSEY_TOKENS = {"", "none", "null", "nan", "false", "0"}
+
+
+def _nested_field(value: Any, key: str) -> Any:
+    """Read ``key`` from a nested JSON object that may be a dict or a JSON
+    string (the CUAD pool carries ``input``/``metadata`` as objects; a
+    CSV/parquet re-export may carry them as encoded strings).  Missing or
+    unparseable values return ``None`` — the caller decides the loud reject.
+    """
+    if isinstance(value, dict):
+        return value.get(key)
+    if isinstance(value, str) and value.strip().startswith("{"):
+        try:
+            parsed = json.loads(value)
+        except (ValueError, TypeError):
+            return None
+        return parsed.get(key) if isinstance(parsed, dict) else None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -457,12 +494,128 @@ def assemble_enron_gt(
 
     rows, post = _finalize_pool(records, canonical_docs)
     rejects.extend(post)
+    if rows.empty:
+        return PoolResult(rows, _reject_frame(rejects), _reject_frame([]))
+    # ---- subclass balance (issue #114) -----------------------------------
+    # The §6.2 global cap decides HOW MANY new rows enter; the balanced
+    # stratification seam decides WHICH.  A ~98%-email pool must not be
+    # allowed to donate email rows at the expense of the tail subclasses —
+    # that is exactly the majority collapse the head is suffering from.
+    # ``cap_2x`` stays the reason when the pool overflows the global cap;
+    # otherwise the per-subclass slot cut is the reason.
+    over_global = len(rows) > cap
+    balanced, balance_rejects = _balance_by_subclass(
+        rows.to_dict("records"), budget=cap,
+        reason="cap_2x" if over_global else "enron_balance_cut",
+        subclass_universe=head)
+    rejects.extend(balance_rejects)
+    balanced_rows = _rows_frame(balanced)
+    # ---- §6.5 mixture share bound ----------------------------------------
+    # Tier-1 Enron rows are authentic GT, not synthetic: the Tier-3 tier
+    # table is neutralised (flat x1) and the synthetic global share is
+    # disabled (the §6.2 cap + balance already bound the batch total), so
+    # only the per-subclass share bound applies — added <= authentic; no
+    # subclass is ever more than doubled.  A subclass whose bound is 0
+    # (unknown/zero support) is a loud ``mixture_cap`` reject, never a
+    # silent drop.
+    auth_counts: dict[str, int] = {}
+    corr = canonical_docs[(canonical_docs["doc_type"] == "correspondence")
+                          & (canonical_docs["split"] != "test")]
+    for sc, n in corr["subclass"].value_counts().items():
+        auth_counts[str(sc)] = int(n)
+    if not balanced_rows.empty:
+        for sc in balanced_rows["subclass"].unique():
+            auth_counts.setdefault(str(sc), 0)
+    capped, mixture_rejects = apply_mixture_caps(
+        balanced_rows, auth_counts, global_share=0.99,
+        tier_caps=_TIER1_SHARE_ONLY_TIERS)
+    rejects.extend(mixture_rejects.to_dict("records"))
+    return PoolResult(capped, _reject_frame(rejects), _reject_frame([]))
+
+
+def assemble_cuad_pool(
+    pool_df: pd.DataFrame,
+    canonical_docs: pd.DataFrame,
+    *,
+    cap_mult: float = CUAD_CAP_MULT,
+    source_corpus: str = CUAD_FULL_REPO,
+    source_revision: str = CUAD_FULL_REVISION,
+    head_subclasses: tuple[str, ...] | None = None,
+    label_confidence: float = 1.0,
+) -> PoolResult:
+    """Tier-1 CUAD contract pool (issue #113) — the contract head's
+    source-matched augmentation.
+
+    Each row is ``{id, input:{doc_text,...}, expected, metadata, tags,...}``;
+    the subclass is ``metadata.category`` (a CUAD folder family such as
+    ``"Consulting Agreements"``) resolved through
+    ``SUBTYPE_ALIASES`` + ``normalize_subclass("contract", ...)`` (the #57
+    single canon) and head-checked against the OBSERVED contract surface —
+    never force-fitted.  A category that resolves to the ``other`` fallback
+    is a loud reject (the contract head carries ``other`` as an
+    inference-only token with zero authentic support — #116 — so enrichment
+    must not manufacture rows for it).  Rows are sha-deduped against the
+    canonical corpus by the common Tier-1 hygiene.
+
+    **Cap policy:** contract had no tier entry, so the §6.2 source-matched
+    rule is reused — the pool may add at most ``cap_mult`` x the current
+    contract TRAIN rows in total (default 2.0 -> at most double the current
+    contract train mass).  Exceeding rows are cut loud with reason
+    ``cap_contract``.
+
+    Titles are deliberately empty: CUAD's ``metadata.document_id`` is a
+    filename-derived identifier that routinely names the family
+    ("…Marketing Agreement"), which would leak the label into the model
+    input (the 2026-09-20 leak-law).  Body-only windows only.
+    """
+    if pool_df.empty:
+        return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
+    _require_columns(pool_df, ["id", "input", "metadata"], "assemble_cuad_pool")
+    head = head_subclasses if head_subclasses is not None \
+        else _head_surface(canonical_docs, "contract")
+    n_contract_train = int(
+        ((canonical_docs["doc_type"] == "contract")
+         & (canonical_docs["split"] == "train")).sum())
+    cap = _enron_cap(n_contract_train, cap_mult)
+
+    records: list[dict[str, Any]] = []
+    rejects: list[dict[str, str]] = []
+    for r in pool_df.sort_values("id").to_dict("records"):
+        fn = str(r["id"])
+        text = str(_nested_field(r.get("input"), "doc_text") or "")
+        if not text.strip():
+            rejects.append({"filename": fn, "reason": "missing_doc_text",
+                            "detail": "CUAD row carries no input.doc_text"})
+            continue
+        category = _nested_field(r.get("metadata"), "category")
+        subclass = _normalized_subclass("contract", category)
+        if subclass == "other":
+            rejects.append({
+                "filename": fn, "reason": "unresolvable_subclass",
+                "detail": f"metadata.category {category!r} does not resolve to "
+                          "a canonical CUAD contract family (the `other` "
+                          "fallback is inference-only — never force-fit)"})
+            continue
+        if _is_bad_subclass(subclass, head):
+            rejects.append({
+                "filename": fn, "reason": "subclass_not_on_head",
+                "detail": f"category {category!r} resolves to {subclass!r}, "
+                          f"not on the observed contract head {tuple(head)}"})
+            continue
+        records.append(_doc_record(
+            filename=fn, doc_text=text, doc_type="contract", subclass=subclass,
+            title="", source_corpus=source_corpus,
+            source_revision=source_revision, label_source=CUAD_LABEL_SOURCE,
+            label_confidence=label_confidence, lineage="cuad_full", tier=1))
+
+    rows, post = _finalize_pool(records, canonical_docs)
+    rejects.extend(post)
     if len(rows) > cap:
         cut = rows.iloc[cap:]
         rejects.extend({
-            "filename": fn, "reason": "cap_2x",
-            "detail": f"enron_gt cap {cap} (cap_mult={cap_mult} x "
-                      f"{n_corr_train} correspondence train rows) exceeded",
+            "filename": fn, "reason": "cap_contract",
+            "detail": f"CUAD contract cap {cap} (cap_mult={cap_mult} x "
+                      f"{n_contract_train} contract train rows) exceeded",
         } for fn in cut["filename"])
         rows = rows.iloc[:cap].reset_index(drop=True)
     return PoolResult(rows, _reject_frame(rejects), _reject_frame([]))
@@ -794,21 +947,31 @@ def _conf(value: Any) -> float | None:
 def _balance_by_subclass(
     records: list[dict[str, Any]],
     budget: int,
+    *,
+    reason: str = "pseudo_balance_cut",
+    subclass_universe: Iterable[str] = (),
 ) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     """Balanced per-subclass stratification inside a global ``budget``.
 
     Deterministic: each subclass (sorted) contributes its top rows by
     (confidence desc, filename); every subclass gets ``budget // n`` slots,
     the remainder goes to the subclasses with the most remaining candidates
-    (ties by subclass name).  Unpicked candidates are rejected with reason
-    ``pseudo_balance_cut``.
+    (ties by subclass name).  Unpicked candidates are rejected with
+    ``reason`` (default ``pseudo_balance_cut`` for Tier-2; Tier-1 Enron
+    passes its own labels via the caller).
+
+    ``subclass_universe`` optionally widens the slot denominator to the full
+    observed head (e.g. all correspondence subclasses) even when the pool
+    carries no candidates for some — the balance target is the head, not
+    merely the subclasses that happened to appear.
     """
     if budget <= 0 or not records:
         return [], [{
-            "filename": str(r["filename"]), "reason": "pseudo_balance_cut",
-            "detail": f"pseudo-label budget {budget} exhausted",
+            "filename": str(r["filename"]), "reason": reason,
+            "detail": f"balance budget {budget} exhausted",
         } for r in records]
-    by_sub: dict[str, list[dict[str, Any]]] = {}
+    by_sub: dict[str, list[dict[str, Any]]] = {
+        str(sc): [] for sc in subclass_universe}
     for r in records:
         by_sub.setdefault(str(r["subclass"]), []).append(r)
     for lst in by_sub.values():
@@ -828,7 +991,7 @@ def _balance_by_subclass(
         taken = by_sub[s][:slot]
         kept.extend(taken)
         rejects.extend({
-            "filename": str(r["filename"]), "reason": "pseudo_balance_cut",
+            "filename": str(r["filename"]), "reason": reason,
             "detail": f"balanced stratification slot {slot} for subclass "
                       f"{s!r} filled by higher-confidence rows",
         } for r in by_sub[s][slot:])
@@ -1068,10 +1231,18 @@ def mixture_caps(
 ) -> dict[str, int]:
     """Mixture-cap math: per-subclass allowance and the global synthetic cap.
 
-    Per subclass: min(tier cap, the per-subclass batch share bound
-    ``syn / (auth + syn) <= per_subclass_share``).  Global: total synthetic
-    <= ``global_share / (1 - global_share)`` x the authentic total.  The
-    global bound is then allocated greedily in sorted-subclass order.
+    Per subclass: ``min(tier cap, the per-subclass batch share bound
+    syn / (auth + syn) <= per_subclass_share)``.  Global: total synthetic
+    <= ``global_share / (1 - global_share)`` x the authentic total.
+
+    The global bound is allocated by a **need-weighted water-fill** (issue
+    #115): every subclass's allowance is raised together until the smaller
+    allowances cap out, then the survivors share the remaining budget.  A
+    residual smaller than the number of survivors goes to the largest unmet
+    allowances (exact ties resolve by subclass name), so no subclass with a
+    positive allowance is starved merely for sorting late and the result is
+    invariant to the input's key order.
+
     Returns per-subclass allowances plus ``__global_cap__`` and
     ``__authentic_total__`` keys.
     """
@@ -1083,12 +1254,44 @@ def mixture_caps(
                                      / (1 - per_subclass_share)))
         per[sc] = max(0, min(tier, share_bound))
     global_cap = int(math.floor(total * global_share / (1 - global_share)))
+
+    # Water-fill the global cap across the per-subclass allowances; `uncapped`
+    # is only ever raised in lockstep, so the result is value-symmetric and
+    # invariant to the input's key order.
+    allocated: dict[str, int] = {sc: 0 for sc in per}
     remaining = global_cap
-    allocated: dict[str, int] = {}
-    for sc in sorted(per):
-        take = min(per[sc], remaining)
-        allocated[sc] = take
-        remaining -= take
+    uncapped = list(per)
+    level = 0
+    for bound in sorted(set(per.values())):
+        if remaining <= 0:
+            break
+        group = [sc for sc in uncapped if per[sc] == bound]
+        if not group:
+            continue
+        cost = (bound - level) * len(uncapped)
+        if cost <= remaining:
+            for sc in uncapped:
+                allocated[sc] = bound
+            remaining -= cost
+            level = bound
+            uncapped = [sc for sc in uncapped if sc not in set(group)]
+        else:
+            each = remaining // len(uncapped)
+            for sc in uncapped:
+                allocated[sc] = level + each
+            remaining -= each * len(uncapped)
+            # Residual (< number of survivors) goes to the largest unmet
+            # allowances; exact ties resolve by canonical name so the result
+            # is invariant to input order.  A rename can only ever move a
+            # unit between subclasses of IDENTICAL support.
+            if remaining > 0:
+                order = sorted(uncapped,
+                               key=lambda sc: (allocated[sc] - per[sc], sc))
+                for sc in order[:remaining]:
+                    if allocated[sc] < per[sc]:
+                        allocated[sc] += 1
+                        remaining -= 1
+            break
     allocated["__global_cap__"] = global_cap
     allocated["__authentic_total__"] = total
     return allocated

@@ -42,6 +42,7 @@ from mailroom_ml.enrichment import (
     apply_mixture_caps,
     assemble_bdr_pool,
     assemble_cms_pool,
+    assemble_cuad_pool,
     assemble_enron_gt,
     assemble_gnotheia_pool,
     assemble_insurbias_pool,
@@ -229,7 +230,40 @@ def test_enron_gt_cap_two_x_correspondence_train():
     assert len(cut) == 12 - cap
     # configurable cap multiplier
     res3 = assemble_enron_gt(gt, canonical, cap_mult=3.0)
-    assert len(res3.rows) == int(round(3.0 * n_corr_train)) - n_corr_train
+    # the §6.5 share bound (added <= authentic = 1 per subclass here) binds
+    # before the 3x global cap: at most one new row per subclass survives
+    assert len(res3.rows) == 3
+    assert (res3.rejected["reason"] == "mixture_cap").sum() == 3
+
+
+def test_enron_gt_balanced_does_not_deepen_email_majority():
+    """#114 regression: a ~98%-email Enron pool must not raise any subclass's
+    share above the head's uniform target balance."""
+    subs = ("email", "memo", "letter", "notice", "press_release", "demand",
+            "meeting_request", "attorney_demand")
+    canonical = _mini_canonical(n_corr=80, corr_subclasses=subs)  # 10 each
+    rows = [{"filename": f"en_email_{i:04d}.txt", "expected": "correspondence",
+             "expected_subclass": "email", "doc_text": f"email body {i}",
+             "aeslc_join": "1"} for i in range(196)]
+    for sc in subs[1:]:
+        for i in range(12):
+            rows.append({"filename": f"en_{sc}_{i:02d}.txt",
+                         "expected": "correspondence",
+                         "expected_subclass": sc,
+                         "doc_text": f"{sc} body {i}", "aeslc_join": "1"})
+    gt = pd.DataFrame(rows)
+    n_corr_train = int(((canonical["doc_type"] == "correspondence")
+                        & (canonical["split"] == "train")).sum())
+    cap = int(round(2.0 * n_corr_train)) - n_corr_train
+    res = assemble_enron_gt(gt, canonical)
+    assert not res.rows.empty
+    assert len(res.rows) <= cap                       # §6.2 global cap holds
+    share = res.rows["subclass"].value_counts(normalize=True)
+    target = 1.0 / len(subs)                          # head's uniform balance
+    assert share.max() <= target + 1e-9, share.to_dict()
+    assert share.get("email", 0.0) <= target + 1e-9
+    # rejections stay loud: cap_2x (global overflow) / balance / mixture
+    assert {"cap_2x", "enron_balance_cut", "mixture_cap"} & set(res.rejected["reason"])
 
 
 def test_enron_gt_observed_head_guard():
@@ -256,6 +290,77 @@ def test_enron_gt_missing_lineage_cols_raises():
                         "expected_subclass": "letter", "doc_text": "body"}])
     with pytest.raises(ValueError, match="lineage"):
         assemble_enron_gt(gt, _canonical())
+
+
+# ---------------------------------------------------------------------------
+# Tier 1 — CUAD contract pool (#113)
+# ---------------------------------------------------------------------------
+
+def test_cuad_pool_maps_category_and_head_checks():
+    canonical = _canonical()
+    pool = pd.DataFrame([
+        {"id": "cuad-c1", "input": {"doc_text": "Consulting agreement body."},
+         "metadata": {"category": "Consulting Agreements"}},
+        {"id": "cuad-m1", "input": {"doc_text": "Marketing agreement body."},
+         "metadata": {"category": "Marketing"}},
+        {"id": "cuad-x1", "input": {"doc_text": "Mystery body."},
+         "metadata": {"category": "Bogus Family"}},
+        {"id": "cuad-no-text", "input": {"doc_text": "  "},
+         "metadata": {"category": "Marketing"}},
+        # nested objects may arrive JSON-encoded (CSV/parquet re-export)
+        {"id": "cuad-str", "input": '{"doc_text": "Hosting agreement body."}',
+         "metadata": '{"category": "Hosting"}'},
+    ])
+    res = assemble_cuad_pool(pool, canonical)
+    kept = dict(zip(res.rows["filename"], res.rows["subclass"],
+                    strict=False))
+    assert kept == {"cuad-c1": "consulting", "cuad-m1": "marketing",
+                    "cuad-str": "hosting"}
+    assert (res.rows["doc_type"] == "contract").all()
+    assert (res.rows["label_source"] == "cuad_full").all()
+    assert (res.rows["split"] == "train").all()          # ladder rule
+    assert (res.rows["title"] == "").all()  # no title/filename label leak
+    reasons = dict(zip(res.rejected["filename"], res.rejected["reason"],
+                       strict=False))
+    # an unknown family must NOT be force-fit into the `other` fallback
+    assert reasons["cuad-x1"] == "unresolvable_subclass"
+    assert reasons["cuad-no-text"] == "missing_doc_text"
+
+
+def test_cuad_pool_caps_and_dedups_vs_canonical():
+    canonical = _canonical()
+    pool = pd.DataFrame([
+        {"id": f"cuad-{i:02d}", "input": {"doc_text": f"contract body {i}"},
+         "metadata": {"category": "Supply"}} for i in range(6)])
+    res = assemble_cuad_pool(pool, canonical)
+    # contract train rows = 3 -> cap_mult 2.0 -> cap = 3 new rows
+    assert len(res.rows) == 3
+    assert len(res.rejected[res.rejected["reason"] == "cap_contract"]) == 3
+    # sha-dedup vs the canonical corpus (different filename, same content)
+    canonical_text = canonical[
+        canonical["filename"] == "cuad_consulting_001.txt"]["doc_text"].iloc[0]
+    dup = pd.DataFrame([{
+        "id": "cuad-copy",
+        "input": {"doc_text": canonical_text},
+        "metadata": {"category": "Consulting Agreements"}}])
+    res2 = assemble_cuad_pool(dup, canonical)
+    assert res2.rows.empty
+    assert res2.rejected["reason"].iloc[0] == "duplicate_sha_canonical"
+
+
+def test_read_pool_dir_supports_jsonl(tmp_path):
+    """The CUAD pool is JSONL; `_read_pool_dir` must read it (parquet/csv
+    precedence elsewhere is untouched)."""
+    d = tmp_path / "cuad_repo"
+    d.mkdir()
+    (d / "manifest.json").write_text("{}", encoding="utf-8")  # not a pool
+    (d / "cuad.jsonl").write_text(
+        json.dumps({"id": "x", "input": {"doc_text": "t"},
+                    "metadata": {"category": "Marketing"}}) + "\n",
+        encoding="utf-8")
+    df = assemble_cli._read_pool_dir(d, "cuad")
+    assert list(df["id"]) == ["x"]
+    assert df["metadata"].iloc[0]["category"] == "Marketing"
 
 
 # ---------------------------------------------------------------------------
@@ -534,11 +639,34 @@ def test_mixture_math():
     # global: <= 0.4/(1-0.4) x 100 = 66; per-subclass 50%: s <= auth
     assert caps["__global_cap__"] == 66
     assert caps["__authentic_total__"] == 100
-    # tier caps (30-74 -> x1) + share bound; global residual greedy to b
-    assert caps["a"] == 60 and caps["b"] == 6
-    # per-subclass share bound alone binds when the tier cap does not
+    # need-weighted water-fill levels a and b equally until the budget binds
+    assert caps["a"] == 33 and caps["b"] == 33
+    assert caps["a"] + caps["b"] <= caps["__global_cap__"]
+    # per-subclass share bound alone binds when the global cap does not
     caps2 = mixture_caps({"a": 10, "b": 10}, global_share=0.99)
     assert caps2["a"] == 10 and caps2["b"] == 10
+
+
+def test_mixture_caps_order_invariant_and_no_alphabet_starvation():
+    """#115: renaming/permuting subclasses must not change the allocation,
+    and an alphabetically-late tail must not be starved to 0."""
+    counts = {"affiliate": 9, "agency": 13, "license": 41, "maintenance": 30,
+              "outsourcing": 18, "transportation": 11}
+    base = mixture_caps(counts)
+    # permutation of input key order -> identical allocation
+    import random
+    keys = list(counts)
+    random.Random(0).shuffle(keys)
+    shuffled = {k: counts[k] for k in keys}
+    assert mixture_caps(shuffled) == base
+    assert mixture_caps(dict(reversed(list(counts.items())))) == base
+    # the old greedy sorted-name pass starved the late-alphabet tails; the
+    # water-fill fills the smallest allowances first, so none is zero
+    assert base["transportation"] > 0
+    assert base["outsourcing"] > 0
+    assert (base["affiliate"] + base["agency"] + base["license"]
+            + base["maintenance"] + base["outsourcing"]
+            + base["transportation"]) <= base["__global_cap__"]
 
 
 def test_apply_mixture_caps_cuts_rows():
@@ -546,8 +674,9 @@ def test_apply_mixture_caps_cuts_rows():
                      [_rows_t3(f"b{i:03d}", "b") for i in range(10)],
                      ignore_index=True)
     kept, cut = apply_mixture_caps(rows, {"a": 60, "b": 40})
-    assert len(kept) == 66 and len(cut) == 14
-    assert kept["subclass"].value_counts().to_dict() == {"a": 60, "b": 6}
+    # water-fill allowances: a=33, b=33; b only has 10 candidates
+    assert len(kept) == 43 and len(cut) == 37
+    assert kept["subclass"].value_counts().to_dict() == {"a": 33, "b": 10}
     assert (cut["reason"] == "mixture_cap").all()
 
 
@@ -743,6 +872,22 @@ def _tiny_gnotheia_pool(tmp_path: Path) -> Path:
     return p
 
 
+def _tiny_cuad_pool(tmp_path: Path) -> Path:
+    """A tiny synthetic CUAD JSONL — never the 38 MB Hub file (hermetic)."""
+    p = tmp_path / "cuad.jsonl"
+    lines = [
+        {"id": "cuad_cl_001", "input": {"doc_text": "Consulting agreement one."},
+         "expected": {"clause_count": 1},
+         "metadata": {"category": "Consulting Agreements"}, "tags": []},
+        {"id": "cuad_tr_001", "input": {"doc_text": "Transportation agreement one."},
+         "expected": {"clause_count": 1},
+         "metadata": {"category": "Transportation"}, "tags": []},
+    ]
+    p.write_text("\n".join(json.dumps(r) for r in lines) + "\n",
+                 encoding="utf-8")
+    return p
+
+
 def _empty_pools(tmp_path: Path, names: tuple[str, ...]) -> dict[str, Path]:
     out = {}
     for name in names:
@@ -755,7 +900,8 @@ def _empty_pools(tmp_path: Path, names: tuple[str, ...]) -> dict[str, Path]:
 def test_cli_dry_run_deterministic_and_writes_nothing(tmp_path, capsys):
     stage_dir = tmp_path / "stage"
     write_stage(stage_dir, _canonical())
-    pools = {"enron": _tiny_enron_pool(tmp_path), "cms": _empty_pools(tmp_path, ("cms",))["cms"],
+    pools = {"enron": _tiny_enron_pool(tmp_path), "cuad": _tiny_cuad_pool(tmp_path),
+             "cms": _empty_pools(tmp_path, ("cms",))["cms"],
              "gnotheia": _tiny_gnotheia_pool(tmp_path),
              "bdr": _empty_pools(tmp_path, ("bdr",))["bdr"],
              "insurbias": _empty_pools(tmp_path, ("insurbias",))["insurbias"]}
@@ -781,6 +927,7 @@ def test_cli_tier1_writes_marry_the_stage_layout(tmp_path, capsys):
     canonical = _canonical()
     write_stage(stage_dir, canonical)
     pools = {"enron": _tiny_enron_pool(tmp_path),
+             "cuad": _tiny_cuad_pool(tmp_path),
              "cms": _empty_pools(tmp_path, ("cms",))["cms"],
              "gnotheia": _tiny_gnotheia_pool(tmp_path),
              "bdr": _empty_pools(tmp_path, ("bdr",))["bdr"],
@@ -794,9 +941,12 @@ def test_cli_tier1_writes_marry_the_stage_layout(tmp_path, capsys):
     enrichment = pd.read_parquet(doc_train / "enrichment-00000-of-00001.parquet")
     assert list(enrichment.columns) == list(DOCS_SCHEMA_COLUMNS)
     assert (enrichment["split"] == "train").all()
-    # gnotheia is off the OBSERVED fixture head -> only the 2 enron rows adopt
-    assert len(enrichment) == 2
-    assert set(enrichment["filename"]) == {"enron_x1.txt", "enron_x2.txt"}
+    # gnotheia is off the OBSERVED fixture head -> only enron + CUAD rows adopt
+    assert len(enrichment) == 4
+    assert set(enrichment["filename"]) == {
+        "enron_x1.txt", "enron_x2.txt", "cuad_cl_001", "cuad_tr_001"}
+    assert set(enrichment[enrichment["filename"].str.startswith("cuad")]["subclass"]) == {
+        "consulting", "transportation"}
     for split in ("validation", "test"):
         files = list((stage_dir / "data" / "documents" / split).glob("enrichment-*"))
         assert not files, f"enrichment must never land in {split}"
@@ -806,8 +956,8 @@ def test_cli_tier1_writes_marry_the_stage_layout(tmp_path, capsys):
                                  "purpose", "label_source", "label_confidence",
                                  "example_weight", "lineage", "tier"}
     assert (prov["purpose"] == PURPOSE_TRAIN_ONLY).all()
-    # gnotheia is off the observed fixture head -> only enron_gt rows adopt
-    assert prov["label_source"].nunique() == 1
+    # only the two wired Tier-1 sources adopt under the fixture head
+    assert set(prov["label_source"]) == {"enron_gt", "cuad_full"}
     # audit store: enron cap cuts? no — 2 enron rows under cap; gnotheia property
     # is off the OBSERVED fixture head -> rejected loud in enrichment_audit.jsonl
     audit_lines = (stage_dir / "enrichment_audit.jsonl").read_text(encoding="utf-8").splitlines()
@@ -832,6 +982,7 @@ def test_cli_rerun_is_byte_identical(tmp_path):
     stage_dir = tmp_path / "stage"
     write_stage(stage_dir, _canonical())
     pools = {"enron": _tiny_enron_pool(tmp_path),
+             "cuad": _tiny_cuad_pool(tmp_path),
              "cms": _empty_pools(tmp_path, ("cms",))["cms"],
              "gnotheia": _tiny_gnotheia_pool(tmp_path),
              "bdr": _empty_pools(tmp_path, ("bdr",))["bdr"],
@@ -885,6 +1036,7 @@ def test_cli_windows_marry_the_windows_layout(tmp_path):
     stage_dir = tmp_path / "stage"
     write_stage(stage_dir, _canonical())
     pools = {"enron": _tiny_enron_pool(tmp_path),
+             "cuad": _tiny_cuad_pool(tmp_path),
              "cms": _empty_pools(tmp_path, ("cms",))["cms"],
              "gnotheia": _empty_pools(tmp_path, ("gnotheia",))["gnotheia"],
              "bdr": _empty_pools(tmp_path, ("bdr",))["bdr"],

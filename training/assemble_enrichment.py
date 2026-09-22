@@ -62,6 +62,7 @@ from mailroom_ml.enrichment import (  # noqa: E402
     apply_mixture_caps,
     assemble_bdr_pool,
     assemble_cms_pool,
+    assemble_cuad_pool,
     assemble_enron_gt,
     assemble_gnotheia_pool,
     assemble_insurbias_pool,
@@ -84,6 +85,7 @@ MANIFEST_END = "# ---- end enrichment ----"
 # ---------------------------------------------------------------------------
 DEFAULT_CAPS = {
     "enron_cap_mult": 2.0,          # plan §6.2: <= 2x correspondence train rows
+    "cuad_cap_mult": 2.0,           # #113: <= 2x contract train rows (no prior tier entry)
     "insurance_cap_mult": 2.0,      # plan §6.3: total insurance train rows <= 2x class size
     "pseudo_max_fraction": 0.30,    # plan §6.2: <= 30% of correspondence train rows
     "global_share": cfg.SYNTHETIC_MAX_GLOBAL_SHARE,            # §6.5 <= 40%
@@ -94,6 +96,7 @@ DEFAULT_CAPS = {
 # (flag attribute, pool name, default repo, default revision)
 POOL_FLAGS = (
     ("enron_pool", "enron", cfg.ENRON_DEDUP_REPO, cfg.ENRON_DEDUP_REVISION),
+    ("cuad_pool", "cuad", cfg.CUAD_FULL_REPO, cfg.CUAD_FULL_REVISION),
     ("cms_pool", "cms", cfg.CMS_POOL_REPO, cfg.CMS_POOL_REVISION),
     ("gnotheia_pool", "gnotheia", cfg.GNOTHEIA_REPO, cfg.GNOTHEIA_REVISION),
     ("bdr_pool", "bdr", cfg.BDR_REPO, cfg.BDR_REVISION),
@@ -147,15 +150,35 @@ def _replace_enrichment_files(stage_dir: Path) -> None:
             f.unlink()
 
 
+def _read_jsonl(path: Path) -> pd.DataFrame:
+    """Read a JSONL pool into a DataFrame (nested objects stay dict columns).
+
+    Blank lines and ``#`` comments are skipped.  Row order is file order;
+    the assemblers sort deterministically afterwards.  Isolated addition:
+    only the CUAD pool is JSONL today; parquet/CSV pools are untouched.
+    """
+    records: list[dict] = []
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            records.append(json.loads(line))
+    return pd.DataFrame(records)
+
+
 def _read_pool_dir(local: Path, pool_name: str) -> pd.DataFrame:
     parquet = sorted(local.rglob("*.parquet"))
     csvs = sorted(local.rglob("*.csv"))
-    candidates = parquet or csvs
-    if not candidates:
-        raise FileNotFoundError(
-            f"pool {pool_name}: no parquet/csv files under {local}")
-    return pd.read_parquet(candidates[0]) if parquet \
-        else pd.read_csv(candidates[0])
+    jsonls = sorted(local.rglob("*.jsonl"))
+    if parquet:
+        return pd.read_parquet(parquet[0])
+    if csvs:
+        return pd.read_csv(csvs[0])
+    if jsonls:
+        return _read_jsonl(jsonls[0])
+    raise FileNotFoundError(
+        f"pool {pool_name}: no parquet/csv/jsonl files under {local}")
 
 
 def _load_pool(spec: str | None, pool_name: str, default_repo: str,
@@ -182,6 +205,9 @@ def _load_pool(spec: str | None, pool_name: str, default_repo: str,
         revision = _dir_revision(path)
     elif path.suffix.lower() == ".csv":
         df = pd.read_csv(path)
+        revision = hashlib.sha256(path.read_bytes()).hexdigest()
+    elif path.suffix.lower() == ".jsonl":
+        df = _read_jsonl(path)
         revision = hashlib.sha256(path.read_bytes()).hexdigest()
     elif path.suffix.lower() in (".parquet", ".pq"):
         df = pd.read_parquet(path)
@@ -244,6 +270,7 @@ def assemble_tier1(canonical: pd.DataFrame, caps: dict[str, float],
     stats: dict[str, dict] = {}
     spec: dict[str, tuple] = {
         "enron": (assemble_enron_gt, {"cap_mult": caps["enron_cap_mult"]}),
+        "cuad": (assemble_cuad_pool, {"cap_mult": caps["cuad_cap_mult"]}),
         "cms": (assemble_cms_pool, {}),
         "gnotheia": (assemble_gnotheia_pool, {}),
         "bdr": (assemble_bdr_pool, {}),
@@ -400,6 +427,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--no-windows", action="store_true",
                     help="skip writing data/windows/train enrichment windows")
     ap.add_argument("--enron-pool", default=None, help="path or repo_id@rev")
+    ap.add_argument("--cuad-pool", default=None,
+                    help="path or repo_id@rev (contract, JSONL)")
     ap.add_argument("--cms-pool", default=None)
     ap.add_argument("--gnotheia-pool", default=None)
     ap.add_argument("--bdr-pool", default=None)

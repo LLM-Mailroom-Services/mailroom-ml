@@ -360,20 +360,25 @@ def _dedup_vs_canonical(
     rows: pd.DataFrame,
     canonical_docs: pd.DataFrame,
 ) -> tuple[pd.DataFrame, list[dict[str, str]]]:
-    """Sha-dedup against the canonical corpus (``dedup_by_sha`` discipline:
-    same-filename same-sha keeps — document identity; different-filename
-    same-sha drops, loud)."""
-    deduped = dedup_by_sha(rows, canonical_docs)
-    n_dropped = len(rows) - len(deduped)
-    rejects: list[dict[str, str]] = []
-    if n_dropped:
-        dropped_fns = set(rows["filename"]) - set(deduped["filename"])
-        rejects.extend({
-            "filename": fn, "reason": "duplicate_sha_canonical",
-            "detail": "content_sha256 already in canonical corpus under a "
-                      "different filename",
-        } for fn in sorted(dropped_fns))
-    return deduped, rejects
+    """Sha-dedup enrichment rows against the canonical corpus.
+
+    Enrichment is purely ADDITIVE, so any row whose ``content_sha256``
+    already exists in canonical is a duplicate and is dropped — **including a
+    same-filename match**.  The library's ``dedup_by_sha`` keeps
+    same-filename matches as "same document identity", which is correct when
+    deduping a corpus against itself but wrong here: keeping it double-counts
+    the document in train and, when the canonical row sits in
+    validation/test, leaks it across the split (#112 finding — CMS would have
+    leaked 74 val/test rows).
+    """
+    canon_shas = set(canonical_docs["content_sha256"].astype(str)) - {"", "nan"}
+    dup_mask = rows["content_sha256"].astype(str).isin(canon_shas)
+    rejects: list[dict[str, str]] = [
+        {"filename": fn, "reason": "duplicate_sha_canonical",
+         "detail": "content_sha256 already in corpus (same or different filename)"}
+        for fn in sorted(rows.loc[dup_mask, "filename"])
+    ]
+    return rows.loc[~dup_mask].reset_index(drop=True), rejects
 
 
 def _finalize_pool(
@@ -426,33 +431,40 @@ def assemble_enron_gt(
     text_col: str = "doc_text",
     doc_type_col: str = "expected",
     subclass_col: str = "expected_subclass",
-    lineage_cols: tuple[str, ...] = ENRON_LINEAGE_COLS,
+    lineage_cols: tuple[str, ...] | None = ENRON_LINEAGE_COLS,
     head_subclasses: tuple[str, ...] | None = None,
     label_confidence: float = 1.0,
 ) -> PoolResult:
     """Tier-1 Enron ground-truth expansion (plan §6.2).
 
-    Adopts ``ground_truth``-config rows that (a) share the
-    aeslc_join/llm_zero_shot lineage with the corpus's Enron rows and (b) are
-    not already in the canonical corpus (sha-deduped).  Labels are exact GT
+    Adopts ``ground_truth``-config rows that are not already in the canonical
+    corpus (filename/sha-deduped).  Labels are exact GT
     (``label_source="enron_gt"``, confidence 1.0); provenance is revision-
     pinned.  Cap: ``cap_mult`` (default 2.0) x the current correspondence
     train rows, cut loud when hit.  Subclass values are normalized through
     the canonical correspondence surface; rows resolving outside the
     OBSERVED head are rejects (issue #75 posture — never a fabricated
     label).
+
+    ``lineage_cols``: ``None`` opts into the *weak-lineage* accept-all mode
+    (every source-matched GT row, lineage marker ``enron_dedup_gt``).
+    Necessary because the pinned enron pool exposes **no** ``aeslc_join``/
+    ``llm_zero_shot`` column (#112 finding) — the plan §6.2 lineage filter
+    cannot be evaluated at the pin.  A non-empty tuple that is entirely
+    absent still raises (corrupt/renamed input stays loud).
     """
     if gt_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
     _require_columns(gt_df, [text_col, doc_type_col, subclass_col],
                      "assemble_enron_gt")
-    present_lineage = [c for c in lineage_cols if c in gt_df.columns]
-    if not present_lineage:
+    requested = tuple(lineage_cols or ())
+    present_lineage = [c for c in requested if c in gt_df.columns]
+    if requested and not present_lineage:
         raise ValueError(
             "assemble_enron_gt: ground_truth config carries none of the "
-            f"lineage columns {lineage_cols} — pass lineage_cols=() only if "
-            "you accept every GT row (weak-lineage opt-in, not the default)"
-        )
+            f"lineage columns {lineage_cols} — pass lineage_cols=None to "
+            "accept every source-matched GT row (weak-lineage opt-in, not "
+            "the default)")
     head = head_subclasses if head_subclasses is not None \
         else _head_surface(canonical_docs, "correspondence")
     n_corr_train = int(
@@ -464,11 +476,16 @@ def assemble_enron_gt(
     rejects: list[dict[str, str]] = []
     for r in gt_df.sort_values("filename").to_dict("records"):
         fn = str(r["filename"])
-        lineage = "+".join(c for c in present_lineage if _truthy(r.get(c)))
-        if not lineage:
-            rejects.append({"filename": fn, "reason": "no_lineage",
-                            "detail": "row shares neither aeslc_join nor llm_zero_shot lineage"})
-            continue
+        if requested:
+            lineage = "+".join(c for c in present_lineage if _truthy(r.get(c)))
+            if not lineage:
+                rejects.append({"filename": fn, "reason": "no_lineage",
+                                "detail": "row shares neither aeslc_join nor llm_zero_shot lineage"})
+                continue
+        else:
+            # weak-lineage opt-in: the pin exposes no lineage column, so the
+            # marker records that the row was taken source-matched-but-unfiltered.
+            lineage = "enron_dedup_gt"
         doc_type = str(r[doc_type_col] or "").strip()
         if doc_type and doc_type != "correspondence":
             rejects.append({"filename": fn, "reason": "not_correspondence",
@@ -711,7 +728,7 @@ def assemble_cms_pool(
     source_corpus: str = CMS_POOL_REPO,
     source_revision: str = CMS_POOL_REVISION,
     text_col: str = "doc_text",
-    subclass_col: str = "claim_type",
+    subclass_col: str = "expected_subclass",
     title_col: str | None = None,
     head_subclasses: tuple[str, ...] | None = None,
 ) -> PoolResult:
@@ -773,7 +790,7 @@ def assemble_insurbias_pool(
     *,
     source_corpus: str = INSURBIAS_REPO,
     source_revision: str = INSURBIAS_REVISION,
-    text_col: str = "text",
+    text_col: str = "claim_narrative",
     title_col: str | None = None,
     narrative_subclass: str = "narrative",
     head_subclasses: tuple[str, ...] | None = None,

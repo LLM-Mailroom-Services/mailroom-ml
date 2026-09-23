@@ -191,26 +191,45 @@ def test_enron_gt_lineage_filter_and_mapping():
     assert row["content_sha256"] == content_sha256("Enron letter body one.")
 
 
-def test_enron_gt_dedup_same_filename_kept_different_dropped():
+def test_enron_gt_dedup_drops_any_canonical_sha_match():
     canonical = _canonical()
     canonical_text = canonical[
         canonical["filename"] == "enron_letter_002.txt"]["doc_text"].iloc[0]
-    # same filename + same sha: document identity -> kept
+    # same filename + same sha: the document is ALREADY in the corpus, so it
+    # is dropped — enrichment is additive; keeping it would double-count the
+    # doc in train and, when the canonical row sits in val/test, leak it
+    # across the split (#112 finding).
     identity = pd.DataFrame([{
         "filename": "enron_letter_002.txt", "expected": "correspondence",
         "expected_subclass": "letter", "doc_text": canonical_text,
         "aeslc_join": "1"}])
     res = assemble_enron_gt(identity, canonical)
-    assert set(res.rows["filename"]) == {"enron_letter_002.txt"}
-    # different filename + same sha -> dropped against the canonical corpus
+    assert res.rows.empty
+    reasons = dict(zip(res.rejected["filename"], res.rejected["reason"], strict=False))
+    assert reasons["enron_letter_002.txt"] == "duplicate_sha_canonical"
+    # different filename + same sha -> also dropped against the corpus
     copy = pd.DataFrame([{
         "filename": "enron_letter_copy.txt", "expected": "correspondence",
         "expected_subclass": "letter", "doc_text": canonical_text,
         "aeslc_join": "1"}])
     res2 = assemble_enron_gt(copy, canonical)
     assert res2.rows.empty
-    reasons = dict(zip(res2.rejected["filename"], res2.rejected["reason"], strict=False))
-    assert reasons["enron_letter_copy.txt"] == "duplicate_sha_canonical"
+    reasons2 = dict(zip(res2.rejected["filename"], res2.rejected["reason"], strict=False))
+    assert reasons2["enron_letter_copy.txt"] == "duplicate_sha_canonical"
+
+
+def test_enron_gt_weak_lineage_opt_in_accepts_without_lineage_columns():
+    """lineage_cols=None: the pin exposes no aeslc_join/llm_zero_shot column
+    (#112), so every source-matched GT row is accepted, head-checked, and
+    marked weak-lineage."""
+    canonical = _canonical()
+    gt = _enron_gt_rows().drop(columns=["aeslc_join", "llm_zero_shot"])
+    res = assemble_enron_gt(gt, canonical, lineage_cols=None)
+    assert not res.rows.empty
+    assert (res.rows["lineage"] == "enron_dedup_gt").all()
+    # a non-empty requested tuple that is absent stays loud
+    with pytest.raises(ValueError, match="lineage columns"):
+        assemble_enron_gt(gt, canonical)
 
 
 def test_enron_gt_cap_two_x_correspondence_train():
@@ -369,11 +388,11 @@ def test_read_pool_dir_supports_jsonl(tmp_path):
 
 def test_cms_pool_maps_subclasses_and_guards_head():
     pool = pd.DataFrame([
-        {"filename": "cms_c.txt", "claim_type": "carrier", "doc_text": "EOB carrier"},
-        {"filename": "cms_i.txt", "claim_type": "inpatient", "doc_text": "EOB inpatient"},
-        {"filename": "cms_o.txt", "claim_type": "outpatient", "doc_text": "EOB outpatient"},
-        {"filename": "cms_p.txt", "claim_type": "pde", "doc_text": "EOB pde"},
-        {"filename": "cms_j.txt", "claim_type": "junk", "doc_text": "EOB junk"},
+        {"filename": "cms_c.txt", "expected_subclass": "carrier", "doc_text": "EOB carrier"},
+        {"filename": "cms_i.txt", "expected_subclass": "inpatient", "doc_text": "EOB inpatient"},
+        {"filename": "cms_o.txt", "expected_subclass": "outpatient", "doc_text": "EOB outpatient"},
+        {"filename": "cms_p.txt", "expected_subclass": "pde", "doc_text": "EOB pde"},
+        {"filename": "cms_j.txt", "expected_subclass": "junk", "doc_text": "EOB junk"},
     ])
     res = assemble_cms_pool(pool, _canonical(),
                             head_subclasses=INSURANCE_SUBCLASSES)
@@ -420,8 +439,8 @@ def test_bdr_pool_needs_render_skipped_by_default():
 
 def test_insurbias_narrative_requires_head_token():
     pool = pd.DataFrame([
-        {"filename": "ib_1.txt", "text": "Claim narrative one"},
-        {"filename": "ib_2.txt", "text": "Claim narrative two"},
+        {"filename": "ib_1.txt", "claim_narrative": "Claim narrative one"},
+        {"filename": "ib_2.txt", "claim_narrative": "Claim narrative two"},
     ])
     # default head has no narrative token -> loud rejects, never force-fit
     res = assemble_insurbias_pool(pool, _canonical())
@@ -437,8 +456,8 @@ def test_insurbias_narrative_requires_head_token():
 def test_insurance_within_pool_dedup_first_occurrence_wins():
     text = "Shared EOB body."
     pool = pd.DataFrame([
-        {"filename": "cms_dup_a.txt", "claim_type": "carrier", "doc_text": text},
-        {"filename": "cms_dup_b.txt", "claim_type": "carrier", "doc_text": text},
+        {"filename": "cms_dup_a.txt", "expected_subclass": "carrier", "doc_text": text},
+        {"filename": "cms_dup_b.txt", "expected_subclass": "carrier", "doc_text": text},
     ])
     res = assemble_cms_pool(pool, _canonical(),
                             head_subclasses=INSURANCE_SUBCLASSES)
@@ -454,7 +473,7 @@ def test_insurance_cap_prioritizes_subclass_tails():
         for i in range(30)] +
         [{"filename": f"b_a_{i:03d}.txt", "doc_text": f"auto {i}"}
          for i in range(30)] +
-        [{"filename": f"cms_c{i:03d}.txt", "claim_type": "carrier",
+        [{"filename": f"cms_c{i:03d}.txt", "expected_subclass": "carrier",
           "doc_text": f"carrier {i}"} for i in range(30)])
     gno = assemble_gnotheia_pool(pool.iloc[:30], canonical,
                                  head_subclasses=INSURANCE_SUBCLASSES)
@@ -464,6 +483,9 @@ def test_insurance_cap_prioritizes_subclass_tails():
                             head_subclasses=INSURANCE_SUBCLASSES)
     combined, _ = combine_tier1([("gnotheia", gno), ("bdr", bdr), ("cms", cms)])
     ins = combined[combined["doc_type"] == "insurance_claim"]
+    # the cms carrier rows are genuinely assembled pre-cap (not rejected
+    # off-head): 30 property + 30 auto + 30 carrier
+    assert (ins["subclass"] == "carrier").sum() == 30
     kept, cut = apply_insurance_cap(ins, canonical, class_cap_mult=2.0)
     # budget = 2*50 - 50 = 50 new rows; tails (property, auto) fill it first
     assert len(kept) == 50
@@ -471,6 +493,8 @@ def test_insurance_cap_prioritizes_subclass_tails():
     assert counts["property"] == 30
     assert counts["auto"] == 20
     assert "carrier" not in counts
+    # all 30 assembled carrier rows are genuinely cut by tail priority
+    assert sum(fn.startswith("cms_c") for fn in cut["filename"]) == 30
     assert (cut["reason"] == "cap_insurance_class").all()
     # under budget -> no cut at all
     kept2, cut2 = apply_insurance_cap(ins.iloc[:10], canonical,
@@ -480,7 +504,7 @@ def test_insurance_cap_prioritizes_subclass_tails():
 
 def test_combine_tier1_cross_pool_dedup():
     text = "Same doc in two pools."
-    a = pd.DataFrame([{"filename": "a_1.txt", "claim_type": "carrier",
+    a = pd.DataFrame([{"filename": "a_1.txt", "expected_subclass": "carrier",
                        "doc_text": text}])  # pool 1 (earlier wins)
     b = pd.DataFrame([{"filename": "b_1.txt", "doc_text": text},  # cross-pool dup
                       {"filename": "b_2.txt", "doc_text": text + " unique"}])
@@ -491,6 +515,9 @@ def test_combine_tier1_cross_pool_dedup():
     # b_1 duplicates a_1's sha (same text) -> cross-pool drop; b_2 unique
     assert len(rows[rows["content_sha256"] == content_sha256(text)]) == 1
     assert set(rows[rows["content_sha256"] == content_sha256(text)]["filename"]) == {"a_1.txt"}
+    # the earlier pool (cms) genuinely wins the cross-pool sha collision
+    assert rows[rows["filename"] == "a_1.txt"]["subclass"].iloc[0] == "carrier"
+    assert "b_2.txt" in set(rows["filename"])
     rej = rejects[rejects["reason"] == "duplicate_sha_cross_pool"]
     assert set(rej["filename"]) == {"b_1.txt"}
 

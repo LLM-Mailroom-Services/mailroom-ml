@@ -50,6 +50,7 @@ ROOT = _b
 sys.path.insert(0, str(ROOT / "src"))
 
 import pandas as pd  # noqa: E402
+import numpy as np  # noqa: E402
 
 from mailroom_ml import config as cfg  # noqa: E402
 from mailroom_ml.dataset import refresh_dataset_info, verify_stage  # noqa: E402
@@ -167,7 +168,134 @@ def _read_jsonl(path: Path) -> pd.DataFrame:
     return pd.DataFrame(records)
 
 
+def _parquet_under(local: Path, markers: tuple[str, ...]) -> list[Path]:
+    """Parquet files whose path carries any of ``markers`` (config dirs);
+    an empty ``markers`` means every parquet under ``local``."""
+    return sorted(p for p in local.rglob("*.parquet")
+                  if not markers or any(m in p.parts for m in markers))
+
+
+def _concat_parquet(paths: list[Path]) -> pd.DataFrame:
+    if not paths:
+        return pd.DataFrame()
+    return pd.concat([pd.read_parquet(p) for p in paths], ignore_index=True)
+
+
+def _read_enron(local: Path) -> pd.DataFrame:
+    """Enron GT labels INNER-JOINed with rendered text on ``filename``.
+
+    The pin carries two configs: ``ground_truth`` (labels) and ``default``/
+    ``blind`` (rendered text).  A blind ``rglob[0]`` lands on ``blind/test``
+    — labels-less (the #112 loader defect).  Both pool splits are read; the
+    ladder forces ``split=train`` downstream.  The lineage columns the plan
+    §6.2 names (``aeslc_join``/``llm_zero_shot``) do not exist at the pin —
+    see ``assemble_enron_gt``'s weak-lineage opt-in.
+    """
+    gt = _concat_parquet(_parquet_under(local, ("ground_truth",)))
+    txt = _concat_parquet(_parquet_under(local, ("default", "blind")))
+    if gt.empty or txt.empty:
+        raise FileNotFoundError(
+            "enron pool: expected ground_truth/ + default|blind/ parquet "
+            f"under {local}")
+    cols = [c for c in ("filename", "text", "subject") if c in txt.columns]
+    return gt.merge(txt[cols], on="filename", how="inner").rename(
+        columns={"text": "doc_text"})
+
+
+def _as_py(value):
+    """Coerce nested parquet structures (numpy arrays of dicts) to plain
+    Python so ``.get``/iteration behave predictably."""
+    if isinstance(value, np.ndarray):
+        return [_as_py(v) for v in value.tolist()]
+    if isinstance(value, dict):
+        return {k: _as_py(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_as_py(v) for v in value]
+    return value
+
+
+def _read_gnotheia(local: Path) -> pd.DataFrame:
+    """GNOTHEIA ``data.parquet``: the policy text is nested under
+    ``data.contextDocuments[*].extractedDocumentContent``; identity is
+    ``data.claim.claimId``.  The corpus stored a *render* as
+    ``property:<claimId>.txt``, so naming rows the same way lets the common
+    filename-collision hygiene exclude the 200 already adopted."""
+    files = _parquet_under(local, ("data.parquet",))
+    if not files:
+        raise FileNotFoundError(f"gnotheia pool: no data.parquet under {local}")
+    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    rows: list[dict] = []
+    for _, r in df.iterrows():
+        data = _as_py(r.get("data"))
+        if isinstance(data, str):
+            data = json.loads(data)
+        data = data or {}
+        claim = data.get("claim") or {}
+        cid = str(claim.get("claimId") or r.get("id"))
+        docs = data.get("contextDocuments") or []
+        text = "\n\n".join(str((c or {}).get("extractedDocumentContent") or "")
+                           for c in docs).strip()
+        rows.append({"filename": f"property:{cid}.txt", "doc_text": text,
+                     "claim_id": cid})
+    return pd.DataFrame(rows)
+
+
+def _read_bdr(local: Path) -> pd.DataFrame:
+    """BDR is a TABULAR register (no rendered decision letter).  Synthesize
+    the stable ``filename`` the adapter audits against; the absent
+    ``doc_text`` is what routes every row to ``needs_render`` (plan §6.3)."""
+    df = _concat_parquet(_parquet_under(local, ()))
+    if df.empty:
+        raise FileNotFoundError(f"bdr pool: no parquet under {local}")
+    df = df.copy()
+    df["filename"] = [f"auto:{c}.txt" for c in df["claim_id"].astype(str)]
+    return df
+
+
+def _read_insurbias(local: Path) -> pd.DataFrame:
+    """INSURBIAS narratives: text lives in ``claim_narrative``; identity is
+    the CSV ``index``."""
+    csvs = sorted(local.rglob("*.csv"))
+    if not csvs:
+        raise FileNotFoundError(f"insurbias pool: no CSV under {local}")
+    df = pd.read_csv(csvs[0]).copy()
+    if "index" in df.columns:
+        df["filename"] = [f"insurbias:{i}.txt" for i in df["index"].astype(str)]
+    return df
+
+
+def _read_cms(local: Path) -> pd.DataFrame:
+    """CMS: read ``train.jsonl`` explicitly — the held-out ``test.jsonl``
+    must never enter training (the blind rglob picked test)."""
+    f = local / "train.jsonl"
+    if f.exists():
+        return _read_jsonl(f)
+    cands = [p for p in sorted(local.rglob("*.jsonl")) if "test" not in p.name]
+    if not cands:
+        raise FileNotFoundError(f"cms pool: no non-test jsonl under {local}")
+    return _read_jsonl(cands[0])
+
+
 def _read_pool_dir(local: Path, pool_name: str) -> pd.DataFrame:
+    """Read a pool snapshot into the flat frame its adapter expects.
+
+    Pool layouts are heterogeneous (multi-config repos, nested JSON, tabular
+    registers), and a blind ``rglob[0]`` silently reads the wrong config or
+    the held-out split for several pins (#112 finding).  Each pool therefore
+    gets an explicit, reproducible read landing on its assembler's columns;
+    ``cuad`` and unknown pools keep the first-file default (single-file
+    JSONL pool).
+    """
+    if pool_name == "enron":
+        return _read_enron(local)
+    if pool_name == "gnotheia":
+        return _read_gnotheia(local)
+    if pool_name == "bdr":
+        return _read_bdr(local)
+    if pool_name == "insurbias":
+        return _read_insurbias(local)
+    if pool_name == "cms":
+        return _read_cms(local)
     parquet = sorted(local.rglob("*.parquet"))
     csvs = sorted(local.rglob("*.csv"))
     jsonls = sorted(local.rglob("*.jsonl"))
@@ -269,7 +397,11 @@ def assemble_tier1(canonical: pd.DataFrame, caps: dict[str, float],
     results: list[tuple[str, PoolResult]] = []
     stats: dict[str, dict] = {}
     spec: dict[str, tuple] = {
-        "enron": (assemble_enron_gt, {"cap_mult": caps["enron_cap_mult"]}),
+        # lineage_cols=None: the enron pin exposes no aeslc_join/llm_zero_shot
+        # column (plan §6.2's filter is unimplementable at the pin — #112
+        # finding); accept the source-matched GT rows, head-checked.
+        "enron": (assemble_enron_gt, {"cap_mult": caps["enron_cap_mult"],
+                                      "lineage_cols": None}),
         "cuad": (assemble_cuad_pool, {"cap_mult": caps["cuad_cap_mult"]}),
         "cms": (assemble_cms_pool, {}),
         "gnotheia": (assemble_gnotheia_pool, {}),

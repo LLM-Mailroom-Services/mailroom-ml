@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from conftest import ROOT, fixture_rows, requires_transformers
 
@@ -91,6 +92,7 @@ def _documents_split(stage_dir: Path, split: str) -> pd.DataFrame:
 
 
 @requires_transformers
+@pytest.mark.train
 def test_stage_only_is_the_default(tmp_path, monkeypatch):
     stage_dir = _patch_stage(monkeypatch, tmp_path)
     exit_code = build_dataset.main(["--stage-only"])
@@ -128,6 +130,7 @@ def test_no_windows_flag(tmp_path, monkeypatch):
 
 
 @requires_transformers
+@pytest.mark.train
 def test_publish_uploads_and_byte_verifies(tmp_path, monkeypatch, capsys):
     stage_dir = _patch_stage(monkeypatch, tmp_path)
     api = _install_fake_hub(monkeypatch, stage_dir)
@@ -233,3 +236,16 @@ def test_no_stage_publishes_enriched_tree_verbatim(
     # uploaded once, sidecars byte-verified
     assert len(api.uploaded) == 1
     assert "WARNING" not in capsys.readouterr().out
+
+
+def test_repo_root_walk_errors_without_git(tmp_path):
+    start = tmp_path / "deep" / "nested"
+    start.mkdir(parents=True)
+    _b = start.resolve()
+    with pytest.raises(SystemExit, match="no .git directory"):
+        while not (_b / ".git").is_dir():
+            _parent = _b.parent
+            if _parent == _b:
+                raise SystemExit(
+                    f"repo root not found: no .git directory above {start}")
+            _b = _parent

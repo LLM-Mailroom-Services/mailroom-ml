@@ -27,7 +27,12 @@ from collections import Counter, defaultdict
 
 import numpy as np
 
-from mailroom_ml.config import BERT_INTAKE_MAX_CHARS, MAX_TOKENS, RANDOM_STATE
+from mailroom_ml.config import (
+    BERT_INTAKE_MAX_CHARS,
+    CHARS_PER_TOKEN,
+    MAX_TOKENS,
+    RANDOM_STATE,
+)
 
 __all__ = [
     "char_lengths",
@@ -75,7 +80,7 @@ def window_cohort(docs, max_tokens: int = MAX_TOKENS):
     if "token_estimate" in out.columns:
         est = out["token_estimate"].fillna(0).astype(np.int64).to_numpy()
     else:
-        est = np.ceil(char_lengths(out) / 3.8).astype(np.int64)
+        est = np.ceil(char_lengths(out) / CHARS_PER_TOKEN).astype(np.int64)
     out["window_cohort"] = np.where(est <= max_tokens,
                                     "single-window", "multi-window")
     return out
@@ -98,7 +103,10 @@ def duplicate_groups(docs) -> dict:
     by_hash: dict[str, list[str]] = defaultdict(list)
     for fn, h in zip(docs["filename"].astype(str),
                      docs["content_sha256"].astype(str), strict=True):
-        by_hash[h].append(fn)
+        hs = str(h).strip()
+        if not hs or hs.lower() == "nan":
+            continue
+        by_hash[hs].append(fn)
     groups = [sorted(fns) for fns in by_hash.values() if len(fns) > 1]
     return {
         "n_groups": len(groups),

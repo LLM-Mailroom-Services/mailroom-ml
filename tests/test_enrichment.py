@@ -788,6 +788,26 @@ def test_run_seven_gates_short_circuits_and_audits():
     assert all(r["passed"] is False for r in audit.records)
 
 
+def test_run_seven_gates_does_not_run_later_gates_after_failure(monkeypatch):
+    audit = AuditStore()
+    corpus = ["The hosting agreement includes service level targets."]
+    card = LabelCard(parent_class="contract", subclass="hosting")
+    contaminated = {"id": "c1", "parent_class": "contract",
+                    "subclass": "hosting", "title": "t",
+                    "doc_text": corpus[0]}
+    calls = {"model_disagreement": 0}
+
+    def _spy(*args, **kwargs):
+        calls["model_disagreement"] += 1
+        return gate_model_disagreement(*args, **kwargs)
+
+    monkeypatch.setattr(
+        "mailroom_ml.enrichment.gate_model_disagreement", _spy)
+    report = run_seven_gates(contaminated, card, corpus, audit=audit)
+    assert report.passed is False
+    assert calls["model_disagreement"] == 0
+
+
 def test_human_spot_audit_seam():
     rows = pd.concat([_rows_t3(f"h{i:03d}", "hosting") for i in range(3)] +
                      [_rows_t3(f"l{i:03d}", "license") for i in range(2)],
@@ -1059,6 +1079,7 @@ def test_cli_tier2_end_to_end(tmp_path):
 
 
 @requires_transformers
+@pytest.mark.train
 def test_cli_windows_marry_the_windows_layout(tmp_path):
     stage_dir = tmp_path / "stage"
     write_stage(stage_dir, _canonical())

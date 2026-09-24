@@ -77,6 +77,18 @@ def test_duplicate_groups_tracks_sha256_families():
         "n_groups": 0, "n_duplicate_rows": 0, "groups": []}
 
 
+def test_duplicate_groups_skips_empty_sha256():
+    docs = pd.DataFrame([
+        {"filename": "a.txt", "content_sha256": ""},
+        {"filename": "b.txt", "content_sha256": "nan"},
+        {"filename": "c.txt", "content_sha256": "real"},
+        {"filename": "d.txt", "content_sha256": "real"},
+    ])
+    dup = duplicate_groups(docs)
+    assert dup["n_groups"] == 1
+    assert dup["groups"] == [["c.txt", "d.txt"]]
+
+
 def test_looks_messy_heuristic():
     assert looks_messy("clean text with words") is False
     assert looks_messy("") is True

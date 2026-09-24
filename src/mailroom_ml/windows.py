@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from mailroom_ml.config import MAX_TOKENS, MODEL_ID, WINDOW_OVERLAP_TOKENS
+from mailroom_ml.config import (
+    CHARS_PER_TOKEN,
+    MAX_TOKENS,
+    MODEL_ID,
+    WINDOW_OVERLAP_TOKENS,
+)
 
 __all__ = ["window_document", "estimate_tokens"]
 
@@ -109,6 +114,6 @@ def window_document(title: str, doc_text: str, max_tokens: int = MAX_TOKENS,
     return windows
 
 
-def estimate_tokens(text: str, chars_per_token: float = 4.0) -> int:
+def estimate_tokens(text: str, chars_per_token: float = CHARS_PER_TOKEN) -> int:
     """Chars/4 heuristic token estimate (tiktoken-o200k-accurate at scale)."""
     return max(1, int(round(len(text) / chars_per_token)))

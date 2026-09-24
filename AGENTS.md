@@ -41,7 +41,7 @@ intake-overhaul track. Consequences:
   the fast-path gate; the LLM sorter remains the authority for the messy /
   ambiguous / sparse tail (`mailroom_ml.routing`, thresholds in `config.py`).
 - **Serving:** ONNX int8 on CPU is the primary path
-  (`artifacts/onnx/model/model_quantized.onnx`, ~60 MB, µs–ms/doc). The Modal
+  (`artifacts/onnx/model/model_quantized.onnx`, ~147 MiB, µs–ms/doc). The Modal
   serve app is an explicit **FALLBACK**.
 
 ## Layout
@@ -88,6 +88,9 @@ uv sync --extra dev           # core + pytest/ruff
 uv sync --extra train         # + torch/transformers/accelerate
 uv sync --extra serve         # + onnxruntime/optimum/fastapi
 uv sync --extra deploy        # + modal (deploy-time only)
+
+Dependency pins are authoritative in `pyproject.toml` + `uv.lock` (no parallel
+`requirements/*.txt` export tree).
 
 # tests — surgical by default
 uv run pytest -m "not fullcorpus"          # core suite, no torch/onnx needed

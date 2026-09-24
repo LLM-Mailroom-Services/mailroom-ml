@@ -49,7 +49,7 @@ import hashlib
 import json
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1557,20 +1557,23 @@ def run_seven_gates(
     — the pipeline cannot pass until every gate executed.  On failure the
     candidate is written to ``audit`` (never fitted).
     """
-    gates = [
-        gate_schema(candidate, card),
-        gate_lexical_contamination(str(candidate.get("doc_text") or ""),
-                                   corpus_texts, n=n_gram),
-        gate_rule_cues(candidate, card),
-        gate_entity_overlap(str(candidate.get("doc_text") or ""),
-                            corpus_texts, known_entities=known_entities),
-        gate_independent_adjudication(candidate, card),
-        gate_embedding_diversity(candidate),
-        gate_model_disagreement(candidate),
-    ]
+    gate_steps: tuple[tuple[str, Callable[[], GateResult]], ...] = (
+        ("schema", lambda: gate_schema(candidate, card)),
+        ("lexical_contamination", lambda: gate_lexical_contamination(
+            str(candidate.get("doc_text") or ""), corpus_texts, n=n_gram)),
+        ("rule_cues", lambda: gate_rule_cues(candidate, card)),
+        ("entity_overlap", lambda: gate_entity_overlap(
+            str(candidate.get("doc_text") or ""), corpus_texts,
+            known_entities=known_entities)),
+        ("independent_adjudication", lambda: gate_independent_adjudication(
+            candidate, card)),
+        ("embedding_diversity", lambda: gate_embedding_diversity(candidate)),
+        ("model_disagreement", lambda: gate_model_disagreement(candidate)),
+    )
     results: list[GateResult] = []
     failed: GateResult | None = None
-    for g in gates:
+    for _name, run_gate in gate_steps:
+        g = run_gate()
         results.append(g)
         if g.decision != "pass":
             failed = g

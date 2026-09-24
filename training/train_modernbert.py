@@ -190,13 +190,6 @@ def tokenize_rows(rows: list[dict], tokenizer, max_length: int) -> list[dict]:
     } for i, r in enumerate(rows)]
 
 
-def _pad_right(t: torch.Tensor, target_len: int) -> torch.Tensor:
-    """Right-pad a 1-D tensor with zeros to ``target_len`` (no-op when at or
-    over length). Used for dynamic-padding batches; pads are masked out by
-    the attention mask, so the embedding of token 0 never contributes."""
-    return F.pad(t, (0, max(0, target_len - t.shape[0])))
-
-
 @dataclass
 class LossConfig:
     """Loss-shaping knobs (2026-09-20 audit: loss rebalance + calibration).
@@ -269,13 +262,6 @@ def head_loss(model, batch, heads, device,
     else:
         loss = dt_ce
     return loss, logits
-
-
-def _pad_right(t: torch.Tensor, target_len: int) -> torch.Tensor:
-    """Right-pad a 1-D tensor with zeros to ``target_len`` (no-op when at or
-    over length). Used for dynamic-padding batches; pads are masked out by
-    the attention mask, so the embedding of token 0 never contributes."""
-    return F.pad(t, (0, max(0, target_len - t.shape[0])))
 
 
 def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
@@ -1348,8 +1334,16 @@ def main() -> int:
             for f in src.iterdir():
                 if f.is_file() and f.name != "summary.json":
                     shutil.copy2(f, args.output / f.name)
+            sel_temps_path = src / "temperatures.json"
+            if sel_temps_path.is_file():
+                sel_temps = json.loads(sel_temps_path.read_text(encoding="utf-8"))
+            else:
+                sel_temps = temps
+            promoted_summary = _summary(
+                run_id, args, device, events, selected, sel_temps, wall,
+                len(events), test_metrics)
             (args.output / "summary.json").write_text(
-                json.dumps(summary, sort_keys=True, indent=2))
+                json.dumps(promoted_summary, sort_keys=True, indent=2))
             print(f"[trainer] promoted selected epoch {selected_epoch} "
                   f"weights into {args.output}", flush=True)
         else:

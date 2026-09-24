@@ -175,7 +175,7 @@ logits.
 ## 5. Fallback serving app (`mailroom-ml-serve`) — FALLBACK only
 
 The PLAN's primary serving path is the **local ONNX CPU session**
-(`artifacts/onnx/model/model_quantized.onnx`, ~60 MB, ms loads, ≈0 $/doc).
+(`artifacts/onnx/model/model_quantized.onnx`, ~147 MiB, ms loads, ≈0 $/doc).
 The Modal app is an escape hatch (pipeline node that cannot host a local
 session, demo endpoints). It runs the **same int8 artifact** on CPU — the image
 deliberately excludes torch/transformers.

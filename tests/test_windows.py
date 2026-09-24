@@ -9,11 +9,12 @@ from __future__ import annotations
 import pytest
 
 from conftest import requires_transformers
-from mailroom_ml.config import MAX_TOKENS
+from mailroom_ml.config import CHARS_PER_TOKEN, MAX_TOKENS
 from mailroom_ml.windows import estimate_tokens, window_document
 
 
 @requires_transformers
+@pytest.mark.train
 def test_window_document_single_and_multi():
     short = window_document("t", "x" * 100)
     assert len(short) == 1 and short[0].startswith("t")
@@ -26,6 +27,7 @@ def test_window_document_single_and_multi():
 
 
 @requires_transformers
+@pytest.mark.train
 def test_window_document_title_prefix_survives_verbatim():
     """The raw title string is re-attached verbatim — never clamped away."""
     title = "Quarterly Risk Call — Subject Line"
@@ -40,6 +42,7 @@ def test_window_document_title_prefix_survives_verbatim():
 
 
 @requires_transformers
+@pytest.mark.train
 def test_window_document_without_title():
     wins = window_document("", "word " * 200_000)
     assert len(wins) > 1
@@ -47,6 +50,7 @@ def test_window_document_without_title():
 
 
 @requires_transformers
+@pytest.mark.train
 def test_window_document_short_doc_single_window():
     # at or under budget: exactly one window, full text, title attached
     body = "This is a short document. " * 20
@@ -57,6 +61,7 @@ def test_window_document_short_doc_single_window():
 
 
 @requires_transformers
+@pytest.mark.train
 def test_window_document_runtime_error_when_transformers_absent(monkeypatch):
     # guard path: force the cached tokenizer to None -> clear RuntimeError
     import mailroom_ml.windows as windows_mod

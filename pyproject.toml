@@ -47,9 +47,11 @@ packages = ["src/mailroom_ml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--strict-markers"
 markers = [
     "train: requires the train extra (torch/transformers)",
     "serve: requires the serve extra (onnxruntime/optimum)",
+    "deploy: requires the deploy extra (modal)",
     "fullcorpus: requires the local HF snapshot under data/",
 ]
 

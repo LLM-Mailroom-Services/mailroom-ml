@@ -20,7 +20,6 @@ so every function is unit-testable with synthetic logits.
 """
 from __future__ import annotations
 
-import functools
 from typing import Any
 
 import numpy as np
@@ -297,30 +296,3 @@ def selective_risk_sweep(
         ),
     }
 
-
-def _calibration_report_parts(
-    logits_by_head: dict[str, np.ndarray],
-    labels_by_head: dict[str, np.ndarray],
-) -> dict[str, Any]:
-    """Shared report builder: per-head temperature + ECE (used by eval CLI)."""
-    out: dict[str, Any] = {"heads": {}}
-    for head in sorted(logits_by_head):
-        lg = np.asarray(logits_by_head[head])
-        lab = np.asarray(labels_by_head[head]).astype(int).reshape(-1)
-        t = fit_temperature(lg, lab)
-        probs = apply_temperature(lg, t)
-        conf = probs.max(axis=1)
-        correct = (probs.argmax(axis=1) == lab).astype(np.float64)
-        out["heads"][head] = {
-            "temperature": round(t, 4),
-            "n": int(len(lab)),
-            "ece": round(ece(lg, lab), 4),
-            "band_ece": round(ece_within_band(conf, correct), 4),
-            "reliability": reliability_table(conf, correct),
-        }
-    return out
-
-
-# Public alias used by eval CLI / calibration gate — keeps the head loop
-# out of callers.  (Functools import kept for future memoized sweeps.)
-_ = functools  # noqa: B018 — reserved for cached sweep results in eval CLI

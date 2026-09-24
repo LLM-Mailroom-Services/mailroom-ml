@@ -59,12 +59,11 @@ CLASSIFIER_MODEL_REPO = "Lucius-Morningstar/mailroom-modernbert-classifier"
 # ---------------------------------------------------------------------------
 MODEL_ID = "answerdotai/ModernBERT-base"
 MAX_TOKENS = 8192                 # ModernBERT native context
+# Shared char/token heuristic (estimate_tokens, cohort fallbacks, routing docs).
+CHARS_PER_TOKEN = 4.0
 WINDOW_OVERLAP_TOKENS = 512
 VAL_FRACTION = 0.1
 RANDOM_STATE = 42                 # every split / shuffle / generator seed base
-
-# Extra seeds for the final-candidate discipline (baseline + 2 more).
-TRAINING_SEEDS = (42, 7, 2026)
 
 # ---------------------------------------------------------------------------
 # Taxonomies (canonical keys vendored from llm-dojo-scoring, DMR-066 — the
@@ -192,4 +191,3 @@ SYNTHETIC_TIER_CAPS = ((5, 3), (15, 2), (30, 1), (75, 0))  # (authentic, cap)
 # Input-construction version: v1 = committed title + "\\n\\n" + window
 # (byte-compatible with the published training set).  v2 adds the tagged
 # [FILE_NAME]/[TITLE]/[WINDOW_INDEX] metadata prefix — config-flag only.
-INPUT_FORMAT_VERSION = "v1"

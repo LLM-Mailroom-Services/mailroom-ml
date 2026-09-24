@@ -44,6 +44,7 @@ def test_softmax_accepts_single_row():
 
 
 def test_fit_temperature_recovers_known_scale():
+    pytest.importorskip("scipy")
     rng = np.random.RandomState(0)
     z = rng.normal(size=(4000, 5))
     t_true = 1.7
@@ -55,6 +56,7 @@ def test_fit_temperature_recovers_known_scale():
 
 
 def test_fit_temperature_leaves_degenerate_heads_at_one():
+    pytest.importorskip("scipy")
     assert fit_temperature(np.zeros((3, 3)), np.zeros(3)) == 1.0
     assert fit_temperature(np.zeros((1, 3)), np.array([0])) == 1.0
 

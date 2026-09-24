@@ -115,11 +115,13 @@ def test_encode_inputs_never_truncates():
         encode_inputs(b, ["x y z w v"], max_length=3)
 
 
+@pytest.mark.train
 def test_load_tokenizer_neutralizes_baked_padding_and_truncation(tmp_path):
     """The trainer's tokenizer.json bakes padding=longest + truncation=8192;
     the serving loader must neutralize BOTH so every window does not pad to
     the full 8,192-token tensor (run-3 regression: minutes-per-doc on CPU
     fp32) and so encode_inputs sees true lengths (no-truncation doctrine)."""
+    pytest.importorskip("tokenizers")
     import tokenizers as tkz
 
     vocab = {v: i for i, v in enumerate(
@@ -176,6 +178,28 @@ def test_plurality_merge_and_composite_score():
                                          * res["agreement"] * res["margin"],
                                          rel=1e-3)
     assert res["n_class_windows"] == 2
+
+
+def test_runner_up_never_equals_winner_when_second_best_exists():
+    """Plurality winner can differ from mean-prob ranking (#124)."""
+    corr_win = [0.0, 0.0, 0.0, 10.0, 0.0, -5.0]
+    ins_spike = [0.0, 0.0, 0.0, 0.0, 50.0, -5.0]
+    sequences = [corr_win, corr_win, ins_spike]
+
+    def predict(ids, mask):
+        row = sequences.pop(0)
+        n = ids.shape[0]
+        return {
+            "doc_type": np.tile(np.array(row, dtype=np.float32), (n, 1)),
+            "correspondence": np.tile(np.array([0.0, 0.0, 9.0, 0.0],
+                                               dtype=np.float32), (n, 1)),
+        }
+
+    b = _stub_bundle(predict)
+    res = classify_windows(b, ["w1", "w2", "w3"])
+    assert res["doc_type"] == "correspondence"
+    assert res["runner_up"] != "correspondence"
+    assert res["margin"] > 0.0
 
 
 def test_unknown_abstention_never_scores_subclass():
@@ -577,10 +601,12 @@ def test_load_bundle_rejects_incomplete_dir(tmp_path, monkeypatch):
         load_bundle()
 
 
+@pytest.mark.train
 def test_head_from_state_reconstructs_linear_and_mlp():
     """heads.pt is self-describing: linear heads (weight/bias) and MLP heads
     (0.*/3.* — run-3 --mlp-heads) must both load. The loader previously
     assumed linear-only (eval harness failed on run-3: KeyError 'weight')."""
+    pytest.importorskip("torch")
     import torch
 
     from mailroom_ml.inference import _head_from_state

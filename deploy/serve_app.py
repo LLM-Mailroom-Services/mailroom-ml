@@ -71,7 +71,7 @@ MAX_LENGTH = int(os.environ.get("SERVE_MAX_LENGTH", "8192"))  # ModernBERT nativ
 
 # ---------------------------------------------------------------------------
 # Image: CPU-only ONNX runtime. Deliberately NO torch/transformers — the int8
-# graph is ~60 MB and loads in ms; dragging the training stack in just to serve
+# graph is ~147 MiB and loads in ms; dragging the training stack in just to serve
 # it would make this fallback as heavy as the thing it replaces. Tokenization
 # uses the standalone `tokenizers` Rust wheel (no torch dependency).
 # ---------------------------------------------------------------------------

@@ -171,10 +171,9 @@ deploy extra pins `modal==1.5.5`).
 - **Pending cards:** U5 (dictionary/definitional scope — label cards +
   contrastive synthesis; upstream RFC gate, `prompt-engineer`), U8 (board
   evidence audit, `board-evidence-auditor`), U9 (docs/board close, `atom`).
-- **Untracked scratch** (not ours; left in place per repo law — do not
-  delete another session's files): `archive-browser-b4-evidence.png`,
-  `bert-panels.png`. `AGENTS.md` was also untracked at the U8 audit and is
-  now authored + committed this session.
+- **Untracked scratch** (not ours; leave in place per repo law — do not
+  delete another session's files): `archive-browser-b4-evidence.png` if present
+  locally. Root PNG / Playwright snapshots must not be tracked (see `.gitignore`).
 - **Full-arm question (for the operator):** both arms buys the *interaction*
   (marginal effect of λ_dt given weighting restored) at ~2× cost and spends
   the doc_type-risk lever. One arm (B) is cheaper, isolates the primary

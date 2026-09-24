@@ -499,6 +499,7 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
             "agreement": 0.0, "margin": 0.0, "runner_up": None,
             "score": 0.0, "n_windows": len(window_texts),
             "per_head": {}, "guard_failures": ["all_windows_unknown"],
+            "window_doc_type_probs": doc_probs,
         }
     dt_id = Counter(known_votes).most_common(1)[0][0]
     dt_label = doc_map[str(dt_id)]
@@ -554,6 +555,7 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
         "subclass_confidence": float(round(sc_conf, 4)),
         "per_head": per_head,
         "guard_failures": [],
+        "window_doc_type_probs": doc_probs,
     }
 
 

@@ -393,17 +393,8 @@ def _merge_windows(bundle, decorated: list[str], max_length: int) -> dict:
     from mailroom_ml.inference import classify_windows
 
     merged = classify_windows(bundle, decorated, max_length=max_length)
-    merged["_window_probs"] = _window_probs(bundle, decorated, max_length)
+    merged["_window_probs"] = merged["window_doc_type_probs"]
     return merged
-
-
-def _window_probs(bundle, decorated: list[str], max_length: int) -> list[np.ndarray]:
-    from mailroom_ml.inference import encode_inputs, predict
-
-    ids, mask = encode_inputs(bundle, decorated, max_length=max_length)
-    logits = predict(bundle, ids, mask)["doc_type"]
-    t = bundle.temperatures.get("doc_type", 1.0)
-    return [apply_temperature(row, t) for row in logits]
 
 
 def format_report(report: dict) -> str:

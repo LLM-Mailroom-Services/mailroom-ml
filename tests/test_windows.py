@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from conftest import requires_transformers
-from mailroom_ml.config import CHARS_PER_TOKEN, MAX_TOKENS
+from mailroom_ml.config import MAX_TOKENS
 from mailroom_ml.windows import estimate_tokens, window_document
 
 

@@ -71,12 +71,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from mailroom_ml.config import (
+    DOC_TYPE_GATE_TOL,
+    ECE_BUDGET,
     MAX_TOKENS,
     MODEL_ID,
     RUNS_DIR,
     TRAINING_DATA_REPO,
-    DOC_TYPE_GATE_TOL,
-    ECE_BUDGET,
     TRAINING_DATA_REVISION,
     WINDOW_OVERLAP_TOKENS,
 )

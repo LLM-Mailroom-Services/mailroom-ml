@@ -8,7 +8,6 @@ supplement seam.
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from mailroom_ml.cohorts import (
     build_cohort_report,

@@ -46,6 +46,9 @@ __all__ = [
     "normalize_subclass",
     "observed_label_surfaces",
     "label_maps",
+    "trainable_labels_for_head",
+    "attach_trainable_fields",
+    "normalize_label_maps",
 ]
 
 # ---------------------------------------------------------------------------
@@ -242,6 +245,41 @@ def observed_label_surfaces(docs: pd.DataFrame) -> dict[str, tuple[str, ...]]:
     return surfaces
 
 
+def trainable_labels_for_head(cfg: dict[str, Any]) -> list[str]:
+    """Head labels the model may predict (loss + argmax).
+
+    ``routing_only`` tokens stay in ``labels`` for OOV / mandatory-review
+    semantics but are excluded from the trainable decision space (#116).
+    """
+    if explicit := cfg.get("trainable_labels"):
+        return list(explicit)
+    routing_only = set(cfg.get("routing_only", ()))
+    return [lab for lab in cfg["labels"] if lab not in routing_only]
+
+
+def attach_trainable_fields(cfg: dict[str, Any]) -> None:
+    """Populate ``trainable_*`` sidecars on one head config (in place)."""
+    trainable = trainable_labels_for_head(cfg)
+    cfg["trainable_labels"] = trainable
+    cfg["trainable_label2id"] = {k: i for i, k in enumerate(trainable)}
+    cfg["trainable_id2label"] = {str(i): k for i, k in enumerate(trainable)}
+    cfg.setdefault("routing_only", ())
+
+
+def normalize_label_maps(maps: dict[str, Any]) -> dict[str, Any]:
+    """Ensure every head carries ``trainable_*`` (checkpoint backward compat)."""
+    for name, cfg in maps.items():
+        if "routing_only" not in cfg:
+            if name == "contract" and "other" in cfg.get("labels", ()):
+                cfg["routing_only"] = ["other"]
+            elif name == "doc_type" and "unknown" in cfg.get("labels", ()):
+                cfg["routing_only"] = ["unknown"]
+            else:
+                cfg["routing_only"] = []
+        attach_trainable_fields(cfg)
+    return maps
+
+
 def label_maps(docs_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
     """Per-head id2label/label2id/weights for the hierarchical classifier.
 
@@ -287,6 +325,7 @@ def label_maps(docs_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
         "label2id": {k: i for i, k in enumerate(doc_labels)},
         "weights": doc_weights,
         "inference_only": doc_inference_only,
+        "routing_only": ["unknown"],
         "note": (
             "unknown is inference-time only (zero training rows); "
             f"inference_only={doc_inference_only} "
@@ -315,16 +354,22 @@ def label_maps(docs_df: pd.DataFrame) -> dict[str, dict[str, Any]]:
             )
         if cls == "contract" and "other" in inference_only:
             note += (
-                "; contract `other` is the CUAD fallback token for unseen "
-                "families — zero train/val/test rows, inference-only, "
-                "excluded from macro-F1"
+                "; contract `other` stays in `labels` for OOV/routing (CUAD "
+                "fallback) but is excluded from `trainable_labels` (25-way "
+                "head) — loss and argmax never select it; only routing/"
+                "SUBCLASS_PROJECTIONS may assign `other`; zero train/val/"
+                "test rows; excluded from macro-F1"
             )
-        heads[cls] = {
+        head_cfg = {
             "labels": labels,
             "id2label": {i: k for i, k in enumerate(labels)},
             "label2id": {k: i for i, k in enumerate(labels)},
             "weights": weights,
             "inference_only": inference_only,
+            "routing_only": ["other"] if cls == "contract" else [],
             "note": note,
         }
+        attach_trainable_fields(head_cfg)
+        heads[cls] = head_cfg
+    attach_trainable_fields(heads["doc_type"])
     return heads

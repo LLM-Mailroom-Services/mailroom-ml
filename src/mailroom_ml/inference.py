@@ -53,6 +53,7 @@ from mailroom_ml.config import (
     SUBCLASS_UNMAPPED_ROUTE,
     WINDOW_OVERLAP_TOKENS,
 )
+from mailroom_ml.labels import normalize_label_maps
 
 __all__ = [
     "ModelBundle",
@@ -308,7 +309,7 @@ def load_bundle(model_dir: str | Path | None = None,
     if not labels.is_file():
         raise BundleLoadError(f"bundle {mdir} missing labels.json")
 
-    maps = json.loads(labels.read_text(encoding="utf-8"))
+    maps = normalize_label_maps(json.loads(labels.read_text(encoding="utf-8")))
     try:
         tok = _load_tokenizer(mdir)
         pad_id = _resolve_pad_id(mdir, tok) or 0
@@ -435,6 +436,37 @@ def _calibrated_probs(logits: np.ndarray, temperature: float) -> np.ndarray:
     return apply_temperature(logits, temperature)
 
 
+def _trainable_logit_width(head_cfg: dict[str, Any]) -> int:
+    """Number of logits the head may argmax over (trainable decision space)."""
+    trainable = head_cfg.get("trainable_labels")
+    if trainable:
+        return len(trainable)
+    if "labels" in head_cfg:
+        return len(head_cfg["labels"])
+    return len(head_cfg.get("label2id", {}))
+
+
+def _argmax_trainable(probs: np.ndarray, head_cfg: dict[str, Any]) -> int:
+    """Argmax restricted to the trainable label slice (#116).
+
+    Legacy checkpoints whose ``heads.pt`` still emit one logit per full
+    ``labels`` entry keep working: when ``probs`` is wider than the
+    trainable slice, only the trainable prefix is scored.
+    """
+    n = _trainable_logit_width(head_cfg)
+    row = probs if probs.ndim == 1 else probs
+    if row.shape[-1] > n:
+        row = row[..., :n]
+    return int(row.argmax())
+
+
+def _id2label_for_logits(head_cfg: dict[str, Any], n_logits: int) -> dict[str, str]:
+    trainable = head_cfg.get("trainable_labels") or []
+    if trainable and len(trainable) == n_logits:
+        return head_cfg["trainable_id2label"]
+    return head_cfg["id2label"]
+
+
 def classify_windows(bundle: ModelBundle, window_texts: list[str],
                      temperatures: dict[str, float] | None = None,
                      max_length: int = MAX_TOKENS) -> dict[str, Any]:
@@ -460,7 +492,8 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
 
     heads = sorted(k for k in logits_by_head if k != "doc_type")
     unknown = bundle.maps["doc_type"]["label2id"].get(ABSTAIN_UNKNOWN_CLASS)
-    doc_map = bundle.maps["doc_type"]["id2label"]
+    dt_head = bundle.maps["doc_type"]
+    doc_map = _id2label_for_logits(dt_head, _trainable_logit_width(dt_head))
 
     # calibrated probabilities per head across all windows, batched once
     probs_by_head = {name: _calibrated_probs(
@@ -475,13 +508,13 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
     for i in range(len(window_texts)):
         p_dt = probs_by_head["doc_type"][i]
         doc_probs.append(p_dt)
-        dt_id = int(p_dt.argmax())
+        dt_id = _argmax_trainable(p_dt, bundle.maps["doc_type"])
         win_dt.append(dt_id)
         cls = doc_map[str(dt_id)]
         if cls in probs_by_head and dt_id != unknown:
             p_sc = probs_by_head[cls][i]
             sub_probs[cls].append(p_sc)
-            win_sc[cls].append(int(p_sc.argmax()))
+            win_sc[cls].append(_argmax_trainable(p_sc, bundle.maps[cls]))
         else:
             win_sc[cls].append(None)  # abstain — subclass not scored
 
@@ -531,13 +564,21 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
             sc_probs = sub_probs[cls]
             sc_conf = float(np.mean([p[sc_pred] for p in sc_probs]))
             n_scored = len(sc_probs)
-    sc_label = bundle.maps[cls]["id2label"][str(sc_pred)] if sc_pred is not None else None
+    sc_label = None
+    if sc_pred is not None:
+        id2label = _id2label_for_logits(
+            bundle.maps[cls], _trainable_logit_width(bundle.maps[cls]))
+        sc_label = id2label[str(sc_pred)]
 
     score = float(np.clip(mean_p, 0, 1)) * agreement * max(0.0, margin)
     per_head: dict[str, dict[str, Any]] = {}
     for h in heads:
-        id2label = bundle.maps[h]["id2label"]
-        preds = [id2label[str(int(v))] for v in probs_by_head[h].argmax(axis=1)]
+        head_cfg = bundle.maps[h]
+        n_train = _trainable_logit_width(head_cfg)
+        id2label = _id2label_for_logits(head_cfg, n_train)
+        preds = [
+            id2label[str(_argmax_trainable(p, head_cfg))]
+            for p in probs_by_head[h]]
         per_head[h] = {"pred": Counter(preds).most_common(1)[0][0],
                        "windows": preds}
     return {

@@ -80,7 +80,10 @@ from mailroom_ml.config import (
     TRAINING_DATA_REVISION,
     WINDOW_OVERLAP_TOKENS,
 )
+from mailroom_ml.labels import attach_trainable_fields, normalize_label_maps
 from mailroom_ml.windows import window_document
+
+CE_IGNORE_INDEX = -100
 
 DEFAULT_DATA = TRAINING_DATA_REPO
 DEFAULT_OUTPUT = RUNS_DIR / "latest"
@@ -225,6 +228,31 @@ class LossConfig:
         return torch.tensor(out, dtype=torch.float32, device=device)
 
 
+def _trainer_heads(maps: dict) -> dict:
+    """Runtime head view: trainable label ids + routing-only set."""
+    out: dict = {}
+    for name, cfg in maps.items():
+        routing_only = set(cfg.get("routing_only", ()))
+        out[name] = {
+            "labels": list(cfg["trainable_labels"]),
+            "label2id": dict(cfg["trainable_label2id"]),
+            "weights": cfg["weights"],
+            "routing_only": routing_only,
+            "inference_only": set(cfg.get("inference_only", ())),
+        }
+    return out
+
+
+def _head_sizes(maps: dict) -> dict[str, int]:
+    return {name: len(cfg["trainable_labels"]) for name, cfg in maps.items()}
+
+
+def _label_id(head: dict, label: str) -> int:
+    if label in head.get("routing_only", ()):
+        return CE_IGNORE_INDEX
+    return head["label2id"][label]
+
+
 def head_loss(model, batch, heads, device,
               cfg: LossConfig | None = None) -> tuple[torch.Tensor, dict]:
     """doc_type CE on every row + subclass CE on each class's own rows.
@@ -240,7 +268,8 @@ def head_loss(model, batch, heads, device,
         weight=cfg.transform_weights(heads["doc_type"]["weights"],
                                      heads["doc_type"]["labels"],
                                      device=logits["doc_type"].device),
-        label_smoothing=cfg.label_smoothing)
+        label_smoothing=cfg.label_smoothing,
+        ignore_index=CE_IGNORE_INDEX)
     sc_ces: list[torch.Tensor] = []
     for cls in heads:
         if cls == "doc_type":
@@ -251,7 +280,8 @@ def head_loss(model, batch, heads, device,
                 logits[cls][sel], batch["subclass"][sel],
                 weight=cfg.transform_weights(heads[cls]["weights"],
                                              heads[cls]["labels"],
-                                             device=logits[cls].device)))
+                                             device=logits[cls].device),
+                ignore_index=CE_IGNORE_INDEX))
     if sc_ces:
         loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
             sc_ces).mean()
@@ -277,10 +307,12 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
         yield {
             "input_ids": torch.stack([r["input_ids"] for r in sel]).to(device),
             "attention_mask": torch.stack([r["attention_mask"] for r in sel]).to(device),
-            "doc_type": torch.tensor([heads["doc_type"]["label2id"][r["doc_type"]]
-                                      for r in sel], device=device),
-            "subclass": torch.tensor([heads[r["doc_type"]]["label2id"][r["subclass"]]
-                                      for r in sel], device=device),
+            "doc_type": torch.tensor(
+                [_label_id(heads["doc_type"], r["doc_type"]) for r in sel],
+                device=device),
+            "subclass": torch.tensor(
+                [_label_id(heads[r["doc_type"]], r["subclass"]) for r in sel],
+                device=device),
             "filename": [r["filename"] for r in sel],
         }
 
@@ -387,7 +419,7 @@ def evaluate(model, batches, heads, maps, device,
                 labels_by_head[name].append(batch["subclass"][sel].cpu())
         for i, fn in enumerate(batch["filename"]):
             dt_p = dt_preds[i].item()
-            cls = maps["doc_type"]["id2label"][str(dt_p)]
+            cls = maps["doc_type"]["trainable_id2label"][str(dt_p)]
             sc_p = sc_preds[cls][i].item() if cls in sc_preds else None
             doc_votes[fn].append((dt_p, sc_p))
             doc_labels[fn] = (batch["doc_type"][i].item(),
@@ -408,7 +440,7 @@ def evaluate(model, batches, heads, maps, device,
         dt_pred = Counter(v[0] for v in votes).most_common(1)[0][0]
         if dt_pred == dt_label:
             dt_correct += 1
-            cls = maps["doc_type"]["id2label"][str(dt_pred)]
+            cls = maps["doc_type"]["trainable_id2label"][str(dt_pred)]
             cond = [v[1] for v in votes if v[0] == dt_pred and v[1] is not None]
             if not cond:
                 continue
@@ -777,18 +809,22 @@ def _apply_subclass_support_threshold(train_rows: list[dict],
         keep = [lab for lab in cfg["labels"] if lab not in low_set]
         if len(keep) == len(cfg["labels"]):
             continue
+        new_counts = Counter(r["subclass"] for r in train_rows
+                             if r["doc_type"] == cls)
+        total = sum(new_counts.values())
         new_cfg = {
             "labels": keep,
             "label2id": {lab: i for i, lab in enumerate(keep)},
             "id2label": {str(i): lab for i, lab in enumerate(keep)},
+            "weights": {
+                lab: (total / (len(keep) * new_counts[lab]) if new_counts[lab]
+                      else 1.0)
+                for lab in keep},
+            "inference_only": [lab for lab in keep if lab not in new_counts],
+            "routing_only": list(cfg.get("routing_only", ())),
+            "note": cfg.get("note", ""),
         }
-        new_counts = Counter(r["subclass"] for r in train_rows
-                             if r["doc_type"] == cls)
-        total = sum(new_counts.values())
-        new_cfg["weights"] = {
-            lab: (total / (len(keep) * new_counts[lab]) if new_counts[lab]
-                  else 1.0)
-            for lab in keep}
+        attach_trainable_fields(new_cfg)
         maps[cls] = new_cfg
     return train_rows, val_rows, maps, info
 
@@ -825,6 +861,8 @@ def _subclass_label(heads: dict, cls: str, subclass: str) -> int | None:
     denominator rather than crash the run.
     """
     label2id = heads[cls]["label2id"]
+    if subclass in heads[cls].get("routing_only", ()):
+        return None
     if subclass in label2id:
         return label2id[subclass]
     if "other" in label2id:
@@ -1058,7 +1096,7 @@ def main() -> int:
         base.gradient_checkpointing_enable()
     base = base.to(device)
 
-    maps = json.loads(labels_path.read_text())
+    maps = normalize_label_maps(json.loads(labels_path.read_text()))
 
     # rows load BEFORE the model: the subclass support threshold reshapes
     # the head vocabularies (and the model's head sizes) from the data
@@ -1076,19 +1114,13 @@ def main() -> int:
               f"(val rows dropped: {support_info['dropped_val_rows']})",
               flush=True)
 
-    head_sizes = {name: len(cfg["labels"]) for name, cfg in maps.items()}
+    head_sizes = _head_sizes(maps)
     model = HierarchicalClassifier(
         base, head_sizes,
         head_kind="mlp" if args.mlp_heads else "linear",
         head_dropout=args.head_dropout).to(device)
 
-    heads = {}
-    for name, cfg in maps.items():
-        heads[name] = {
-            "label2id": cfg["label2id"],
-            "labels": cfg["labels"],
-            "weights": cfg["weights"],
-        }
+    heads = _trainer_heads(maps)
 
     train_rows = tokenize_rows(raw_train, tokenizer, args.max_length)
     val_rows = tokenize_rows(raw_val, tokenizer, args.max_length)
@@ -1286,7 +1318,7 @@ def main() -> int:
             dt_label = heads["doc_type"]["label2id"][r["doc_type"]]
             if dt_pred == dt_label:
                 dt_correct += 1
-                cls = maps["doc_type"]["id2label"][str(dt_pred)]
+                cls = maps["doc_type"]["trainable_id2label"][str(dt_pred)]
                 if cls in heads:  # unknown (inference-only) carries no head
                     sc_votes = Counter(lg[cls].argmax(-1).tolist())
                     sc_pred = sc_votes.most_common(1)[0][0]

@@ -163,5 +163,18 @@ def test_inference_only_documented_in_every_head_note():
         if cfg["inference_only"]:
             assert "inference_only=" in cfg["note"], cls
     contract_note = maps["contract"]["note"]
-    assert "CUAD fallback token" in contract_note
+    assert "CUAD fallback" in contract_note
+    assert "trainable_labels" in contract_note or "25-way" in contract_note
     assert "excluded from macro-F1" in contract_note
+
+
+def test_contract_other_in_labels_not_trainable():
+    """#116: contract keeps 26 ``labels`` but a 25-way ``trainable_labels``."""
+    maps = label_maps(build_documents(fixture_rows()))
+    contract = maps["contract"]
+    assert "other" in contract["labels"]
+    assert len(contract["labels"]) == 26
+    assert "other" not in contract["trainable_labels"]
+    assert len(contract["trainable_labels"]) == 25
+    assert contract["trainable_labels"] == [
+        lab for lab in contract["labels"] if lab != "other"]

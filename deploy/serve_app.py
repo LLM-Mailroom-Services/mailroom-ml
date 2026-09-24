@@ -63,7 +63,11 @@ BUNDLED_MODEL_PATH = "/artifacts/onnx/model"
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from mailroom_ml.config import ARTIFACTS_DIR, CLASSIFIER_MODEL_REPO  # noqa: E402
+from mailroom_ml.config import (  # noqa: E402
+    ABSTAIN_UNKNOWN_CLASS,
+    ARTIFACTS_DIR,
+    CLASSIFIER_MODEL_REPO,
+)
 
 # model_id passed at deploy: SERVE_MODEL_ID env, else the package default repo.
 SERVE_MODEL_ID = os.environ.get("SERVE_MODEL_ID", CLASSIFIER_MODEL_REPO)
@@ -198,6 +202,21 @@ def _encode(texts: list[str], state: dict):
     return ids, mask
 
 
+def _subclass_prediction(
+    logits_by_head: dict,
+    maps: dict,
+    dt_label: str,
+    window_index: int,
+) -> dict | None:
+    """Conditional subclass head — abstain when doc_type has no subclass head."""
+    if dt_label == ABSTAIN_UNKNOWN_CLASS or dt_label not in maps:
+        return None
+    head_key = f"logits_{dt_label}"
+    if head_key not in logits_by_head:
+        return None
+    return _head_prediction(logits_by_head[head_key][window_index], maps, dt_label)
+
+
 def _head_prediction(logits, maps: dict, head: str) -> dict:
     """argmax + per-label logits for one head using the inlined label maps."""
     id2label = {int(k): v for k, v in maps[head]["id2label"].items()}
@@ -248,9 +267,7 @@ def predict(request: PredictRequest, _: None = _auth_dep) -> dict:
     for i in range(len(request.texts)):
         dt = _head_prediction(logits_by_head["logits_doc_type"][i],
                               state["maps"], "doc_type")
-        # subclass head for the winning doc_type (conditional structure)
-        sc = _head_prediction(logits_by_head[f"logits_{dt['label']}"][i],
-                              state["maps"], dt["label"])
+        sc = _subclass_prediction(logits_by_head, state["maps"], dt["label"], i)
         predictions.append({"doc_type": dt, "subclass": sc})
 
     return {

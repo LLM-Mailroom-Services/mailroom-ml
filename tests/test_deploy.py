@@ -345,6 +345,32 @@ def test_serve_model_dir_resolution() -> None:
             os.environ["SERVE_MODEL_DIR"] = old
 
 
+def test_serve_subclass_abstains_on_unknown_doc_type() -> None:
+    """#121: doc_type ``unknown`` has no subclass head — must not KeyError."""
+    _need_serve()
+    import numpy as np
+
+    from deploy import serve_app
+
+    maps = {
+        "doc_type": {
+            "id2label": {"0": "contract", "1": "unknown"},
+            "label2id": {"contract": 0, "unknown": 1},
+        },
+    }
+    logits_by_head = {
+        "logits_doc_type": np.array([[0.0, 5.0]], dtype=np.float32),
+    }
+    assert serve_app._subclass_prediction(
+        logits_by_head, maps, "unknown", 0) is None
+    logits_by_head["logits_contract"] = np.array([[3.0, 0.0]], dtype=np.float32)
+    maps["contract"] = {"id2label": {"0": "nda", "1": "license"},
+                          "label2id": {"nda": 0, "license": 1}}
+    pred = serve_app._subclass_prediction(
+        logits_by_head, maps, "contract", 0)
+    assert pred is not None and pred["label"] == "nda"
+
+
 # -- ONNX parity wiring -------------------------------------------------------
 def test_onnx_parity_importable_and_wired() -> None:
     """The parity gate module imports cleanly and carries the serve marker."""

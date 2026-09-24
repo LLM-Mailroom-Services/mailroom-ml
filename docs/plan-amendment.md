@@ -31,13 +31,13 @@ This aligns with the mailroom taxonomy: document type is a broad, data-rich deci
 
 ### Immutable dataset snapshot
 
-Create a reproducible training manifest before writing any training code. The source is the tailored Hugging Face dataset under `Lucius-Morningstar/mailroom-dataset`; pin the exact dataset revision/commit rather than training from a mutable `main` branch. The prior proposal identifies 2,979 train rows and a separate 323-row test split; retain that test split as a fully untouched final evaluation set.[2][3]
+Create a reproducible training manifest before writing any training code. The ML working copy is `Lucius-Morningstar/mailroom-finetune` @ `19720ceb4e29bc3134a88507aa57cdfac7a64a1b` (byte-schema identical to the canonical `mailroom-dataset` eval corpus); pin the exact revision rather than training from a mutable `main` branch. The prior proposal identifies 2,979 train rows and a separate 323-row test split; retain that test split as a fully untouched final evaluation set.[2][3]
 
 Each training run should write a manifest like:
 
 ```json
 {
-  "dataset_repo": "Lucius-Morningstar/mailroom-dataset",
+  "dataset_repo": "Lucius-Morningstar/mailroom-finetune",
   "dataset_revision": "<immutable-commit-sha>",
   "dataset_config": "ground_truth",
   "train_source_split": "train",

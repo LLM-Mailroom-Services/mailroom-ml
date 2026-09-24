@@ -1,48 +1,26 @@
 # mailroom-ml
 
-The dedicated machine learning training, evaluation, and fine tuning environment for the Digital Mailroom.
+Machine-learning training, evaluation, and deployment for the Digital Mailroom **ModernBERT ingest fast-path classifier** (shared encoder + conditional subclass heads).
 
-## Table of Contents
+## Prerequisites
 
-- [mailroom-ml](#mailroom-ml)
-  - [Table of Contents](#table-of-contents)
-  - [Overview](#overview)
-  - [Getting Started](#getting-started)
-  - [Usage](#usage)
-  - [Contributing](#contributing)
-  - [License](#license)
+- Python **3.11+** (`pyproject.toml`)
+- [uv](https://docs.astral.sh/uv/) for dependency management
+- Optional: Modal account + `HF_TOKEN` for cloud training (`deploy/README.md`)
 
-## Overview
-
-The mailroom-ml repository is a collection of tools and resources for training, evaluating, and fine-tuning machine learning models for the Digital Mailroom.
-
-## Getting Started
-
-To get started with the mailroom-ml repository, you will need to have the following:
-
-- Python 3.10 or higher
-- Docker
-- Docker Compose
-- Modal
-- Prefect
-- Prefect Orion (optional)
-- Prefect Cloud (optional)
-
-Once you have the prerequisites installed, you can clone the repository and run the following commands to get started:
+## Quick start
 
 ```bash
-git clone https://github.com/digital-mailroom/mailroom-ml.git
+git clone https://github.com/LLM-Mailroom-Services/mailroom-ml.git
 cd mailroom-ml
+uv sync --extra dev
+uv run pytest -m "not fullcorpus"
 ```
 
-## Usage
+## Commands
 
-To use the mailroom-ml repository, you will need to have the following:
+The full command surface (staging data, local train/eval, Modal deploy, ONNX export) lives in **[AGENTS.md](AGENTS.md)**. Start there for Hub pins, taxonomy law, and runbooks.
 
-- Python 3.10 or higher
-- Docker
-- Docker Compose
-- Modal
-- Prefect
-- Prefect Orion (optional)
-- Prefect Cloud (optional)
+## Governance
+
+Mission tracking: `governance/TASKS.md` and `governance/M9a-HANDOFF.md` (active #112 pass).

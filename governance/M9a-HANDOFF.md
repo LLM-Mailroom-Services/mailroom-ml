@@ -132,8 +132,8 @@ default ON):
 `~/.config/opencode/secrets/hf-token`):**
 ```bash
 cd /Users/morningstar/Desktop/Cold_Storage/mailroom-ml
-python deploy/modal_app.py   # (already redeployed at commit 1718358; redeploy
-                             #  again if the tree changed)
+HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py
+# (redeploy whenever the training image / deploy tree changes)
 python deploy/spawn_train.py --epochs 3 --batch-size 4 --grad-accum 8 \
   --lr 2e-5 --seed 42 --budget 7 \
   --trainer-extra=--mlp-heads --trainer-extra=--label-smoothing=0.05 \

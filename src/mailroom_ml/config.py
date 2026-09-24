@@ -10,8 +10,8 @@ All Hub pins are verified against the live Hub API (2026-09-18):
   matter/group/relationships + gt_fields, same 3,302 rows /
   2,979 train / 323 test).  This is the repo the user calls the
   "mailroom-train" duplicate.
-- ``mailroom-modernbert-training`` (prepared training set from the committed
-  corpus-eda work, cf096fa) @ 6790341e25229a2617914c839ff0e70c590d7b6d.
+- ``mailroom-modernbert-training`` (prepared training set) @
+  ``TRAINING_DATA_REVISION`` below (leak-free, clerk-normalized build).
 
 Model + windowing constants mirror the committed ``modernbert/prep.py``
 (Mailroom-Corpus-EDA, commit cf096fa) so the published training set stays

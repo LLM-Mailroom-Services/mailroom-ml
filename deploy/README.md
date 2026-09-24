@@ -75,8 +75,8 @@ What happens inside the container:
 - The image build and the dataset/model download happen inside the 4 h function
   timeout (`startup_timeout` 10 min); the first boot pays ModernBERT weight +
   dataset download once (cached on the `mailroom-ml-hf-cache` Volume).
-- A smoke run costs minutes: `modal run deploy/modal_app.py --epochs 1 --limit 64`
-  (the `--limit` flag is a trainer flag; it still exercises the full path).
+- A smoke run costs minutes: `uv run --extra deploy python deploy/spawn_train.py --smoke`
+  (forwards `--limit 64` to the trainer on Modal; exercises the full path).
 
 ### Checkpoint persistence & rollback
 

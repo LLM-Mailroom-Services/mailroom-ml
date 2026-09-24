@@ -19,11 +19,11 @@ Corpus: `mailroom-finetune @ 19720ceb…` (modifiable duplicate; canonical
 | U2 combined plan doc | orchestrator | ✅ done | docs/intake-classifier-combined-plan.md |
 | U2b issues incorporation (#84–#92, #66–#68, #52, #57, #75) | orchestrator | ✅ done | plan §15 matrix; config.py BERT_INTAKE_*, surface canons |
 | U3 data layer port (mailroom-finetune) | athena | ✅ done | 28+9 tests; byte-compat statement; commit 703352d |
-| U3b label-surface derivation + parity tests (#66/#67/#75) | athena | 🔄 in flight | observed_label_surfaces + fullcorpus parity |
+| U3b label-surface derivation + parity tests (#66/#67/#75) | athena | ✅ done | `labels.py` observed_label_surfaces + `tests/test_surfaces.py`; commits `2b7e120`/`631c5e5` |
 | U4 deploy layer (Modal, current SDK) | modal-specialist | ✅ done | deploy/ + runbook; SDK 1.5.5 verified |
-| U5 model/inference/calibration/routing/training + enrichment | lucius (linked session) | 🔄 in flight | model.py…; share ih12eEK0 |
-| U6 integration + full suite | orchestrator | ⏳ pending | uv run pytest -m "not fullcorpus" |
-| U7 commit + report | orchestrator | ⏳ pending | this board |
+| U5 model/inference/calibration/routing/training + enrichment | lucius (linked session) | ✅ done | `src/mailroom_ml/inference.py` ModelBundle + training drivers; M9a handoff commit trail |
+| U6 integration + full suite | orchestrator | ✅ done | `uv run pytest -m "not fullcorpus"` green on main |
+| U7 commit + report | orchestrator | ✅ done | `reports/RUN3-REPORT-20260921.md` + eval JSON |
 
 ## Mission M9a — subclass-head improvement pass (mailroom-issues #112)
 
@@ -51,7 +51,7 @@ email share 0.57 train / 0.511 val, macro-F1 0.0845 ≈ the collapse floor;
 | M9a-U1 root-cause verdict (loss seam) | code-analyst | ✅ done | majority-prior collapse confirmed; insurance=head control; selection gate was doc_type-only |
 | M9a-U2 data/taxonomy QA (normalization, support floor) | athena | ✅ done | **dictionaries scope-complete + drift-free (0.00% fallthrough, 0 drift keys); prefix matcher safe** |
 | M9a-U3 corpus EDA + separability + augmentation eligibility | general (lucius protocol) | ✅ done | **lexical NB: contract macro-F1 0.529 / correspondence 0.485 vs model 0.0395/0.0845 → loss-side first** |
-| M9a-U4 eval-harness gap + selection gate | general | ✅ done | commit `1718358`; run-3 archive now selects epoch 2 |
+| M9a-U4 eval-harness gap + selection gate | general | ✅ done | commit `1718358`; selection rule would pick epoch 2 on run-3 val — **not persisted** in shipped `summary.json` (epoch 1 legacy pick) |
 | M9a-U7 test audit | test-suite-auditor | ✅ done | commit 1718358 was 100% unpinned; gap list (10) delivered |
 | M9a-U7b pin selection + per_head | general | ✅ done | commit `1081a6e`; 233 passed / 3 skipped; revert now fails a test |
 | M9a-U5 dictionary/definitional scope (label cards, contrastive synthesis) | prompt-engineer | ⏸ deferred (post-run) | U2 falsified dictionary-scope for the pinned corpus (0 fallthrough); only a contingent data lever if the loss-side run under-delivers. Any real dictionary change routes upstream as an RFC on #85 — human call |

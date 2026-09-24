@@ -66,6 +66,8 @@ intake-overhaul track. Consequences:
     source-matched enrichment → distillation → label-card synthesis).
   - `train_modernbert.py` — the trainer (see its CLI defaults below).
   - `eval_modernbert.py` — the eval harness (GPU-side; emits per-head metrics).
+- `configs/` — tracked policy YAML referenced from `config.py` (e.g.
+  `synthetic_policy_v1.yaml`; bundled into the Modal training image).
 - `deploy/` — Modal layer + ONNX export. **Runbook: `deploy/README.md`.**
 - `tests/` — the suite (markers: `train`, `serve`, `fullcorpus`).
 - `data/modernbert_training/stage/` — the staged local training set
@@ -105,7 +107,7 @@ uv run python training/eval_modernbert.py --checkpoint artifacts/pytorch/model -
 # Modal (see deploy/README.md for the full runbook + cost notes)
 HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py
 HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py --epochs 5 --push-to-hub ...
-#   smoke:  modal run deploy/modal_app.py --epochs 1 --limit 64
+#   smoke:  uv run --extra deploy python deploy/spawn_train.py --smoke
 ```
 
 The core suite is green with **no** modal/torch/onnxruntime installed — every

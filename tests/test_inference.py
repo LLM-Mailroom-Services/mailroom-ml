@@ -8,6 +8,7 @@ margin) and fail-open behavior (D10).
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -590,6 +591,57 @@ def test_load_bundle_unavailable_when_nothing_resolves(tmp_path, monkeypatch):
     monkeypatch.setenv("ML_MODEL_DIR", str(tmp_path / "absent"))
     with pytest.raises(BundleUnavailable):
         load_bundle()
+
+
+def test_load_head_exclusions_from_summary_json(tmp_path):
+    """#137: serving reads head_exclusion_policy from summary.json."""
+    from mailroom_ml.inference import _load_head_exclusions
+
+    summary = {
+        "checkpoint_selection": {
+            "head_exclusion_policy": {
+                "budget": 0.05,
+                "excluded": {
+                    "correspondence": {
+                        "excluded": True,
+                        "ece_calibrated": 0.12,
+                    },
+                },
+            },
+        },
+    }
+    (tmp_path / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    reasons, policy = _load_head_exclusions(tmp_path)
+    assert "correspondence" in reasons
+    assert policy is not None and policy["budget"] == 0.05
+
+
+def test_classify_windows_temperature_scales_doc_type_confidence():
+    """#137: bundle temperatures.json semantics apply in classify_windows."""
+    maps = {
+        "doc_type": {
+            "label2id": {"contract": 0, "insurance_claim": 1},
+            "id2label": {"0": "contract", "1": "insurance_claim"},
+        },
+        "contract": {
+            "label2id": {"nda": 0},
+            "id2label": {"0": "nda"},
+        },
+        "insurance_claim": {
+            "label2id": {"carrier": 0},
+            "id2label": {"0": "carrier"},
+        },
+    }
+    logits = np.array([[2.0, 0.0]], dtype=np.float32)
+
+    def predict_fn(_ids, _mask):
+        return {"doc_type": logits, "contract": logits, "insurance_claim": logits}
+
+    b_cold = _stub_bundle(predict_fn, maps=maps, temperatures={"doc_type": 1.0})
+    b_hot = _stub_bundle(predict_fn, maps=maps, temperatures={"doc_type": 4.0})
+    out_cold = classify_windows(b_cold, ["window"], max_length=32)
+    out_hot = classify_windows(b_hot, ["window"], max_length=32)
+    assert out_hot["calibrated_confidence"] < out_cold["calibrated_confidence"]
 
 
 def test_load_bundle_rejects_incomplete_dir(tmp_path, monkeypatch):

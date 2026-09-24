@@ -383,6 +383,7 @@ def test_onnx_parity_importable_and_wired() -> None:
     assert any(getattr(m, "name", None) == "serve" for m in marker)
 
 
+@pytest.mark.serve
 def test_onnx_parity_executes_or_skips() -> None:
     """Real parity run when artifacts + deps exist; otherwise skip — never
     network, never fail the core suite."""
@@ -395,8 +396,11 @@ def test_onnx_parity_executes_or_skips() -> None:
     if not (pytorch_dir / "heads.pt").is_file() or \
             not (onnx_dir / "model.onnx").is_file():
         pytest.skip("artifacts not exported — run deploy/onnx_export.py first")
-    result = parity.run_parity(pytorch_dir, onnx_dir, tolerance=1e-4)
+    result = parity.run_parity(
+        pytorch_dir, onnx_dir, tolerance=1e-4, require_int8_agreement=True)
     assert result["pass"] is True
+    if result.get("argmax_agreement_int8"):
+        assert all(v == 1.0 for v in result["argmax_agreement_int8"].values())
 
 
 def test_head_from_state_reconstructs_linear_and_mlp() -> None:

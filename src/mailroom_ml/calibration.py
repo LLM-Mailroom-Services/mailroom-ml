@@ -24,7 +24,11 @@ from typing import Any
 
 import numpy as np
 
-from mailroom_ml.config import FAST_PATH_ERROR_BUDGET
+from mailroom_ml.config import (
+    ECE_BUDGET,
+    FAST_PATH_ERROR_BUDGET,
+    SELECTIVE_RISK_MIN_N,
+)
 
 __all__ = [
     "fit_temperature",
@@ -214,7 +218,7 @@ def selective_risk_sweep(
     error_budget: float = FAST_PATH_ERROR_BUDGET,
     band_lo: float = _ECE_BAND_LO,
     band_hi: float = _ECE_BAND_HI,
-    min_n: int = 30,
+    min_n: int | None = None,
 ) -> dict[str, Any]:
     """Threshold sweep: P(err | fast path) per threshold + deployment pick.
 
@@ -242,6 +246,8 @@ def selective_risk_sweep(
     ``band_ece``, ``coverage``, ``error_budget``, ``budget_met``, ``min_n``,
     ``n_at_pick``, ``insufficient_data``.
     """
+    if min_n is None:
+        min_n = SELECTIVE_RISK_MIN_N
     conf = np.asarray(conf, dtype=np.float64)
     correct = np.asarray(correct, dtype=np.float64)
     if thresholds is None:
@@ -270,7 +276,7 @@ def selective_risk_sweep(
     n_at_pick: int | None = None
     for r in rows:  # ascending thresholds — first within budget is the pick
         if r["n"] >= min_n and r["selective_risk"] <= error_budget \
-                and r["band_ece"] <= 0.05:
+                and r["band_ece"] <= ECE_BUDGET:
             recommended = r["threshold"]
             n_at_pick = r["n"]
             break

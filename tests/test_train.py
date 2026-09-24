@@ -757,12 +757,21 @@ def test_summary_records_hyperparameters_and_test_metrics():
     assert s2["test_metrics"] == {}
 
 
+def test_ece_budget_interlock_pin():
+    """#131: plan §8 ECE gate is a single config constant (not trainer-local)."""
+    from mailroom_ml.config import DOC_TYPE_GATE_TOL, ECE_BUDGET
+
+    assert ECE_BUDGET == 0.05
+    assert DOC_TYPE_GATE_TOL == 0.005
+
+
 def test_summary_carries_per_head_ece_and_exclusion_policy():
     """#107: the selection snapshot carries the per-head calibrated ECE
     sidecar and the derived head-exclusion policy — the deployment gate's
     data source.  Heads over the budget are flagged excluded; heads under
     it are not; a selection without the sidecar yields an empty policy."""
-    from training.train_modernbert import ECE_BUDGET, _summary
+    from mailroom_ml.config import ECE_BUDGET
+    from training.train_modernbert import _summary
 
     args = SimpleNamespace(
         data="repo", model=MODEL_ID, seed=42, epochs=3, batch_size=4,

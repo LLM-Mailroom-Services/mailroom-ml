@@ -38,7 +38,11 @@ from mailroom_ml.config import (
     DOC_TYPES,
     FINETUNE_REPO,
     FINETUNE_REVISION,
+    CORPUS_DOCUMENT_COUNT,
+    CORPUS_TEST_ROW_COUNT,
+    CORPUS_TRAIN_ROW_COUNT,
     MAX_TOKENS,
+    TRAINING_DATA_REPO,
     RANDOM_STATE,
     VAL_FRACTION,
     WINDOW_OVERLAP_TOKENS,
@@ -152,11 +156,14 @@ def load_corpus_rows() -> list[dict]:
     # verify at load: pinned row counts + doc_type vocab — corrupt data is loud.
     gt_counts = Counter(gt["split"]) if "split" in gt.columns else Counter()
     observed_types = set(gt["expected"]) if "expected" in gt.columns else set()
-    if (len(rows) != 3302 or gt_counts.get("train") != 2979
-            or gt_counts.get("test") != 323):
+    if (len(rows) != CORPUS_DOCUMENT_COUNT
+            or gt_counts.get("train") != CORPUS_TRAIN_ROW_COUNT
+            or gt_counts.get("test") != CORPUS_TEST_ROW_COUNT):
         raise ValueError(
             f"corpus pin mismatch for {FINETUNE_REPO}@{FINETUNE_REVISION}: "
-            f"expected 3,302 rows (2,979 train / 323 test), got {len(rows)} "
+            f"expected {CORPUS_DOCUMENT_COUNT} rows "
+            f"({CORPUS_TRAIN_ROW_COUNT} train / {CORPUS_TEST_ROW_COUNT} test), "
+            f"got {len(rows)} "
             f"rows {dict(gt_counts)} from data/parquet"
         )
     if observed_types != set(DOC_TYPES):
@@ -546,7 +553,7 @@ def _write_dataset_info(stage_dir: Path, counts: dict[str, dict[str, int]]) -> N
                     "num_bytes": sum(f.stat().st_size
                                      for f in (d / split).glob("*.parquet")),
                     "num_examples": n,
-                    "dataset_name": "Lucius-Morningstar/mailroom-modernbert-training",
+                    "dataset_name": TRAINING_DATA_REPO,
                 }
                 for split, n in splits.items()
             },

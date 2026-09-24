@@ -75,6 +75,8 @@ from mailroom_ml.config import (
     MODEL_ID,
     RUNS_DIR,
     TRAINING_DATA_REPO,
+    DOC_TYPE_GATE_TOL,
+    ECE_BUDGET,
     TRAINING_DATA_REVISION,
     WINDOW_OVERLAP_TOKENS,
 )
@@ -82,12 +84,6 @@ from mailroom_ml.windows import window_document
 
 DEFAULT_DATA = TRAINING_DATA_REPO
 DEFAULT_OUTPUT = RUNS_DIR / "latest"
-ECE_BUDGET = 0.05  # plan §8 deployment gate — selection constraint, not an exit
-# #112 M9a-U4 lexicographic selection: the doc_type non-regression gate tolerates
-# a rounding-scale dip in observed doc_type macro-F1 before it rejects an epoch,
-# so a subclass-focused epoch whose doc_type merely holds within noise is not
-# discarded (run-3: 0.9245 -> 0.9227 while the subclass objective rose 0.26->0.30).
-DOC_TYPE_GATE_TOL = 0.005
 
 
 def _hub_revision() -> str | None:

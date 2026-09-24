@@ -129,6 +129,15 @@ FAST_PATH_ERROR_BUDGET = 0.02      # selective-risk target: P(err | fast path)
 SELECTIVE_RISK_MIN_N = 30
 HEAD_ECE_EXCLUSION_THRESHOLD = 0.10
 
+# Plan §8 checkpoint-selection / calibration gates (trainer + eval interlock)
+ECE_BUDGET = 0.05
+DOC_TYPE_GATE_TOL = 0.005
+
+# Pinned corpus row counts (mailroom-finetune @ FINETUNE_REVISION)
+CORPUS_DOCUMENT_COUNT = 3302
+CORPUS_TRAIN_ROW_COUNT = 2979
+CORPUS_TEST_ROW_COUNT = 323
+
 # #103 fast-path guard: catch-all tokens are heterogeneous by construction —
 # a prediction landing on one is a "couldn't express it" signal, never a
 # trustworthy label.  Any predicted subclass in this set fails the fast

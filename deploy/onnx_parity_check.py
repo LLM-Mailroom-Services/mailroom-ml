@@ -38,6 +38,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:  # allow `python deploy/onnx_parity_check.py`
     sys.path.insert(0, str(ROOT))
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+from mailroom_ml.config import MAX_TOKENS  # noqa: E402
 
 _DEFAULT_PYTORCH_DIR = ROOT / "artifacts" / "pytorch" / "model"
 _DEFAULT_ONNX_DIR = ROOT / "artifacts" / "onnx" / "model"
@@ -66,7 +70,7 @@ except ImportError:  # CLI use without the dev extra
 
 def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
                require_int8_agreement: bool = False,
-               max_length: int = 512) -> dict:
+               max_length: int = MAX_TOKENS) -> dict:
     """Compare PyTorch vs ONNX logits per head; raises AssertionError on failure.
 
     - ``model.onnx`` (fp32) must match the PyTorch reference within
@@ -161,7 +165,7 @@ def main() -> int:
                     help="fp32 export gate, max |pt - onnx| (default 1e-4)")
     ap.add_argument("--require-int8", action="store_true",
                     help="fail when any int8 argmax flips vs the fp32 graph")
-    ap.add_argument("--max-length", type=int, default=512)
+    ap.add_argument("--max-length", type=int, default=MAX_TOKENS)
     args = ap.parse_args()
 
     if not (args.pytorch_dir / "heads.pt").is_file():
@@ -200,7 +204,9 @@ def test_onnx_pytorch_logits_parity() -> None:
                     "(see deploy/README.md)")  # type: ignore[union-attr]
 
     tolerance = float(os.environ.get("PARITY_TOLERANCE", _TOLERANCE_FP32))
-    run_parity(pytorch_dir, onnx_dir, tolerance=tolerance)
+    require_int8 = os.environ.get("PARITY_REQUIRE_INT8", "1") != "0"
+    run_parity(pytorch_dir, onnx_dir, tolerance=tolerance,
+               require_int8_agreement=require_int8)
 
 
 if pytest is not None:

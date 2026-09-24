@@ -306,25 +306,33 @@ def main(argv: list[str] | None = None) -> int:
     commit_sha = commit.commit_url.rstrip("/").rsplit("/", 1)[-1]
 
     print("uploaded; verifying sha256s...")
+    rel_paths: list[str] = [
+        "manifest.txt", "labels.json", "vocabularies.json",
+        "README.md", "dataset_info.json",
+    ]
+    for parquet in sorted(cfg.STAGE_DIR.glob("data/**/*.parquet")):
+        rel_paths.append(parquet.relative_to(cfg.STAGE_DIR).as_posix())
     results = []
-    for rel in ("manifest.txt", "labels.json", "vocabularies.json",
-                "README.md", "dataset_info.json"):
+    for rel in rel_paths:
         local = cfg.STAGE_DIR / rel
-        if not local.exists():
-            continue  # e.g. --no-windows stage has no windows config
+        if not local.is_file():
+            continue
         hub_path = hf_hub_download(
             repo_id=args.repo_id, filename=rel, repo_type="dataset",
             revision=commit_sha)
         hub = Path(hub_path).read_bytes()
-        verified = hub == local.read_bytes()
+        local_bytes = local.read_bytes()
+        verified = hub == local_bytes
         results.append({
             "file": rel, "verified": verified,
-            "local_sha256": hashlib.sha256(local.read_bytes()).hexdigest(),
+            "local_sha256": hashlib.sha256(local_bytes).hexdigest(),
             "hub_sha256": hashlib.sha256(hub).hexdigest(),
         })
         print(f"  {rel}: {'OK' if verified else 'MISMATCH'}")
     if not all(r["verified"] for r in results):
-        print("WARNING: some files could not be byte-verified against the Hub")
+        print("ERROR: publish byte-verify failed — Hub bytes differ from stage",
+              file=sys.stderr)
+        return 1
     return 0
 
 

@@ -47,6 +47,7 @@ from mailroom_ml.calibration import (  # noqa: E402
 )
 from mailroom_ml.config import (  # noqa: E402
     HEAD_ECE_EXCLUSION_THRESHOLD,
+    MAX_TOKENS,
     RANDOM_STATE,
     ROUTE_DOC_CONFIDENCE,
     SELECTIVE_RISK_MIN_N,
@@ -77,7 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--sample", type=int, default=50,
                     help="per-doc_type stratified sample size (0 = all)")
     ap.add_argument("--seed", type=int, default=RANDOM_STATE)
-    ap.add_argument("--max-length", type=int, default=8192)
+    ap.add_argument("--max-length", type=int, default=MAX_TOKENS)
     ap.add_argument("--selective-risk", action="store_true",
                     help="run the selective-risk threshold sweep and report "
                          "the deployment threshold")

@@ -10,8 +10,8 @@ All Hub pins are verified against the live Hub API (2026-09-18):
   matter/group/relationships + gt_fields, same 3,302 rows /
   2,979 train / 323 test).  This is the repo the user calls the
   "mailroom-train" duplicate.
-- ``mailroom-modernbert-training`` (prepared training set from the committed
-  corpus-eda work, cf096fa) @ 6790341e25229a2617914c839ff0e70c590d7b6d.
+- ``mailroom-modernbert-training`` (prepared training set) @
+  ``TRAINING_DATA_REVISION`` below (leak-free, clerk-normalized build).
 
 Model + windowing constants mirror the committed ``modernbert/prep.py``
 (Mailroom-Corpus-EDA, commit cf096fa) so the published training set stays
@@ -128,6 +128,15 @@ FAST_PATH_ERROR_BUDGET = 0.02      # selective-risk target: P(err | fast path)
 # ECE 0.161).
 SELECTIVE_RISK_MIN_N = 30
 HEAD_ECE_EXCLUSION_THRESHOLD = 0.10
+
+# Plan §8 checkpoint-selection / calibration gates (trainer + eval interlock)
+ECE_BUDGET = 0.05
+DOC_TYPE_GATE_TOL = 0.005
+
+# Pinned corpus row counts (mailroom-finetune @ FINETUNE_REVISION)
+CORPUS_DOCUMENT_COUNT = 3302
+CORPUS_TRAIN_ROW_COUNT = 2979
+CORPUS_TEST_ROW_COUNT = 323
 
 # #103 fast-path guard: catch-all tokens are heterogeneous by construction —
 # a prediction landing on one is a "couldn't express it" signal, never a

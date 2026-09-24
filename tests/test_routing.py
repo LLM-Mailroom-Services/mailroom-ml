@@ -49,6 +49,17 @@ def test_llm_gate_failure_status_fails_open():
     assert should_llm_intake("text", {}, ml_triage=triage, flag=1) is True
 
 
+def test_llm_gate_non_ok_status_fails_open():
+    triage = {"status": "error", "route": "fast_path", "reason": "bert_error"}
+    assert should_llm_intake("text", {}, ml_triage=triage, flag=1) is True
+
+
+def test_llm_gate_respects_max_tokens_override():
+    stats = {"token_estimate": MAX_TOKENS + 1}
+    assert should_llm_intake("short", stats, flag=0, max_tokens=MAX_TOKENS + 5) is False
+    assert should_llm_intake("short", stats, flag=0, max_tokens=MAX_TOKENS) is True
+
+
 def test_llm_gate_non_fast_path_routes_llm():
     triage = {"status": "ok", "route": "llm", "reason": "gate_fail"}
     assert should_llm_intake("text", {}, ml_triage=triage, flag=1) is True

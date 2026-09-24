@@ -99,7 +99,7 @@ designed for the Enron/insurance pools the operator surfaced).
 | D5 | Training input = committed v1 format (`title + "\n\n" + window`, ≤8,192 tokens, BPE-clamped) | Committed work | Byte-compatible with the published training set; tagged `[FILE_NAME]/[TITLE]/[WINDOW_INDEX]` prefix = optional v2 config flag, not default |
 | D6 | Splits: keep committed filename-level 90/10 stratified as baseline; **family-grouped split** (matter/group/thread keys) as the upgrade path the moment Enron threads enter training | Committed + Plan B | Enron threads are document families; row-level splits leak near-duplicates → misleading validation |
 | D7 | Augmentation ladder: authentic-only → **source-matched enrichment** → Enron pseudo-labels → constrained LLM synthesis | **New** + Plan B | Source-matched rows are distribution-identical and label-exact (cheapest, safest); LLM synthesis only for labels with no authentic floor |
-| D8 | Serving: ONNX int8 CPU primary; Modal L4 fallback; no OpenRouter | Plan A | 149M int8 ≈ 60 MB, loads in ms, zero per-call cost |
+| D8 | Serving: ONNX int8 CPU primary; Modal L4 fallback; no OpenRouter | Plan A | ~147 MiB int8 bundle, loads in ms, zero per-call cost |
 | D9 | Eval: classifier-first (correctness, calibration, selective risk, leakage) **plus** cost/accuracy parity vs the LLM sorter on the same stratified 50 | Plan A (caller's original ask) + Plan B scope note | The cost-reduction claim is only provable head-to-head vs the LLM path |
 | D10 | Fail-open: any ML failure (artifact missing, load error, label-map mismatch, exception) routes to the existing LLM/deterministic path; never silently classify | Plan B | Pipeline invariant |
 | D11 | Test split (323) never touches: fitting, calibration, threshold tuning, augmentation selection, or error-driven changes | Committed + Plan B | Eval surface integrity |
@@ -338,7 +338,7 @@ never straddle train/validation.
 
 | Path | Latency/doc | Cost/doc | Verdict |
 | --- | --- | --- | --- |
-| **ONNX int8 CPU** (optimum export; ~60 MB; loads in ms) | 5–20 ms | ~$0.000001 | **primary** |
+| **ONNX int8 CPU** (`deploy/onnx_export.py` torch.onnx.export; ~147 MiB; loads in ms) | 5–20 ms | ~$0.000001 | **primary** |
 | Modal L4 shared (fallback) | 1–5 ms | amortized | fallback if CPU latency ever matters |
 | LLM sorter tail (~10–20% of docs) | 1–3 s | ~$0.0002–0.0004 | deepseek-v4-flash/qwen3.7-flash path |
 | Gemma-4-E4B-it (Modal) reference | 2–10 s | ~$0.0005–0.001 | existing comparison runs |

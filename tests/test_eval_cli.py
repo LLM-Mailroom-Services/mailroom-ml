@@ -15,6 +15,7 @@ from training.eval_modernbert import (
     _macro_f1_observed,
     _per_head_report,
     build_parser,
+    main as eval_main,
     stratified_sample,
 )
 
@@ -341,3 +342,10 @@ def test_per_head_pairs_conditional_and_overflow_excluded(monkeypatch):
     assert contract["support"] == {"a": 1, "b": 1, "c": 1}
     # only the doc_type-correct doc contributed a pair -> macro-F1 1.0
     assert contract["macro_f1"] == 1.0
+
+
+def test_eval_main_exits_when_checkpoint_missing(tmp_path):
+    bad = tmp_path / "empty-bundle"
+    bad.mkdir()
+    with pytest.raises(SystemExit, match="route LLM"):
+        eval_main(["--checkpoint", str(bad), "--json"])

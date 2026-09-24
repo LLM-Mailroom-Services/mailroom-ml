@@ -952,6 +952,43 @@ def test_summary_records_lexicographic_selection_metadata():
         "doc_type": 0.9, "contract": 0.5}
 
 
+def test_epoch_val_dict_includes_selection_keys():
+    """Keys the trainer writes before ``_select_epoch`` (#139 contract)."""
+    val = {
+        "doc_type_macro_f1_observed": 0.9,
+        "doc_type_ece": 0.10,
+        "doc_type_ece_calibrated": 0.02,
+        "contract_macro_f1_observed": 0.5,
+        "contract_ece_calibrated": 0.03,
+        "subclass_objective": 0.5,
+    }
+    snap = _selection_snapshot(val, 2, ["contract"])
+    assert snap["macro_f1"] == 0.9
+    assert snap["ece"] == 0.02
+    assert snap["subclass_objective"] == 0.5
+
+
+def test_summary_temperatures_reflect_passed_temps():
+    """Promotion must pass selected-epoch temps into ``_summary`` (#130)."""
+    args = SimpleNamespace(
+        data="repo", model=MODEL_ID, seed=42, epochs=3, batch_size=4,
+        grad_accum=8, lr=2e-5, loss_lambda_dt=0.65, label_smoothing=0.05,
+        weight_mode="sqrt-inverse", weight_cap=10.0, mlp_heads=True,
+        head_dropout=0.1, subclass_min_train_rows=12, early_stop_patience=2,
+        weight_decay=0.01, betas="0.9,0.999", eps=1e-8, max_length=8192,
+        freeze_backbone_epochs=0, eval_test=True, push_to_hub="",
+        resume="", output="/tmp/x", limit=0, log_every=50, max_steps=0,
+        select_on_subclass=False,
+    )
+    selected = {"epoch": 1, "macro_f1": 0.9, "ece": 0.02, "ece_raw": 0.1}
+    s_sel = _summary("rid", args, "cpu", [], selected,
+                     {"doc_type": 1.1}, 1.0, 1)
+    s_final = _summary("rid", args, "cpu", [], selected,
+                       {"doc_type": 9.9}, 1.0, 1)
+    assert s_sel["temperatures"]["doc_type"] == 1.1
+    assert s_final["temperatures"]["doc_type"] == 9.9
+
+
 def test_resume_restores_best_doc_type_gate_floor(tmp_path):
     """#112: --resume re-derives the doc_type gate floor as the best observed
     doc_type macro-F1 among ECE-eligible prior epochs; no eligible event

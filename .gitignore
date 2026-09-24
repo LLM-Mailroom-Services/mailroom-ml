@@ -12,12 +12,12 @@ data/
 # Runtime artifacts
 artifacts/
 *.onnx
+*.onnx.data
 *.pt
 
 # Env
 .env
 *.log
-.playwright-mcp/page-2026-09-19T15-20-21-237Z.yml
-.playwright-mcp/page-2026-09-19T15-22-34-461Z.yml
-/.playwright-mcp
-archive-browser-b4-evidence.png
+/.playwright-mcp/
+*.png
+.DS_Store

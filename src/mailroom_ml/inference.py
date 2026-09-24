@@ -18,7 +18,8 @@ corporate_record heads under dynamic quantization (parity gate 2026-09-21:
 argmax agreement 0.8 / 0.2 / 0.6 over the gate samples) so fp32 serves by
 default and int8 is a fallback only — or a PyTorch checkpoint
 (``model.safetensors`` + ``heads.pt``).  Resolution order: env override
-(``ML_MODEL_DIR``) > ``artifacts/pytorch/model`` > ``artifacts/onnx/model``.
+(``ML_MODEL_DIR``) > caller override > ``artifacts/onnx/model`` >
+``artifacts/pytorch/model`` (ONNX bundle preferred when both exist).
 
 Tests inject a stub bundle (``predict_fn`` + small maps) — no network, no
 model downloads, no GPU.
@@ -509,7 +510,11 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
     # runner-up: second-highest mean calibrated probability
     mean_by_class = np.mean(np.stack(doc_probs), axis=0)
     order = np.argsort(mean_by_class)[::-1]
-    runner_id = int(order[1]) if len(order) > 1 else None
+    runner_id: int | None = None
+    for idx in order:
+        if int(idx) != dt_id:
+            runner_id = int(idx)
+            break
     runner_label = doc_map[str(runner_id)] if runner_id is not None else None
     margin = float(mean_p - (mean_by_class[runner_id] if runner_id is not None else 0.0))
 
@@ -690,9 +695,9 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
     failure (route "llm") — fail-open, never a raise to the caller.
 
     The fast path requires ALL of: supported doc_type (not ``unknown``),
-    subclass present when the class demands one, calibrated doc_type
-    confidence >= ``ROUTE_DOC_CONFIDENCE``, subclass confidence >=
-    ``ROUTE_SUBCLASS_CONFIDENCE`` when subclass required, window agreement >=
+    calibrated doc_type confidence >= ``ROUTE_DOC_CONFIDENCE``,
+    subclass confidence >= ``ROUTE_SUBCLASS_CONFIDENCE`` when a subclass
+    label is predicted (``subclass`` non-null), window agreement >=
     ``ROUTE_WINDOW_AGREEMENT``, margin >= ``ROUTE_MARGIN``, authentic support
     >= ``ROUTE_MIN_AUTHENTIC_SUPPORT``, no OOD flag, no guard failures.
     """

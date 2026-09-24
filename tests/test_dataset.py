@@ -88,6 +88,7 @@ def test_build_documents_fixtures():
 
 
 @requires_transformers
+@pytest.mark.train
 def test_build_windows_fixtures():
     docs = build_documents(fixture_rows())
     wins = build_windows(docs)
@@ -99,6 +100,7 @@ def test_build_windows_fixtures():
 
 
 @requires_transformers
+@pytest.mark.train
 def test_stage_and_verify_stage(tmp_path):
     stats = stage(tmp_path, rows=fixture_rows(), with_windows=True)
     check = verify_stage(tmp_path)
@@ -143,6 +145,7 @@ def test_stage_stats_sums_all_files_and_refresh_info(tmp_path):
 
 
 @requires_transformers
+@pytest.mark.train
 def test_stage_byte_deterministic_rebuilds(tmp_path):
     """Rebuilds are byte-identical: manifest + sidecars + parquet bytes."""
     rows = fixture_rows()

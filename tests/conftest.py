@@ -1,8 +1,8 @@
 """Shared test helpers: fixture loading + optional-dependency guards.
 
-All tests are hermetic: no network, no torch.  Tests that need the
-ModernBERT tokenizer (windows / staged windows / full-corpus window checks)
-are skipped when ``transformers`` is not installed (train extra).
+Core tests avoid network and heavy ML stacks.  Tests that need torch or the
+ModernBERT tokenizer are marked ``pytest.mark.train`` and skipped when the
+train extra is not installed.
 """
 from __future__ import annotations
 

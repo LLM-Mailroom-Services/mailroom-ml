@@ -217,7 +217,9 @@ def test_train_cmd_smoke_output_never_clobbers_latest() -> None:
 
 
 # -- spawn launcher: budget guard (pure logic, no network) -------------------
+@pytest.mark.deploy
 def test_spawn_budget_estimate() -> None:
+    pytest.importorskip("modal")
     """Estimate formula: (epochs x steps/epoch x s/step + startup) / 3600 x $/h.
     Verified against the exact arithmetic with fixed inputs, plus the trip
     condition: a healthy Option A-shaped cadence (2 epochs, 750 steps/epoch @
@@ -239,7 +241,9 @@ def test_spawn_budget_estimate() -> None:
     assert slow > st.BUDGET_CEILING_USD
 
 
+@pytest.mark.deploy
 def test_spawn_budget_all_in_rate_matches_pricing_page() -> None:
+    pytest.importorskip("modal")
     """2026-09-19 pricing page: L4 $0.000222/s, CPU $0.0000131/core/s,
     memory $0.00000222/GiB/s -> L4+2 cores+10GiB = $0.9734/h."""
     from deploy import spawn_train as st
@@ -248,7 +252,9 @@ def test_spawn_budget_all_in_rate_matches_pricing_page() -> None:
         (0.000222 + 2 * 0.0000131 + 10 * 0.00000222) * 3600, 6)
 
 
+@pytest.mark.deploy
 def test_spawn_cadence_parser(tmp_path) -> None:
+    pytest.importorskip("modal")
     """`modal app logs --timestamps` lines -> median seconds/step, and the
     trainer's windows line -> dataset size."""
     from deploy import spawn_train as st
@@ -268,7 +274,9 @@ def test_spawn_cadence_parser(tmp_path) -> None:
     assert st._sec_per_step_from_lines(["step 4 loss 2.3", "step 8 loss 2.2"]) is None
 
 
+@pytest.mark.deploy
 def test_spawn_metrics_roundtrip(tmp_path, monkeypatch) -> None:
+    pytest.importorskip("modal")
     """Smoke metrics persist + reload through the configured path (env seam)."""
     from deploy import spawn_train as st
 

@@ -242,6 +242,12 @@ def export_onnx(
     (out_dir / "export_meta.json").write_text(
         json.dumps(meta, sort_keys=True, indent=2))
 
+    # Drop stale external-data sidecars from older exports (self-contained graphs
+    # no longer reference *.onnx.data — mailroom-issues #145).
+    stale_data = out_dir / "model.onnx.data"
+    if stale_data.is_file():
+        stale_data.unlink()
+
     sizes = {p.name: p.stat().st_size for p in out_dir.glob("*.onnx")}
     return {"output_dir": str(out_dir), "heads": head_order, "sizes": sizes}
 

@@ -12,6 +12,8 @@ from collections import Counter
 from pathlib import Path
 
 from mailroom_ml.config import (
+    CANONICAL_REPO,
+    CANONICAL_REVISION,
     FINETUNE_REPO,
     FINETUNE_REVISION,
     MAX_TOKENS,
@@ -48,6 +50,7 @@ def build_manifest(docs, counts: dict, maps: dict) -> str:
     return f"""mailroom-modernbert-training manifest
 ==================================================
 source_repo      : {FINETUNE_REPO} @ {FINETUNE_REVISION}
+eval_corpus_pin  : {CANONICAL_REPO} @ {CANONICAL_REVISION} (immutable eval harness)
 source_config    : ground_truth (labels) + default (doc_text), joined on filename
 model            : {MODEL_ID} (max_tokens={MAX_TOKENS}, overlap={WINDOW_OVERLAP_TOKENS})
 rows_total       : {len(docs)} ({dict(sorted(types.items()))})

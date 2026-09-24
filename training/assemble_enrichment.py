@@ -45,7 +45,11 @@ from pathlib import Path
 # and put src/ on sys.path (mirrors the committed build_dataset.py bootstrap).
 _b = Path(__file__).resolve()
 while not (_b / ".git").is_dir():
-    _b = _b.parent
+    _parent = _b.parent
+    if _parent == _b:
+        raise SystemExit(
+            f"repo root not found: no .git directory above {Path(__file__).resolve()}")
+    _b = _parent
 ROOT = _b
 sys.path.insert(0, str(ROOT / "src"))
 

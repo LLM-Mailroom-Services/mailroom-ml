@@ -58,8 +58,8 @@ def context_fit(text: str, *, max_chars: int = BERT_INTAKE_MAX_CHARS,
     """M2 context-fit: chars budget AND (when supplied) token budget.
 
     Char budget mirrors the epic's ``bert_intake_max_chars`` (30,000 chars
-    ≈ 8,192 tokens at ~3.8 chars/token); token estimate comes from the
-    pipeline stats (``estimate_tokens`` char/4 heuristic) — true tokenizer
+    ≈ 8,192 tokens at ``CHARS_PER_TOKEN``); token estimate comes from the
+    pipeline stats (``estimate_tokens``) — true tokenizer
     counts are enforced by the inference layer at encode time (never
     truncate; oversize -> LLM path).
     """
@@ -112,7 +112,8 @@ def should_llm_intake(text: str, stats: dict[str, Any] | None = None,
                       flag: int | None = None,
                       mode: str | None = None,
                       gate: dict[str, Any] | None = None,
-                      max_chars: int = BERT_INTAKE_MAX_CHARS) -> bool:
+                      max_chars: int = BERT_INTAKE_MAX_CHARS,
+                      max_tokens: int = MAX_TOKENS) -> bool:
     """Epic gate precedence (plan §9): when must the LLM path run?
 
     Order: empty text -> False (nothing to do); ``stats.messy`` -> True;
@@ -140,11 +141,11 @@ def should_llm_intake(text: str, stats: dict[str, Any] | None = None,
     if stats.get("messy"):
         return True
     oversize = len(text) > max_chars or (
-        stats.get("token_estimate") or 0) > MAX_TOKENS
+        stats.get("token_estimate") or 0) > max_tokens
     if not flag:
         # today's behavior: LLM intake only for messy/oversize (pre-BERT)
         return bool(oversize)
-    if ml_triage is None or ml_triage.get("status") == "failure" \
+    if ml_triage is None or ml_triage.get("status") != "ok" \
             or ml_triage.get("route") != "fast_path":
         return True
     # flag on + fast_path: only skip-mode + allowlisted + gate PASS may skip

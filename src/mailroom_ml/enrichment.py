@@ -75,7 +75,7 @@ from mailroom_ml.config import (
     SYNTHETIC_TIER_CAPS,
     VAL_FRACTION,
 )
-from mailroom_ml.dataset import dedup_by_sha, grouped_split
+from mailroom_ml.dataset import grouped_split
 from mailroom_ml.labels import normalize_subclass, observed_label_surfaces
 from mailroom_ml.windows import estimate_tokens
 

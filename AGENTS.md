@@ -100,6 +100,13 @@ uv run pytest tests/test_train.py -v       # the trainer/selection seam
 uv run pytest -m serve tests/test_deploy.py -v   # ONNX parity (self-skips w/o artifacts)
 uv run ruff check <changed files>
 
+# CI (GitHub Actions): ruff + pytest -m "not fullcorpus" on every PR (mailroom-ml #12).
+
+# data snapshot (fullcorpus tests + local EDA)
+uv run python training/fetch_corpus.py              # mailroom-finetune -> data/parquet
+uv run python training/preflight.py                 # operator QA before publish/Modal
+# enrichment → Hub publish: docs/enrichment-publish-runbook.md (mailroom-ml #24)
+
 # training / eval (local, only if you have a GPU)
 uv run python training/train_modernbert.py --help
 uv run python training/eval_modernbert.py --checkpoint artifacts/pytorch/model --json

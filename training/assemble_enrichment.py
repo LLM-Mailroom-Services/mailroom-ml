@@ -53,8 +53,8 @@ while not (_b / ".git").is_dir():
 ROOT = _b
 sys.path.insert(0, str(ROOT / "src"))
 
-import pandas as pd  # noqa: E402
 import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
 
 from mailroom_ml import config as cfg  # noqa: E402
 from mailroom_ml.dataset import refresh_dataset_info, verify_stage  # noqa: E402
@@ -81,22 +81,13 @@ from mailroom_ml.enrichment import (  # noqa: E402
     run_seven_gates,
 )
 from mailroom_ml.labels import label_maps  # noqa: E402
+from mailroom_ml.synthetic_policy import default_enrichment_caps  # noqa: E402
 
 MANIFEST_START = "# ---- enrichment ----"
 MANIFEST_END = "# ---- end enrichment ----"
 
-# ---------------------------------------------------------------------------
-# Caps: CLI knobs with committed defaults (config.py is read, never edited).
-# ---------------------------------------------------------------------------
-DEFAULT_CAPS = {
-    "enron_cap_mult": 2.0,          # plan §6.2: <= 2x correspondence train rows
-    "cuad_cap_mult": 2.0,           # #113: <= 2x contract train rows (no prior tier entry)
-    "insurance_cap_mult": 2.0,      # plan §6.3: total insurance train rows <= 2x class size
-    "pseudo_max_fraction": 0.30,    # plan §6.2: <= 30% of correspondence train rows
-    "global_share": cfg.SYNTHETIC_MAX_GLOBAL_SHARE,            # §6.5 <= 40%
-    "per_subclass_share": cfg.SYNTHETIC_MAX_PER_SUBCLASS_SHARE,  # §6.5 <= 50%
-    "synthetic_weight": cfg.SYNTHETIC_EXAMPLE_WEIGHT,          # §6.5 0.6
-}
+# §6.2 pool mults + §6.5 shares from configs/synthetic_policy_v1.yaml (verified vs config.py).
+DEFAULT_CAPS = default_enrichment_caps()
 
 # (flag attribute, pool name, default repo, default revision)
 POOL_FLAGS = (

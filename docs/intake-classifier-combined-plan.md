@@ -73,7 +73,7 @@ designed for the Enron/insurance pools the operator surfaced).
 | --- | --- | --- | --- |
 | `Lucius-Morningstar/mailroom-dataset` | `46a4d3c240a36671cde0182fff4960f6b8b73aca` | canonical eval corpus, immutable | 3,302 rows (train 2,979 / test 323); 55 strata; 5 doc_types; `ground_truth` 36 cols incl. matter/group/relationships + `gt_fields` |
 | `Lucius-Morningstar/mailroom-finetune` | `19720ceb4e29bc3134a88507aa57cdfac7a64a1b` | **modifiable working copy** (the "mailroom-train" duplicate) | created 2026-09-18; schema/rows identical to canonical (verify hashes at load — see §5) |
-| `Lucius-Morningstar/mailroom-modernbert-training` | `6790341e25229a2617914c839ff0e70c590d7b6d` | prepared training set (committed build) | documents 3,302 (2,680/299/323); windows 5,068 (4,573/495); `labels.json`/`vocabularies.json`/`manifest.txt` sidecars |
+| `Lucius-Morningstar/mailroom-modernbert-training` | `5b72a345cd3c057b736bea4910fdbef6509ad1c3` | prepared training set (leak-free, clerk-normalized) | documents 3,302 (2,680/299/323); windows 5,068 (4,573/495); `labels.json`/`vocabularies.json`/`manifest.txt` sidecars |
 
 ### 2.4 Augmentation source pools (Hub API, 2026-09-18) — the enrichment pillar
 

@@ -92,19 +92,14 @@ Contributing mechanics (file:line):
 | `18b8a4f` | board claim + deployed `lucius`, `prompt-engineer`, `board-evidence-auditor` into `.opencode/agents/`. |
 | `4e1280a` | board ledger (wave 1–3 results). |
 
-## 5. Spawned issues (filed 2026-09-21)
+## 5. Spawned issues (mailroom-issues, filed 2026-09-21)
 
-- **#113** CUAD contract corpus pinned but not wired into `enrichment.py`
-  (509 rows, all 25 keys) — `priority/high`.
-- **#114** `assemble_enron_gt` not subclass-balanced — Tier-1 adds ~824
-  ~98%-email rows; **would deepen the collapse. Do NOT run
-  `assemble_enrichment.py --tiers 1` for correspondence before this is
-  fixed** — `priority/high`.
-- **#115** `mixture_caps` greedy/sorted-name allocator starves
-  late-alphabet subclasses — `priority/medium`.
-- **#116** contract head zero-train/zero-val `other` class (26-class head,
-  25 weights) — `priority/medium`; needs a tracker decision (a) keep as
-  inference-only fallback, or (b) drop it.
+| Issue | Repo state (2026-09-24) | mailroom-ml tracker |
+| --- | --- | --- |
+| **#113** CUAD pool | Wired: `assemble_cuad_pool` + tests | Close-out: [mailroom-ml#14](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/14) |
+| **#114** Enron balance | Wired: `_balance_by_subclass` + tests | Close-out: [mailroom-ml#14](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/14) |
+| **#115** mixture_caps | **CLOSED** upstream | — |
+| **#116** contract `other` | **Policy:** keep in contract for OOV/mandatory review; remove from trainable CE/argmax; routing/projection only | [mailroom-ml#15](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/15) (other agent) |
 
 ## 6. Pending action — the Modal run (BLOCKED on budget)
 

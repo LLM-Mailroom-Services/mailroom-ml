@@ -40,7 +40,6 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from mailroom_ml.calibration import (  # noqa: E402
-    apply_temperature,
     ece_from_conf,
     ece_within_band,
     selective_risk_sweep,

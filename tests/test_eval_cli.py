@@ -15,8 +15,10 @@ from training.eval_modernbert import (
     _macro_f1_observed,
     _per_head_report,
     build_parser,
-    main as eval_main,
     stratified_sample,
+)
+from training.eval_modernbert import (
+    main as eval_main,
 )
 
 

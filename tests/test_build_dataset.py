@@ -147,7 +147,8 @@ def test_publish_uploads_and_byte_verifies(tmp_path, monkeypatch, capsys):
     assert "mailroom-finetune" in api.uploaded[0]["commit_message"]
     # publish-only README card written + sidecars byte-verified vs the "hub"
     assert (stage_dir / "README.md").exists()
-    assert len(api.downloaded) == 5  # 4 sidecars + root dataset_info.json
+    n_parquets = len(list(stage_dir.glob("data/**/*.parquet")))
+    assert len(api.downloaded) == 5 + n_parquets  # sidecars + every parquet
     out = capsys.readouterr().out
     assert all(f"  {rel}: OK" in out for rel in
                ("manifest.txt", "labels.json", "vocabularies.json", "README.md"))
@@ -166,10 +167,10 @@ def test_publish_detects_hub_mismatch(tmp_path, monkeypatch, capsys):
             tmp_path, filename))
     # --no-windows: the mismatch check concerns sidecars, not tokenization
     exit_code = build_dataset.main(["--publish", "--no-windows", "--repo-id", "fake/mismatch"])
-    assert exit_code == 0  # warning, not failure (mirrors committed publish)
-    out = capsys.readouterr().out
-    assert "MISMATCH" in out
-    assert "WARNING" in out
+    assert exit_code == 1
+    captured = capsys.readouterr()
+    assert "MISMATCH" in captured.out
+    assert "byte-verify failed" in captured.err
 
 
 def _corrupt(tmp_path: Path, filename: str) -> str:

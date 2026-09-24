@@ -66,6 +66,8 @@ intake-overhaul track. Consequences:
     source-matched enrichment → distillation → label-card synthesis).
   - `train_modernbert.py` — the trainer (see its CLI defaults below).
   - `eval_modernbert.py` — the eval harness (GPU-side; emits per-head metrics).
+- `configs/` — tracked policy YAML referenced from `config.py` (e.g.
+  `synthetic_policy_v1.yaml`; bundled into the Modal training image).
 - `deploy/` — Modal layer + ONNX export. **Runbook: `deploy/README.md`.**
 - `tests/` — the suite (markers: `train`, `serve`, `fullcorpus`).
 - `data/modernbert_training/stage/` — the staged local training set

@@ -70,6 +70,8 @@ from pathlib import Path
 import torch
 import torch.nn as nn
 
+from mailroom_ml.labels import normalize_label_maps
+
 ROOT = Path(__file__).resolve().parent.parent
 
 _DEFAULT_PYTORCH_DIR = ROOT / "artifacts" / "pytorch" / "model"
@@ -126,7 +128,8 @@ def build_reference_model(pytorch_dir: Path):
     content (per-head ``label2id`` / ``id2label`` / ``labels`` / ``weights``).
     """
     maps = json.loads((pytorch_dir / "labels.json").read_text())
-    head_sizes = {name: len(cfg["labels"]) for name, cfg in maps.items()}
+    maps = normalize_label_maps(maps)
+    head_sizes = {name: len(cfg["trainable_labels"]) for name, cfg in maps.items()}
     from transformers import AutoModel  # heavy dep: import lazily
 
     base = AutoModel.from_pretrained(pytorch_dir, torch_dtype=torch.float32)

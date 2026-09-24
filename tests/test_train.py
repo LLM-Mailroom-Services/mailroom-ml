@@ -493,26 +493,22 @@ def test_macro_f1_observed_only():
 
 
 def test_inference_only_class_zero_support_excluded_and_default_weight():
-    """#116: contract ``other`` (and doc_type ``unknown``) is present in the
-    head's ``labels`` but absent from ``weights`` — it is recorded in
-    ``inference_only`` and excluded from the observed macro-F1 average.  Its
-    CE weight silently defaults to 1.0 (``transform_weights`` uses
-    ``weights.get(label, 1.0)`` and it has no positive rows), the asymmetry
-    that surprises every macro-F1 reader."""
+    """#116: contract ``other`` stays in ``labels`` but not ``trainable_labels``;
+    it is excluded from CE (ignore_index) and from the observed macro-F1
+    average."""
     maps = label_maps(build_documents(fixture_rows()))
     contract = maps["contract"]
     assert "other" in contract["labels"]
     assert "other" in contract["inference_only"]
     assert "other" not in contract["weights"]
+    assert "other" not in contract["trainable_labels"]
     # observed-only scoring over a head whose labels exceed its observed GT:
-    # the zero-support class never enters the denominator
     lg = torch.tensor([[10.0, 0.0, 0.0], [0.0, 10.0, 0.0]])
-    lab = torch.tensor([0, 1])  # class index 2 = the zero-support token
+    lab = torch.tensor([0, 1])
     assert macro_f1(lg, lab, observed_only=True) == 1.0
     assert macro_f1(lg, lab) == pytest.approx(2 / 3)
-    # the missing weight defaults to 1.0 (silent — the trap)
-    w = LossConfig().transform_weights(contract["weights"], ["other"])
-    assert w.item() == pytest.approx(1.0)
+    w = LossConfig().transform_weights(contract["weights"], ["service"])
+    assert w.item() == pytest.approx(contract["weights"]["service"], rel=1e-5)
 
 
 def test_ece_calibrated_matches_scaled_logits():
@@ -581,6 +577,7 @@ def test_subclass_support_threshold_remaps_and_drops():
     # contract.rare was remapped to `other` — zero rows remain, so it leaves
     # the head vocabulary (a zero-row class would deflate macro-F1)
     assert new_maps["contract"]["labels"] == ["service", "license", "other"]
+    assert "other" not in new_maps["contract"]["trainable_labels"]
     # weights rebuilt over surviving rows
     assert new_maps["insurance_claim"]["weights"]["auto"] == pytest.approx(1.0)
 
@@ -605,13 +602,17 @@ def test_support_plan_mirrors_train_val_on_heldout_split():
 
 def test_subclass_label_falls_back_to_other_else_unscorable():
     heads = {
-        "contract": {"label2id": {"service": 0, "other": 1}},
-        "insurance_claim": {"label2id": {"auto": 0}},
+        "contract": {"label2id": {"service": 0, "other": 1},
+                     "inference_only": set()},
+        "insurance_claim": {"label2id": {"auto": 0}, "inference_only": set()},
     }
     assert _subclass_label(heads, "contract", "service") == 0
-    # unknown in a head that HAS `other` -> the deployment fail-open target
+    # unknown in a head that HAS trainable `other` -> fail-open target
     assert _subclass_label(heads, "contract", "affiliate") == 1
-    # unknown in a head WITHOUT `other` -> unscorable (leaves the denominator)
+    # GT `other` when it is inference-only -> unscorable (#116)
+    heads_inf = {"contract": {"label2id": {"service": 0},
+                               "routing_only": {"other"}}}
+    assert _subclass_label(heads_inf, "contract", "other") is None
     assert _subclass_label(heads, "insurance_claim", "tiny") is None
 
 

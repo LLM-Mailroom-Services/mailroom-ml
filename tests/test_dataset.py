@@ -241,13 +241,15 @@ def test_leakage_audit_fixture_clean_and_dup_titles():
 
 @pytest.mark.fullcorpus
 @pytest.mark.skipif(
-    not (DATA_DIR / "data" / "ground_truth" / "train").exists(),
+    not (DATA_DIR / "parquet" / "ground_truth" / "train").exists(),
     reason="local snapshot absent (data/parquet) — fetch via training/build_dataset.py",
 )
 def test_full_corpus_contract():
     """Full-corpus invariants: 3,302 rows, splits, no leakage, vocab."""
+    from mailroom_ml.config import CORPUS_DOCUMENT_COUNT
+
     rows = load_corpus_rows()
-    assert len(rows) == 3302
+    assert len(rows) == CORPUS_DOCUMENT_COUNT
     docs = build_documents(rows)
     # val = round(10% of each class's corpus-train count), banker's rounding
     tr = docs[docs["corpus_split"] == "train"]
@@ -271,7 +273,7 @@ def test_full_corpus_contract():
 @pytest.mark.fullcorpus
 @pytest.mark.skipif(
     not transformers_available()
-    or not (DATA_DIR / "data" / "ground_truth" / "train").exists(),
+    or not (DATA_DIR / "parquet" / "ground_truth" / "train").exists(),
     reason="needs transformers (train extra) AND the local snapshot under data/parquet",
 )
 def test_full_corpus_windows_within_budget():

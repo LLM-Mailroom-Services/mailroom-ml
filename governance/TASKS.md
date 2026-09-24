@@ -78,14 +78,16 @@ operator-authorized override; `modal-specialist` correctly refuses to
 **A restarted-session agent with the full specialist roster executes this
 section**; the exact command is in `governance/M9a-HANDOFF.md` §6.
 
-### Structural hazards spawned as issues (2026-09-21)
+### Structural hazards (mailroom-issues #113–#116)
 
-- **#113** CUAD corpus pinned but unwired (509 rows, all 25 contract keys).
-- **#114** `assemble_enron_gt` not subclass-balanced — Tier-1 would deepen
-  the email collapse. **Do not run `--tiers 1` for correspondence** first.
-- **#115** `mixture_caps` greedy/sorted-name allocator starves late-alphabet
-  subclasses.
-- **#116** contract head zero-row `other` class (26-class head, 25 weights).
+| Issue | Status (repo `main`) | Evidence |
+| --- | --- | --- |
+| **#113** CUAD wired | ✅ fixed in repo | `assemble_cuad_pool`, `POOL_FLAGS` cuad, `tests/test_enrichment.py` |
+| **#114** Enron subclass balance | ✅ fixed in repo | `_balance_by_subclass` in `assemble_enron_gt` + tests |
+| **#115** mixture_caps starvation | ✅ closed upstream | order-invariant caps + `test_mixture_caps_order_invariant_*` |
+| **#116** contract `other` class | 🔄 policy decided | Keep in contract for OOV/review; **exclude from trainable CE/argmax** — implementation in flight (mailroom-ml **#15**, mailroom-issues **#116**) |
+
+Close mailroom-issues **#113** / **#114** with SHA + test names when CoS confirms (mailroom-ml **#14**).
 
 **Hard governance gate:** canonical subclass surfaces are sanctioned by
 mailroom-issues #66/#67/#68 + the dojo taxonomy source. mailroom-ml CONSUMES

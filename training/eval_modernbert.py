@@ -56,12 +56,12 @@ from mailroom_ml.config import (  # noqa: E402
     SELECTIVE_RISK_MIN_N,
     STAGE_DIR,
 )
-from mailroom_ml.ood import score_ood  # noqa: E402
 from mailroom_ml.inference import (  # noqa: E402
     BundleLoadError,
     BundleUnavailable,
     load_bundle,
 )
+from mailroom_ml.ood import score_ood  # noqa: E402
 from mailroom_ml.windows import window_document  # noqa: E402
 
 __all__ = ["build_parser", "stratified_sample", "evaluate_documents",

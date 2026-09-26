@@ -465,6 +465,7 @@ def test_promote_latest_is_atomic(tmp_path) -> None:
 def test_train_defaults_export_onnx_on() -> None:
     _need_modal()
     import inspect
+
     from deploy import modal_app
 
     assert inspect.signature(modal_app.train).parameters["export_onnx"].default is True

@@ -311,6 +311,27 @@ def _is_bad_subclass(subclass: str, head: tuple[str, ...]) -> bool:
     return subclass not in head
 
 
+def _silent_other_remap(raw: Any, subclass: str, head: tuple[str, ...]) -> bool:
+    """True when ``normalize_subclass`` invented ``other`` for an OOV token.
+
+    Merger/corporate heads include canonical ``other``.  Adopting every
+    unrecognised raw label as ``other`` would hide surface drift (#16/#75).
+    Empty / unknown tokens that remapped are rejects; an explicit ``other``
+    (or a raw token already on the head) is not.
+    """
+    if subclass != "other":
+        return False
+    token = (
+        str(raw or "").strip().lower().replace(" ", "_").replace("-", "_")
+    )
+    return token not in {"other", *head}
+
+
+def _source_matched_cap(n_train: int, cap_mult: float) -> int:
+    """Max adopted rows from a source-matched pool: ``cap_mult × TRAIN``."""
+    return max(0, int(round(float(cap_mult) * n_train)))
+
+
 def _dedup_within_pool(records: list[dict[str, Any]]) -> tuple[
         list[dict[str, Any]], list[dict[str, str]]]:
     """Within-pool dedup by content_sha256 — first-occurrence by filename.
@@ -700,7 +721,7 @@ def assemble_maud_pool(
     n_train = int(
         ((canonical_docs["doc_type"] == "merger_agreement")
          & (canonical_docs["split"] == "train")).sum())
-    cap = _enron_cap(n_train, cap_mult)
+    cap = _source_matched_cap(n_train, cap_mult)
     records: list[dict[str, Any]] = []
     rejects: list[dict[str, str]] = []
     sort_key = "id" if "id" in pool_df.columns else (
@@ -716,7 +737,7 @@ def assemble_maud_pool(
         raw = _pool_subclass_raw(
             r, "subclass", "consideration_type", "category")
         subclass = _normalized_subclass("merger_agreement", raw)
-        if _is_bad_subclass(subclass, head):
+        if _is_bad_subclass(subclass, head) or _silent_other_remap(raw, subclass, head):
             rejects.append({
                 "filename": fn, "reason": "subclass_not_on_head",
                 "detail": f"{raw!r} resolves to {subclass!r}, not on "
@@ -769,7 +790,7 @@ def assemble_s1_pool(
     n_train = int(
         ((canonical_docs["doc_type"] == "corporate_record")
          & (canonical_docs["split"] == "train")).sum())
-    cap = _enron_cap(n_train, cap_mult)
+    cap = _source_matched_cap(n_train, cap_mult)
     records: list[dict[str, Any]] = []
     rejects: list[dict[str, str]] = []
     sort_key = "id" if "id" in pool_df.columns else (
@@ -784,7 +805,7 @@ def assemble_s1_pool(
             continue
         raw = _pool_subclass_raw(r, "subclass", "category", "record_type")
         subclass = _normalized_subclass("corporate_record", raw)
-        if _is_bad_subclass(subclass, head):
+        if _is_bad_subclass(subclass, head) or _silent_other_remap(raw, subclass, head):
             rejects.append({
                 "filename": fn, "reason": "subclass_not_on_head",
                 "detail": f"{raw!r} resolves to {subclass!r}, not on "

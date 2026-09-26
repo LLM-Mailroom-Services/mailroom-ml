@@ -44,11 +44,11 @@ from mailroom_ml.enrichment import (
     assemble_cms_pool,
     assemble_cuad_pool,
     assemble_enron_gt,
-    assemble_maud_pool,
-    assemble_s1_pool,
     assemble_gnotheia_pool,
     assemble_insurbias_pool,
+    assemble_maud_pool,
     assemble_pseudo_labels,
+    assemble_s1_pool,
     assign_grouped_split,
     build_enrichment_windows,
     combine_tier1,
@@ -1168,7 +1168,8 @@ def test_cli_tier3_eligibility_and_gates(tmp_path):
     candidates.write_text(
         json.dumps({"id": "s1", "parent_class": "contract", "subclass": "hosting",
                     "title": "Hosting Agreement", "doc_text": "Vertex Dynamics "
-                    "agreed to host the production systems for three years."})
+                    "agreed to provide hosting for the production systems "
+                    "for three years."})
         + "\n", encoding="utf-8")
     args = ["--stage", str(stage_dir), "--tiers", "3", "--no-windows",
             "--tier3-cards", str(cards),
@@ -1253,8 +1254,8 @@ def test_s1_pool_caps_and_dedups():
     pool = pd.DataFrame([
         {"filename": "s1_ok.txt", "doc_text": "These bylaws govern Vertex.",
          "subclass": "bylaws"},
-        {"filename": "s1_dup.txt", "doc_text": "bylaws body 0",
-         "subclass": "bylaws"},  # sha-collides with canonical
+        {"filename": "s1_dup.txt", "doc_text": "bylaws 0",
+         "subclass": "bylaws"},  # sha-collides with canonical content_sha256
         {"filename": "s1_off.txt", "doc_text": "Something else.",
          "subclass": "not_on_head"},
     ])

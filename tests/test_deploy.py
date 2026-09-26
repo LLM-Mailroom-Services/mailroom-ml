@@ -431,3 +431,49 @@ def test_head_from_state_reconstructs_linear_and_mlp() -> None:
     # eval-mode forward: dropout is identity, output shape is the head's
     x = torch.randn(2, hidden)
     assert mlp(x).shape == (2, 4)
+
+
+def test_export_onnx_and_parity_fail_loud(monkeypatch) -> None:
+    """#19: a failed ONNX export must not promote ``/checkpoints/latest``."""
+    _need_modal()
+    from deploy import modal_app
+
+    def _fail(cmd, check=False):  # noqa: ARG001
+        return type("R", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+
+    monkeypatch.setattr(modal_app.subprocess, "run", _fail)
+    with pytest.raises(RuntimeError, match="latest/ not updated"):
+        modal_app._export_onnx_and_parity("/checkpoints/runs/x")
+
+
+def test_promote_latest_is_atomic(tmp_path) -> None:
+    """#19: promotion is a rename, not an in-place overwrite of latest/."""
+    _need_modal()
+    from deploy import modal_app
+
+    src = tmp_path / "run"
+    src.mkdir()
+    (src / "heads.pt").write_bytes(b"ok")
+    dest = tmp_path / "latest"
+    dest.mkdir()
+    (dest / "old").write_text("keep-until-rename")
+    modal_app._promote_latest(src, dest)
+    assert (dest / "heads.pt").read_bytes() == b"ok"
+    assert not (dest / "old").exists()
+
+
+def test_train_defaults_export_onnx_on() -> None:
+    _need_modal()
+    import inspect
+    from deploy import modal_app
+
+    assert inspect.signature(modal_app.train).parameters["export_onnx"].default is True
+
+
+def test_spawn_train_forwards_export_onnx() -> None:
+    _need_modal()
+    from deploy.spawn_train import build_parser
+
+    ns = build_parser().parse_args(["--no-export-onnx"])
+    assert ns.export_onnx is False
+    assert build_parser().parse_args([]).export_onnx is True

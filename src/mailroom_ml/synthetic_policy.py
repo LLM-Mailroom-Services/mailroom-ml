@@ -74,6 +74,8 @@ def default_enrichment_caps() -> dict[str, float]:
     return {
         "enron_cap_mult": 2.0,
         "cuad_cap_mult": 2.0,
+        "maud_cap_mult": 2.0,
+        "s1_cap_mult": 2.0,
         "insurance_cap_mult": 2.0,
         "pseudo_max_fraction": 0.30,
         "global_share": float(policy["global_share"]),

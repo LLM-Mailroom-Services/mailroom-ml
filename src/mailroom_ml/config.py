@@ -145,8 +145,12 @@ CORPUS_TEST_ROW_COUNT = 323
 # tier floor still routes LLM; insurance_claim has no `other` head at all).
 CATCH_ALL_LABELS: tuple[str, ...] = ("other",)
 
-# Abstention / unknown + OOD gate (novelty flag from OOD probe, Phase 2).
+# Abstention / unknown + OOD gate (novelty flag from OOD probe, #18).
 ABSTAIN_UNKNOWN_CLASS = "unknown"
+OOD_PROBE_FILENAME = "ood_probe.json"
+OOD_METHOD = "energy"                     # -logsumexp(doc_type logits)
+OOD_ENERGY_PERCENTILE = 5.0               # in-dist tail mass used as the threshold
+OOD_PROBE_TEMPERATURE = 1.0               # temperature applied to logits before energy
 
 # ---------------------------------------------------------------------------
 # Constellation intake-overhaul contract (mailroom-issues #85 epic, M1-M7 —
@@ -161,11 +165,14 @@ ABSTAIN_UNKNOWN_CLASS = "unknown"
 MAILROOM_BERT_INTAKE_DEFAULT = 0          # default OFF preserves pipeline behavior
 BERT_INTAKE_MODE = "shadow"               # rollout ladder: shadow -> verify -> skip
 
-# Initial routing thresholds from #85/#89; the #84-calibrated value replaces
-# BERT_INTAKE_MIN_CONFIDENCE once selective-risk analysis lands (plan S8).
+# Initial routing thresholds from #85/#89. Eval ``--write-routing-thresholds``
+# (#25) promotes a selective-risk pick into ``routing_thresholds.json`` on
+# the artifact; ``load_bundle`` overlays that file when present. These
+# constants remain the fallback when no artifact overlay exists.
 BERT_INTAKE_MIN_CONFIDENCE = 0.92         # calibrated doc_type confidence (epic example value)
 BERT_INTAKE_MAX_CHARS = 30_000            # ~8,192 tokens at ~3.8 chars/token (context_fit gate)
 INTAKE_HANDOFF_SCHEMA_VERSION = 1         # intake_handoff schema v1 (M1)
+ROUTING_THRESHOLDS_FILENAME = "routing_thresholds.json"
 
 # PASS/FAIL gate vocabulary (epic P1-P7 / F1-F7) — used by routing/evaluate_gate.
 GATE_REQUIRED_AGREEMENT = 0.80            # window-agreement floor (plan S = p*a*m)
@@ -188,6 +195,28 @@ INSURBIAS_REVISION = "311d59c4d2e117db3f4f12f515c0536090b4d876"     # narratives
 CUAD_FULL_REPO = "Lucius-Morningstar/mailroom-cuad-contracts-full"
 CUAD_FULL_REVISION = "e69afe340b48133b7173d74b8ad220fcd28a1a6e"
 
+# Tier-2 blind candidate source (#26): the Enron blind config is the
+# revision-pinned *text* pool.  ``assemble_tier2`` still requires scored
+# columns (doc_type_conf / subclass_conf / agreement) — produce them with
+# ``training/score_blind_pool.py`` against a checkpoint; do not invent
+# confidences.  CLI ``--blind-pool`` defaults to this pin.
+BLIND_POOL_REPO = ENRON_DEDUP_REPO
+BLIND_POOL_REVISION = ENRON_DEDUP_REVISION
+BLIND_POOL_CONFIG = "blind"
+BLIND_REQUIRED_COLUMNS: tuple[str, ...] = (
+    "doc_type_conf", "subclass_conf", "agreement",
+)
+
+# Tier-1 MAUD / S1 adapters (#16).  Hub datasets
+# ``mailroom-maud-contracts`` / ``mailroom-s1-corporate-records`` are NOT
+# published as of 2026-09-26 — empty revision means "no default Hub fetch"
+# (never a live tip).  Operators pass ``--maud-pool`` / ``--s1-pool`` as a
+# local path (or ``repo@rev`` once a pin exists).
+MAUD_REPO = "Lucius-Morningstar/mailroom-maud-contracts"
+MAUD_REVISION = ""
+S1_REPO = "Lucius-Morningstar/mailroom-s1-corporate-records"
+S1_REVISION = ""
+
 # ---------------------------------------------------------------------------
 # Synthetic-data program caps (policy v1 — see configs/synthetic_policy_v1.yaml)
 # ---------------------------------------------------------------------------
@@ -197,6 +226,16 @@ SYNTHETIC_EXAMPLE_WEIGHT = 0.6     # loss weight for synthetic rows (0.4-0.7)
 SYNTHETIC_ELIGIBILITY_MAX_AUTHENTIC = 20
 SYNTHETIC_TIER_CAPS = ((5, 3), (15, 2), (30, 1), (75, 0))  # (authentic, cap)
 
-# Input-construction version: v1 = committed title + "\\n\\n" + window
-# (byte-compatible with the published training set).  v2 adds the tagged
-# [FILE_NAME]/[TITLE]/[WINDOW_INDEX] metadata prefix — config-flag only.
+# Tier-3 generator contract (#28).  In-repo assembly never calls a live LLM;
+# operators supply card-driven candidates.  These pins record the prompt
+# template identity so a future generator step cannot drift silently.
+TIER3_PROMPT_TEMPLATE_ID = "label_card_v1"
+TIER3_GENERATOR_MODEL = ""          # empty = no in-repo generator (cards only)
+
+# Input-construction version (#29): v1 = committed title + "\\n\\n" + window
+# (byte-compatible with TRAINING_DATA_REVISION).  v2 adds the tagged
+# [FILE_NAME]/[TITLE]/[WINDOW_INDEX] metadata prefix.  Default stays v1;
+# switching to v2 is explicit (CLI / summary.json) and MUST NOT be mixed
+# into the published v1 Hub revision.
+INPUT_CONSTRUCTION_VERSION = "v1"
+INPUT_CONSTRUCTION_VERSIONS: tuple[str, ...] = ("v1", "v2")

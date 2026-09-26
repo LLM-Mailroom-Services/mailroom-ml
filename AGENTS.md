@@ -57,15 +57,22 @@ intake-overhaul track. Consequences:
     clerk-normalization the pipeline feeds the classifier).
   - `dataset.py` / `windows.py` / `cohorts.py` — dataset assembly + windowing.
   - `inference.py` / `calibration.py` / `routing.py` — serving, temperature
-    scaling, the gate.
+    scaling, the gate. `load_bundle` overlays `routing_thresholds.json` (#25)
+    and `ood_probe.json` (#18) when present.
+  - `ood.py` — energy OOD probe (`-logsumexp(doc_type logits / T)`).
+  - `windows.py` — v1 (published title/`\\n\\n`/body) and v2 tagged prefix (#29).
   - `enrichment.py` / `provenance.py` / `tracing.py` — augmentation sources,
-    lineage, trace sidecars.
+    lineage, trace sidecars. MAUD/S1 adapters (#16); seven Tier-3 gates (#28).
 - `training/` — the runnable drivers (not imported by the library)
   - `build_dataset.py` — corpus → staged training set.
   - `assemble_enrichment.py` — the measured augmentation ladder (authentic →
     source-matched enrichment → distillation → label-card synthesis).
-  - `train_modernbert.py` — the trainer (see its CLI defaults below).
-  - `eval_modernbert.py` — the eval harness (GPU-side; emits per-head metrics).
+  - `score_blind_pool.py` — add required confidence columns for Tier-2 (#26).
+  - `train_modernbert.py` — the trainer (`--subclass-label-smoothing` #22,
+    `--input-construction` #29; writes `ood_probe.json` from val logits).
+  - `eval_modernbert.py` — the eval harness (`--write-routing-thresholds` #25;
+    reports `fast_path_rate` + `ood`).
+  - `compare_runs.py` — paired bootstrap CIs across two eval JSONs (#17).
 - `configs/` — tracked policy YAML referenced from `config.py` (e.g.
   `synthetic_policy_v1.yaml`; bundled into the Modal training image).
 - `deploy/` — Modal layer + ONNX export. **Runbook: `deploy/README.md`.**
@@ -110,11 +117,14 @@ uv run python training/preflight.py                 # operator QA before publish
 # training / eval (local, only if you have a GPU)
 uv run python training/train_modernbert.py --help
 uv run python training/eval_modernbert.py --checkpoint artifacts/pytorch/model --json
+uv run python training/compare_runs.py --a reports/eval_a.json --b reports/eval_b.json
 
 # Modal (see deploy/README.md for the full runbook + cost notes)
 HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py
 HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py --epochs 5 --push-to-hub ...
 #   smoke:  uv run --extra deploy python deploy/spawn_train.py --smoke
+#   after a successful non-smoke train the container exports ONNX + runs
+#   parity, then promotes /checkpoints/latest (#19). --no-export-onnx skips.
 ```
 
 The core suite is green with **no** modal/torch/onnxruntime installed — every
@@ -241,7 +251,9 @@ docs** before writing configuration.
   gated on argmax agreement). **Do not export through `optimum-cli`** — the
   shared-encoder + `heads.pt` architecture would initialize random heads and
   silently ship a broken graph; use the committed `torch.onnx.export` path
-  (`dynamo=False`).
+  (`dynamo=False`). After a successful non-smoke Modal train the container
+  runs this chain **before** promoting `/checkpoints/latest` (#19). Failed
+  parity leaves `latest/` on the last good checkpoint.
 
 ## Testing & documentation currency
 

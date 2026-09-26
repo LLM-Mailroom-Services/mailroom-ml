@@ -47,6 +47,7 @@ from training.train_modernbert import (  # noqa: E402
     _subclass_label,
     _subclass_objective,
     _summary,
+    _write_ood_probe,
     build_parser,
     ece,
     ece_calibrated,
@@ -637,6 +638,82 @@ def test_cli_accepts_audit_lever_flags():
     assert ns.betas == "0.9,0.98"
     assert ns.eps == 1e-6
     assert ns.subclass_min_train_rows == 12
+    assert ns.subclass_label_smoothing == 0.0
+    assert ns.input_construction == "v1"
+
+
+def test_cli_subclass_label_smoothing_and_input_construction():
+    ns = build_parser().parse_args([
+        "--subclass-label-smoothing", "0.1",
+        "--input-construction", "v2",
+    ])
+    assert ns.subclass_label_smoothing == 0.1
+    assert ns.label_smoothing == 0.0
+    assert ns.input_construction == "v2"
+    help_text = build_parser().format_help()
+    assert "subclass CE heads only" in help_text
+    assert "doc_type head only" in help_text
+
+
+def test_write_ood_probe_from_val_logits(tmp_path):
+    """#18: trainer fits the energy probe on validation doc_type logits."""
+    lg = torch.tensor([[5.0, 0.0], [4.5, 0.2], [6.0, -1.0]])
+    _write_ood_probe(tmp_path, {"doc_type": [lg]})
+    probe = json.loads((tmp_path / "ood_probe.json").read_text())
+    assert probe["method"] == "energy"
+    assert "threshold" in probe
+    _write_ood_probe(tmp_path, {})
+    assert json.loads((tmp_path / "ood_probe.json").read_text()) == probe
+
+
+def test_head_loss_subclass_smoothing_does_not_touch_doc_type():
+    """#22: subclass smoothing changes subclass CE; doc_type CE stays hard."""
+    device = torch.device("cpu")
+    heads = {
+        "doc_type": {"label2id": {"contract": 0, "insurance_claim": 1},
+                     "labels": ["contract", "insurance_claim"],
+                     "weights": {"contract": 1.0, "insurance_claim": 1.0}},
+        "contract": {"label2id": {"service": 0, "license": 1},
+                     "labels": ["service", "license"],
+                     "weights": {"service": 1.0, "license": 1.0}},
+    }
+    batch = {
+        "input_ids": torch.zeros(4, 8, dtype=torch.long),
+        "attention_mask": torch.ones(4, 8, dtype=torch.long),
+        "doc_type": torch.tensor([0, 0, 1, 1]),
+        "subclass": torch.tensor([0, 1, 0, 0]),
+        "filename": ["a.txt", "b.txt", "c.txt", "d.txt"],
+    }
+    lgs = {
+        "doc_type": torch.tensor([[5.0, 0.0], [5.0, 0.0],
+                                  [5.0, 0.0], [5.0, 0.0]]),
+        "contract": torch.tensor([[5.0, 0.0], [0.0, 5.0],
+                                  [0.0, 0.0], [0.0, 0.0]]),
+    }
+    hard, _ = head_loss(_StubHeads(lgs), batch, heads, device, LossConfig())
+    sc_smooth, _ = head_loss(
+        _StubHeads(lgs), batch, heads, device,
+        LossConfig(subclass_label_smoothing=0.2))
+    dt_smooth, _ = head_loss(
+        _StubHeads(lgs), batch, heads, device,
+        LossConfig(label_smoothing=0.2))
+    assert sc_smooth.item() != pytest.approx(hard.item())
+    assert dt_smooth.item() != pytest.approx(hard.item())
+    assert sc_smooth.item() != pytest.approx(dt_smooth.item())
+    sel = batch["doc_type"] == 0
+    expected_sc = (
+        0.65 * F.cross_entropy(lgs["doc_type"], batch["doc_type"])
+        + 0.35 * F.cross_entropy(
+            lgs["contract"][sel], batch["subclass"][sel],
+            label_smoothing=0.2)
+    )
+    assert sc_smooth.item() == pytest.approx(expected_sc.item())
+    expected_dt = (
+        0.65 * F.cross_entropy(
+            lgs["doc_type"], batch["doc_type"], label_smoothing=0.2)
+        + 0.35 * F.cross_entropy(lgs["contract"][sel], batch["subclass"][sel])
+    )
+    assert dt_smooth.item() == pytest.approx(expected_dt.item())
 
 
 # -- local stage loader -------------------------------------------------------

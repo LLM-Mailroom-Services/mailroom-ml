@@ -20,13 +20,21 @@ so every function is unit-testable with synthetic logits.
 """
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from mailroom_ml.config import (
+    BERT_INTAKE_MIN_CONFIDENCE,
     ECE_BUDGET,
     FAST_PATH_ERROR_BUDGET,
+    ROUTE_DOC_CONFIDENCE,
+    ROUTE_MARGIN,
+    ROUTE_SUBCLASS_CONFIDENCE,
+    ROUTE_WINDOW_AGREEMENT,
+    ROUTING_THRESHOLDS_FILENAME,
     SELECTIVE_RISK_MIN_N,
 )
 
@@ -38,6 +46,9 @@ __all__ = [
     "ece_from_conf",
     "ece_within_band",
     "reliability_table",
+    "routing_thresholds_from_sweep",
+    "write_routing_thresholds",
+    "load_routing_thresholds",
     "wilson_lower",
     "selective_risk_sweep",
 ]
@@ -296,9 +307,94 @@ def selective_risk_sweep(
         "insufficient_data": max_n < min_n,
         "note": (
             "deployment threshold from selective risk on the calibration set "
-            "(plan §8) — replaces config BERT_INTAKE_MIN_CONFIDENCE once "
-            "this analysis lands; #104: candidates require n >= min_n and "
-            "the Wilson lower bound on accuracy"
+            "(plan §8) — write via routing_thresholds_from_sweep / "
+            "eval --write-routing-thresholds (#25); #104: candidates "
+            "require n >= min_n and the Wilson lower bound on accuracy"
         ),
     }
+
+
+def routing_thresholds_from_sweep(
+    sweep: dict[str, Any],
+    *,
+    fallback: dict[str, float] | None = None,
+) -> dict[str, Any]:
+    """Promote a selective-risk sweep into the routing-threshold artifact (#25).
+
+    When the sweep refuses or has no recommended threshold, config
+    fallbacks are recorded and ``source`` is ``config_fallback`` — the
+    file is still written so serving has a self-describing sidecar.
+    """
+    defaults = fallback or {
+        "BERT_INTAKE_MIN_CONFIDENCE": BERT_INTAKE_MIN_CONFIDENCE,
+        "ROUTE_DOC_CONFIDENCE": ROUTE_DOC_CONFIDENCE,
+        "ROUTE_SUBCLASS_CONFIDENCE": ROUTE_SUBCLASS_CONFIDENCE,
+        "ROUTE_WINDOW_AGREEMENT": ROUTE_WINDOW_AGREEMENT,
+        "ROUTE_MARGIN": ROUTE_MARGIN,
+    }
+    refused = bool(sweep.get("refused"))
+    rec = sweep.get("recommended_threshold")
+    if refused or rec is None:
+        payload = dict(defaults)
+        payload.update({
+            "schema_version": 1,
+            "source": "config_fallback",
+            "refused": True,
+            "reason": sweep.get("reason") or "no recommended_threshold",
+            "selective_risk": sweep.get("selective_risk"),
+            "budget_met": False,
+            "note": (
+                "selective-risk did not produce a threshold; serving falls "
+                "back to config ROUTE_* / BERT_INTAKE_MIN_CONFIDENCE. "
+                "Re-sweep after the next calibration run — do not change "
+                "the shadow→verify→skip ladder without a new pick."
+            ),
+        })
+        return payload
+    pick = float(rec)
+    return {
+        "schema_version": 1,
+        "source": "selective_risk_sweep",
+        "BERT_INTAKE_MIN_CONFIDENCE": pick,
+        "ROUTE_DOC_CONFIDENCE": pick,
+        "ROUTE_SUBCLASS_CONFIDENCE": float(
+            defaults.get("ROUTE_SUBCLASS_CONFIDENCE", ROUTE_SUBCLASS_CONFIDENCE)),
+        "ROUTE_WINDOW_AGREEMENT": float(
+            defaults.get("ROUTE_WINDOW_AGREEMENT", ROUTE_WINDOW_AGREEMENT)),
+        "ROUTE_MARGIN": float(defaults.get("ROUTE_MARGIN", ROUTE_MARGIN)),
+        "refused": False,
+        "selective_risk": sweep.get("selective_risk"),
+        "budget_met": bool(sweep.get("budget_met")),
+        "coverage": sweep.get("coverage"),
+        "n_at_pick": sweep.get("n_at_pick"),
+        "note": (
+            "Promoted from selective-risk on the calibration/eval sweep. "
+            "Do not change BERT_INTAKE_MODE without re-running the sweep."
+        ),
+    }
+
+
+def write_routing_thresholds(path: str | Path, payload: dict[str, Any]) -> Path:
+    """Write ``routing_thresholds.json`` (or an explicit file path)."""
+    dest = Path(path)
+    if dest.is_dir() or dest.suffix != ".json":
+        dest = dest / ROUTING_THRESHOLDS_FILENAME
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8")
+    return dest
+
+
+def load_routing_thresholds(model_dir: str | Path) -> dict[str, Any] | None:
+    """Load an artifact overlay; None when absent or unreadable."""
+    path = Path(model_dir) / ROUTING_THRESHOLDS_FILENAME
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
 

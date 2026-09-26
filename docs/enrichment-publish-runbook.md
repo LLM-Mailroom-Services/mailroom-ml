@@ -29,9 +29,40 @@ uv run python training/build_dataset.py --stage-only
 uv run python training/assemble_enrichment.py \
   --stage data/modernbert_training/stage --tiers 1 --dry-run
 # remove --dry-run when counts/audit look correct
+
+# Tier-1 MAUD / S1 (#16): no Hub pin yet — pass a local JSONL/parquet
+uv run python training/assemble_enrichment.py --tiers 1 --dry-run \
+  --maud-pool path/to/maud.jsonl --s1-pool path/to/s1.jsonl
 ```
 
 Inspect `enrichment_audit.jsonl` and `manifest.txt` (`# ---- enrichment ----` block).
+
+### Tier-2 blind pool (#26)
+
+`--blind-pool` defaults to the pinned Enron blind **text** source
+(`enron-correspondence-dedup` @ `BLIND_POOL_REVISION`, config `blind`). That
+pin does **not** carry `doc_type_conf` / `subclass_conf` / `agreement`. Score
+it first (does not invent confidences):
+
+```bash
+uv run python training/score_blind_pool.py \
+  --pool data/enrichment/enron_blind.parquet \
+  --checkpoint artifacts/pytorch/model \
+  --out data/enrichment/blind_scored.parquet
+uv run python training/assemble_enrichment.py --tiers 2 \
+  --blind-pool data/enrichment/blind_scored.parquet --dry-run
+```
+
+Missing score columns abort with exit 2 (no silent adopt).
+
+### Tier-3 label-card synthesis (#28)
+
+All seven gates are implemented (rule cues, independent adjudication,
+n-gram diversity, model disagreement). In-repo assembly never calls a live
+LLM — operators supply `--tier3-cards` + `--tier3-candidates`. Failures land
+in `enrichment_audit.jsonl` with stable reason codes. Prompt template id is
+`TIER3_PROMPT_TEMPLATE_ID` (`label_card_v1`); `TIER3_GENERATOR_MODEL` is
+empty until an operator pins a generator.
 
 ## 4. Publish
 

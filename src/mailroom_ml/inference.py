@@ -43,6 +43,7 @@ from mailroom_ml.config import (
     BERT_INTAKE_MAX_CHARS,
     CATCH_ALL_LABELS,
     GATE_REQUIRED_AGREEMENT,
+    INPUT_CONSTRUCTION_VERSION,
     MAX_TOKENS,
     ROUTE_DOC_CONFIDENCE,
     ROUTE_MARGIN,
@@ -105,6 +106,14 @@ class ModelBundle:
     # no exclusions; the doc_type selection gate still applies.
     head_exclusions: dict[str, str] = field(default_factory=dict)
     exclusion_policy: dict[str, Any] | None = None
+    # #25 artifact overlay: selective-risk promoted thresholds. Empty ->
+    # classify_document uses the function kwargs / config fallbacks.
+    routing_thresholds: dict[str, Any] = field(default_factory=dict)
+    # #18 OOD probe sidecar. None -> probe absent (ood_flag is None, not
+    # a silent in-distribution claim).
+    ood_probe: dict[str, Any] | None = None
+    # #29 input-construction version recorded on the artifact (default v1).
+    input_construction: str = INPUT_CONSTRUCTION_VERSION
 
     @property
     def label_schema_version(self) -> str:
@@ -379,6 +388,12 @@ def load_bundle(model_dir: str | Path | None = None,
             f"bundle {mdir} has neither ONNX graph nor pytorch checkpoint")
 
     head_exclusions, exclusion_policy = _load_head_exclusions(mdir)
+    from mailroom_ml.calibration import load_routing_thresholds
+    from mailroom_ml.ood import load_ood_probe
+
+    routing = load_routing_thresholds(mdir) or {}
+    ood = load_ood_probe(mdir)
+    input_construction = _load_input_construction(mdir)
     return ModelBundle(
         model_dir=mdir, maps=maps, temperatures=temps,
         tokenizer=tok, pad_id=pad_id,
@@ -386,6 +401,9 @@ def load_bundle(model_dir: str | Path | None = None,
         support_counts=_load_support_counts(mdir),
         head_exclusions=head_exclusions,
         exclusion_policy=exclusion_policy,
+        routing_thresholds=routing,
+        ood_probe=ood,
+        input_construction=input_construction,
     )
 
 
@@ -425,9 +443,42 @@ def predict(bundle: ModelBundle,
     return bundle.predict_fn(input_ids, attention_mask)
 
 
-def window_titles(title: str, window_texts: list[str]) -> list[str]:
-    """v1 input format: title + "\\n\\n" + window (plan D5, byte-compatible)."""
-    return [f"{title}\n\n{w}" if title else w for w in window_texts]
+def _load_input_construction(mdir: Path) -> str:
+    """Read the construction version from summary.json (explicit key or
+    hyperparameters).  Missing sidecar -> v1 (published Hub pin)."""
+    summary = mdir / "summary.json"
+    if not summary.is_file():
+        return INPUT_CONSTRUCTION_VERSION
+    try:
+        data = json.loads(summary.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return INPUT_CONSTRUCTION_VERSION
+    version = data.get("input_construction")
+    if not version:
+        version = (data.get("hyperparameters") or {}).get("input_construction")
+    return str(version or INPUT_CONSTRUCTION_VERSION)
+
+
+def window_titles(
+    title: str,
+    window_texts: list[str],
+    *,
+    version: str = INPUT_CONSTRUCTION_VERSION,
+    filename: str = "",
+) -> list[str]:
+    """Decorate window bodies with the input-construction prefix (#29).
+
+    v1 remains the default (title + ``\\n\\n`` + body).  Callers that
+    already passed fully decorated strings from ``window_document`` should
+    not re-decorate — this helper is for body-only windows.
+    """
+    from mailroom_ml.windows import decorate_window
+
+    return [
+        decorate_window(title, w, version=version, filename=filename,
+                        window_index=i)
+        for i, w in enumerate(window_texts)
+    ]
 
 
 def _calibrated_probs(logits: np.ndarray, temperature: float) -> np.ndarray:
@@ -533,6 +584,10 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
             "score": 0.0, "n_windows": len(window_texts),
             "per_head": {}, "guard_failures": ["all_windows_unknown"],
             "window_doc_type_probs": doc_probs,
+            "window_doc_type_logits": [
+                np.asarray(logits_by_head["doc_type"][i])
+                for i in range(len(window_texts))
+            ],
         }
     dt_id = Counter(known_votes).most_common(1)[0][0]
     dt_label = doc_map[str(dt_id)]
@@ -597,6 +652,10 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
         "per_head": per_head,
         "guard_failures": [],
         "window_doc_type_probs": doc_probs,
+        "window_doc_type_logits": [
+            np.asarray(logits_by_head["doc_type"][i])
+            for i in range(len(window_texts))
+        ],
     }
 
 
@@ -714,7 +773,19 @@ def classify_document_default(
         window_agreement=window_agreement,
         margin_gate=margin_gate,
         agreement_gate=agreement_gate,
+        filename=filename or "",
     )
+
+
+def _bundle_route(bundle: ModelBundle, key: str, default: float) -> float:
+    """Artifact overlay (#25) when the sidecar carries the key."""
+    raw = (bundle.routing_thresholds or {}).get(key)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return default
 
 
 def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
@@ -723,11 +794,12 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
                       overlap: int = WINDOW_OVERLAP_TOKENS,
                       window_texts: list[str] | None = None,
                       min_authentic_support: int = ROUTE_MIN_AUTHENTIC_SUPPORT,
-                      doc_confidence: float = ROUTE_DOC_CONFIDENCE,
-                      subclass_confidence: float = ROUTE_SUBCLASS_CONFIDENCE,
-                      window_agreement: float = ROUTE_WINDOW_AGREEMENT,
-                      margin_gate: float = ROUTE_MARGIN,
+                      doc_confidence: float | None = None,
+                      subclass_confidence: float | None = None,
+                      window_agreement: float | None = None,
+                      margin_gate: float | None = None,
                       agreement_gate: float = GATE_REQUIRED_AGREEMENT,
+                      filename: str = "",
                       ) -> dict[str, Any]:
     """Full fast-path inference on one document (windows + merge + gate).
 
@@ -750,7 +822,31 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
         "status": "ok", "doc_type": None, "subclass": None, "route": "llm",
         "reason": None, "score": 0.0, "quality": {}, "guard_failures": [],
         "failure": None, "artifact_sha": bundle.artifact_sha,
+        "ood_score": None, "ood_flag": None, "ood_probe_status": "absent",
     }
+    doc_confidence = (
+        ROUTE_DOC_CONFIDENCE if doc_confidence is None
+        else doc_confidence)
+    subclass_confidence = (
+        ROUTE_SUBCLASS_CONFIDENCE if subclass_confidence is None
+        else subclass_confidence)
+    window_agreement = (
+        ROUTE_WINDOW_AGREEMENT if window_agreement is None
+        else window_agreement)
+    margin_gate = ROUTE_MARGIN if margin_gate is None else margin_gate
+    # Artifact overlay wins over config constants when the caller did not
+    # pass an explicit override (None).  Explicit kwargs still win.
+    if doc_confidence == ROUTE_DOC_CONFIDENCE:
+        doc_confidence = _bundle_route(
+            bundle, "ROUTE_DOC_CONFIDENCE", doc_confidence)
+    if subclass_confidence == ROUTE_SUBCLASS_CONFIDENCE:
+        subclass_confidence = _bundle_route(
+            bundle, "ROUTE_SUBCLASS_CONFIDENCE", subclass_confidence)
+    if window_agreement == ROUTE_WINDOW_AGREEMENT:
+        window_agreement = _bundle_route(
+            bundle, "ROUTE_WINDOW_AGREEMENT", window_agreement)
+    if margin_gate == ROUTE_MARGIN:
+        margin_gate = _bundle_route(bundle, "ROUTE_MARGIN", margin_gate)
     try:
         chars = len(doc_text)
         context_fit = chars <= max_chars
@@ -762,17 +858,23 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
             result["quality"]["coverage"] = 0.0
             return result
 
+        version = bundle.input_construction or INPUT_CONSTRUCTION_VERSION
         if window_texts is None:
             from mailroom_ml.windows import window_document
 
-            window_texts = window_document(title, doc_text, max_tokens, overlap)
-        result["quality"]["windows"] = len(window_texts)
-        if not window_texts:
+            decorated = window_document(
+                title, doc_text, max_tokens, overlap,
+                version=version, filename=filename)
+        else:
+            decorated = window_titles(
+                title, window_texts, version=version, filename=filename)
+        result["quality"]["windows"] = len(decorated)
+        result["quality"]["input_construction"] = version
+        if not decorated:
             result["reason"] = "no_windows"
             result["guard_failures"].append("no_windows")
             return result
 
-        decorated = window_titles(title, window_texts)
         merged = classify_windows(bundle, decorated, max_length=max_tokens)
         result.update(merged)
         if merged.get("route") == "llm":  # all windows abstained
@@ -842,6 +944,26 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
         agree = merged["agreement"]
         margin = merged["margin"]
         need_subclass = sub is not None
+        from mailroom_ml.ood import score_ood
+
+        logits = merged.get("window_doc_type_logits") or []
+        if bundle.ood_probe and logits:
+            ood_score, ood_flag, ood_status = score_ood(
+                np.stack(logits), bundle.ood_probe)
+        elif bundle.ood_probe:
+            ood_score, ood_flag, ood_status = None, None, "no_logits"
+        else:
+            ood_score, ood_flag, ood_status = None, None, "absent"
+        result["ood_score"] = ood_score
+        result["ood_flag"] = ood_flag
+        result["ood_probe_status"] = ood_status
+        result["quality"]["ood_probe_status"] = ood_status
+        if ood_flag:
+            result["reason"] = "ood"
+            result["route"] = "llm"
+            result["guard_failures"].append(
+                f"ood_flag energy={ood_score} > threshold")
+            return result
         fast_path = (
             dt != ABSTAIN_UNKNOWN_CLASS
             and p_dt >= doc_confidence

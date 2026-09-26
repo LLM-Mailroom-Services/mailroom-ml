@@ -103,6 +103,14 @@ def test_window_titles_v1_format():
     assert window_titles("", ["a"]) == ["a"]
 
 
+def test_window_titles_v2_tagged_prefix():
+    got = window_titles("T", ["a", "b"], version="v2", filename="f.pdf")
+    assert got[0].startswith("[FILE_NAME] f.pdf\n")
+    assert "[WINDOW_INDEX] 0\n\n" in got[0]
+    assert got[1].endswith("b")
+    assert "[WINDOW_INDEX] 1\n\n" in got[1]
+
+
 def test_encode_inputs_pads_to_max():
     b = _stub_bundle(None)
     ids, mask = encode_inputs(b, ["hello world", "hi"], max_length=64)

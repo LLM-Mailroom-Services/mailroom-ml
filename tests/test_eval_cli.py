@@ -38,6 +38,14 @@ def test_cli_surface_accepts_documented_flags():
     assert ns.as_json is True
 
 
+def test_cli_write_routing_thresholds_flag():
+    ns = build_parser().parse_args([
+        "--write-routing-thresholds", "/tmp/routing_thresholds.json",
+    ])
+    assert ns.write_routing_thresholds == Path("/tmp/routing_thresholds.json")
+    assert build_parser().parse_args([]).write_routing_thresholds is None
+
+
 def test_cli_defaults_match_plan_surface():
     ns = build_parser().parse_args([])
     assert ns.subset == "test"

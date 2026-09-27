@@ -89,6 +89,36 @@ app = modal.App(APP_NAME, image=image, tags={
 })
 
 
+def _telemetry_dir_for_eval_json(dest: Path) -> Path:
+    """Sidecars live under ``reports/TEST-EVAL/telemetry/<eval-stem>/``."""
+    repo_root = Path(__file__).resolve().parent.parent
+    return repo_root / "reports" / "TEST-EVAL" / "telemetry" / dest.stem
+
+
+def _parse_eval_report_stdout(stdout: str) -> dict:
+    """Extract the eval JSON report from mixed stdout (progress lines + JSON)."""
+    text = stdout.strip()
+    if not text:
+        raise ValueError("eval_modernbert produced empty stdout")
+    try:
+        report = json.loads(text)
+        if isinstance(report, dict) and "n_docs" in report:
+            return report
+    except json.JSONDecodeError:
+        pass
+    decoder = json.JSONDecoder()
+    for idx, ch in enumerate(text):
+        if ch != "{":
+            continue
+        try:
+            report, _end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(report, dict) and "n_docs" in report:
+            return report
+    raise ValueError("eval_modernbert stdout contained no eval JSON report")
+
+
 def _ensure_stage_tree() -> None:
     """Download the pinned training dataset to ``STAGE_MOUNT`` (train app parity)."""
     if not os.environ.get("HF_TOKEN"):
@@ -148,9 +178,12 @@ def run_eval(module: str = "latest", sample: int = 50, seed: int = 42,
         cmd.append("--json")
     print("[mailroom-ml-eval] " + " ".join(cmd), flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
+    if result.stderr.strip():
+        print(result.stderr, end="", flush=True)
     if result.returncode != 0:
-        print(result.stderr[-4000:])
+        if result.stdout.strip():
+            print(result.stdout[-4000:], flush=True)
+        print(result.stderr[-4000:], flush=True)
         raise RuntimeError(f"eval_modernbert.py exited {result.returncode}")
     remote_wall = time.perf_counter() - remote_started
     out: dict = {
@@ -163,7 +196,7 @@ def run_eval(module: str = "latest", sample: int = 50, seed: int = 42,
         "gpu": "L4",
     }
     if as_json and result.stdout.strip():
-        out["report"] = json.loads(result.stdout)
+        out["report"] = _parse_eval_report_stdout(result.stdout)
     return out
 
 
@@ -258,21 +291,43 @@ def main(module: str = "latest", sample: int = 50, seed: int = 42,
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(payload + "\n", encoding="utf-8")
             print(f"[mailroom-ml-eval] wrote {dest}", flush=True)
-            rec_path = dest.with_name(dest.stem + "_experiment_record.json")
+            telem = _telemetry_dir_for_eval_json(dest)
+            telem.mkdir(parents=True, exist_ok=True)
+            rec_path = telem / "experiment_record.json"
             rec_path.write_text(
                 json.dumps(experiment_record, sort_keys=True, indent=2) + "\n",
                 encoding="utf-8",
             )
             print(f"[mailroom-ml-eval] wrote {rec_path}", flush=True)
-            trace_path = dest.with_name(dest.stem + "_otel_spans.jsonl")
+            trace_path = telem / "otel_spans.jsonl"
             flush_tracing(tracer, out_path=trace_path)
+            manifest_path = telem / "otel_spans.manifest.json"
+            if trace_path.is_file():
+                manifest_path.write_text(
+                    json.dumps(
+                        {
+                            "span_file": str(trace_path.relative_to(telem)),
+                            "n_lines": sum(1 for _ in trace_path.open()),
+                        },
+                        sort_keys=True,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
             doc_rows = per_doc_trace_rows(report.get("per_doc") or [], run_id=name)
-            doc_trace = dest.with_name(dest.stem + "_per_doc_trace.jsonl")
+            doc_trace = telem / "per_doc_trace.jsonl"
             doc_trace.write_text(
                 "\n".join(json.dumps(r, sort_keys=True) for r in doc_rows) + "\n",
                 encoding="utf-8",
             )
             print(f"[mailroom-ml-eval] wrote {doc_trace} ({len(doc_rows)} docs)", flush=True)
+            report["telemetry_paths"] = {
+                "experiment_record": str(rec_path),
+                "otel_spans": str(trace_path),
+                "per_doc_trace": str(doc_trace),
+            }
+            dest.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
         else:
             flush_tracing(tracer, out_path=None)
             print(payload)

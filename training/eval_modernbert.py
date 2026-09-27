@@ -51,6 +51,7 @@ from mailroom_ml.config import (  # noqa: E402
     CANONICAL_REPO,
     CANONICAL_REVISION,
     DATA_DIR,
+    FAST_PATH_ERROR_BUDGET,
     FINETUNE_REPO,
     FINETUNE_REVISION,
     GATE_REQUIRED_AGREEMENT,
@@ -59,6 +60,8 @@ from mailroom_ml.config import (  # noqa: E402
     RANDOM_STATE,
     ROUTE_DOC_CONFIDENCE,
     ROUTE_MARGIN,
+    ROUTE_SUBCLASS_CONFIDENCE,
+    ROUTE_WINDOW_AGREEMENT,
     SELECTIVE_RISK_MIN_N,
     STAGE_DIR,
 )
@@ -70,8 +73,14 @@ from mailroom_ml.inference import (  # noqa: E402
 from mailroom_ml.ood import score_ood  # noqa: E402
 from mailroom_ml.windows import window_document  # noqa: E402
 
-__all__ = ["build_parser", "stratified_sample", "evaluate_documents",
-           "format_report", "main"]
+__all__ = [
+    "build_comparable_metrics",
+    "build_parser",
+    "evaluate_documents",
+    "format_report",
+    "main",
+    "stratified_sample",
+]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -134,8 +143,12 @@ def _ensure_corpus_snapshot() -> None:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     try:
-        print(f"[eval_modernbert] pulling {FINETUNE_REPO} @ {FINETUNE_REVISION} "
-              f"-> {DATA_DIR}", flush=True)
+        print(
+            f"[eval_modernbert] pulling {FINETUNE_REPO} @ {FINETUNE_REVISION} "
+            f"-> {DATA_DIR}",
+            file=sys.stderr,
+            flush=True,
+        )
         snapshot_download(
             repo_id=FINETUNE_REPO,
             repo_type="dataset",
@@ -148,6 +161,7 @@ def _ensure_corpus_snapshot() -> None:
         print(
             f"[eval_modernbert] finetune pull failed ({exc}); "
             f"using public {CANONICAL_REPO} @ {CANONICAL_REVISION[:8]}…",
+            file=sys.stderr,
             flush=True,
         )
         snapshot_download(
@@ -456,7 +470,94 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
             if c["win_confs"]:
                 report.setdefault("cohorts")[cohort]["selective_risk"] = \
                     _sweep_or_refuse(bundle, c["win_confs"], c["win_correct"])
+    report["comparable_metrics"] = build_comparable_metrics(report)
     return report
+
+
+def build_comparable_metrics(report: dict) -> dict:
+    """Headline scalars for ``compare_runs.py`` / LLM sorter eval JSON pairing.
+
+    Mirrors ``training/compare_runs.py`` ``_SCALAR_KEYS`` plus per-head macro-F1,
+    cohort agreement, and the #85 routing contract reference thresholds.
+    """
+    wc = report.get("window_calibration") or {}
+    sr = report.get("selective_risk") or {}
+    ood = report.get("ood") or {}
+    per_doc = report.get("per_doc") or []
+    agreements = [float(d["agreement"]) for d in per_doc if d.get("agreement") is not None]
+    mean_agreement = round(float(np.mean(agreements)), 4) if agreements else None
+    fast_path_docs = sum(1 for d in per_doc if d.get("fast_path"))
+    per_head = report.get("per_head") or {}
+    head_ece = report.get("head_ece") or {}
+    cohorts_out: dict[str, dict] = {}
+    for name, c in (report.get("cohorts") or {}).items():
+        cohorts_out[name] = {
+            "n_docs": c.get("n_docs"),
+            "doc_type_accuracy": c.get("doc_type_accuracy"),
+            "mean_agreement": c.get("mean_agreement"),
+            "window_ece": c.get("window_ece"),
+        }
+        csr = c.get("selective_risk")
+        if isinstance(csr, dict):
+            cohorts_out[name]["selective_risk"] = {
+                "refused": csr.get("refused"),
+                "recommended_threshold": csr.get("recommended_threshold"),
+                "budget_met": csr.get("budget_met"),
+            }
+    selective = None
+    if sr:
+        selective = {
+            "refused": sr.get("refused"),
+            "reason": sr.get("reason"),
+            "recommended_threshold": sr.get("recommended_threshold"),
+            "budget_met": sr.get("budget_met"),
+            "coverage": sr.get("coverage"),
+            "error_budget": sr.get("error_budget", FAST_PATH_ERROR_BUDGET),
+            "n_at_pick": sr.get("n_at_pick"),
+            "min_n": sr.get("min_n", SELECTIVE_RISK_MIN_N),
+        }
+    telemetry = report.get("run_telemetry") or {}
+    return {
+        "schema": "mailroom-ml/comparable-metrics/v1",
+        "purpose": "paired compare_runs / LLM sorter shadow eval",
+        "n_docs": report.get("n_docs"),
+        "eval_subset": report.get("eval_subset"),
+        "doc_type_accuracy": report.get("doc_type_accuracy"),
+        "subclass_accuracy_conditional": report.get("subclass_accuracy_conditional"),
+        "window_ece": wc.get("ece"),
+        "window_band_ece": wc.get("band_ece"),
+        "n_windows": wc.get("n_windows"),
+        "mean_window_agreement": mean_agreement,
+        "fast_path_rate": report.get("fast_path_rate"),
+        "fast_path_n_docs": fast_path_docs,
+        "selective_risk": selective,
+        "ood_rate": ood.get("rate"),
+        "ood_probe_status": ood.get("probe_status"),
+        "per_head_macro_f1": {
+            head: m.get("macro_f1") for head, m in sorted(per_head.items())
+        },
+        "per_head_ece": head_ece,
+        "cohorts": cohorts_out,
+        "routing_contract": {
+            "composite_score": "p_calibrated * agreement * margin",
+            "gate_thresholds": {
+                "route_doc_confidence": ROUTE_DOC_CONFIDENCE,
+                "route_subclass_confidence": ROUTE_SUBCLASS_CONFIDENCE,
+                "route_window_agreement": ROUTE_WINDOW_AGREEMENT,
+                "route_margin": ROUTE_MARGIN,
+                "gate_required_agreement": GATE_REQUIRED_AGREEMENT,
+            },
+            "fast_path_error_budget": FAST_PATH_ERROR_BUDGET,
+        },
+        "latency_seconds_per_document": telemetry.get("latency_seconds_per_document"),
+        "compare_runs_scalar_keys": [
+            "doc_type_accuracy",
+            "window_ece",
+            "fast_path_rate",
+            "selective_risk.recommended_threshold",
+            "ood.rate",
+        ],
+    }
 
 
 def _cohort_report(cohorts: dict[str, dict]) -> dict:
@@ -637,6 +738,18 @@ def format_report(report: dict) -> str:
         f"flagged={(report.get('ood') or {}).get('n_flagged')} "
         f"rate={(report.get('ood') or {}).get('rate')}",
     ]
+    cm = report.get("comparable_metrics") or {}
+    if cm:
+        lines += ["", "comparable metrics (LLM sorter / compare_runs):"]
+        lines.append(f"  schema            : {cm.get('schema')}")
+        lines.append(f"  mean_agreement    : {cm.get('mean_window_agreement')}")
+        sr_cm = cm.get("selective_risk") or {}
+        if sr_cm.get("refused"):
+            lines.append(f"  selective_risk    : REFUSED ({sr_cm.get('reason')})")
+        elif sr_cm:
+            lines.append(
+                f"  selective_risk    : threshold={sr_cm.get('recommended_threshold')} "
+                f"budget_met={sr_cm.get('budget_met')}")
     lines += ["", "recorded gates (report-only, plan §7):"]
     for name, g in report["recorded_gates"].items():
         lines.append(f"  {name:<12s} actual {g['actual']} vs "

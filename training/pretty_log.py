@@ -828,7 +828,6 @@ def render_step_event(
         ep_label = "routing windows → plurality vote"
 
     inner_w = max(width - 2, 20)
-    content_w = inner_w - 1
     bar_w = 12 if width < 52 else (30 if width > 70 else 22)
     bar = progress_bar(micro_done, micro_planned, width=bar_w, tick=tick, on=bool(on))
     load_ln = _loading_status_line(micro_done, micro_planned, blink=blink, on=bool(on))
@@ -927,7 +926,6 @@ def render_epoch_event(
         return _metric(label, value, label_w=12, total_w=content_w, on=bool(on))
 
     head_f1 = row.get("per_head_macro_f1_observed") or {}
-    head_ece = row.get("per_head_ece_calibrated") or {}
     head_bits: list[str] = []
     if isinstance(head_f1, dict) and head_f1:
         for h in sorted(head_f1)[:6]:
@@ -1008,7 +1006,6 @@ def render_test_step_event(
     wall_s = row.get("wall_s")
     face = owl_emoticon(blink=blink, on=on)
     title = f"{face} test doc {done}/{planned} → GATE · held-out @ 8192"
-    inner_w = max(width - 2, 20)
     bar_w = 12 if width < 52 else (30 if width > 70 else 22)
     bar = progress_bar(done, planned, width=bar_w, tick=tick, on=bool(on))
     prev_dt = (prev_row or {}).get("doc_type_acc")
@@ -1818,10 +1815,10 @@ def _side_by_side(left: str, right: str, *, gap: int = 2) -> str:
     left_w = max((_visible_len(x) for x in left_lines), default=0)
     out: list[str] = []
     for i in range(n):
-        l = left_lines[i] if i < len(left_lines) else " " * left_w
+        left_ln = left_lines[i] if i < len(left_lines) else " " * left_w
         r = right_lines[i] if i < len(right_lines) else ""
-        l = _pad_visible(l, left_w)
-        out.append(l + " " * gap + r)
+        left_ln = _pad_visible(left_ln, left_w)
+        out.append(left_ln + " " * gap + r)
     return "\n".join(out)
 
 
@@ -2152,7 +2149,8 @@ def follow_live(
                 _file_sig(epoch_path),
                 _file_sig(test_path),
             )
-            changed = sig != last_sig
+            if sig != last_sig:
+                pass  # signature bump — follow loop refreshes panels
             last_sig = sig
 
             lock_line = None

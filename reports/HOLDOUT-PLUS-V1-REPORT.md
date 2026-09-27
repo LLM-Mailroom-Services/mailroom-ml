@@ -130,16 +130,18 @@ $0.80/hr L4. The pool will not crash or fail-open on windowing.
   approval before spending it; the set is built and the crash is fixed, so the
   next run should complete in one attempt.
 
+**Next agent:** [mailroom-ml #40](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40) (full plan + progress), [`governance/HELDOUT-PLUS-PLAN-AND-PROGRESS.md`](../governance/HELDOUT-PLUS-PLAN-AND-PROGRESS.md), [`governance/HELDOUT-PLUS-EVAL-PICKUP.md`](../governance/HELDOUT-PLUS-EVAL-PICKUP.md), PR [#39](https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39).
+
 ## Run the one-shot GPU eval (~$0.16)
 
 **Do not** run smoke or partial samples — one full pass only.
 
 | Path | Command |
 | --- | --- |
-| **exios66 shell** | `export HF_TOKEN=… MODAL_TOKEN_ID=… MODAL_TOKEN_SECRET=…` (or put them in gitignored `secrets.env`) then `./training/run_heldout_plus_modal_eval.sh`. Use `SKIP_DEPLOY=1` only if `eval_app` already baked the current `data/heldout_plus_v1`. |
-| **GitHub Actions** | Actions → **heldout-plus-modal-eval** → Run workflow (repo secrets: same three vars). |
+| **exios66 shell** | `export MODAL_TOKEN_ID=… MODAL_TOKEN_SECRET=…` (optional `HF_TOKEN` for private Hub; public pins suffice). Or gitignored `secrets.env` from `secrets.env.example`, then `./training/run_heldout_plus_modal_eval.sh`. Use `SKIP_DEPLOY=1` only if `eval_app` already baked the current `data/heldout_plus_v1`. |
+| **GitHub Actions** | Actions → **heldout-plus-modal-eval** → Run workflow (repo secrets: **Modal required**; `HF_TOKEN` optional). Use branch **main** (or a PR branch that includes the workflow’s `push_results` step). On success, artifacts upload plus an optional push to **`heldout-plus-eval/<run_tag>`** (input `push_results`, default true). |
 
-Outputs: `reports/eval_<run_tag>-heldout-plus.json` and `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-*.md`.
+Outputs: `reports/eval_<run_tag>-heldout-plus.json` and `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-*.md` (local run, GHA artifact, or branch `heldout-plus-eval/<run_tag>`).
 
 ## Phase 2 (tracked, not started)
 
@@ -149,3 +151,9 @@ Outputs: `reports/eval_<run_tag>-heldout-plus.json` and `reports/TEST-EVAL/TEST-
    content-overlap check vs training contracts.
 4. Publish `heldout-plus-v1` as a versioned Hub dataset once the set is validated
    by a clean GPU eval.
+
+## GPU validation (2026-09-27)
+
+- Eval JSON: `reports/eval_m9a-local-20260927-014429-heldout-plus.json`
+- Report: `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9a-local-20260927-014429.md`
+- n_docs=1323 windows=1554

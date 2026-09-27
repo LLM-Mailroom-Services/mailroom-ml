@@ -2,7 +2,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 L4_USD_PER_HOUR = 0.80
 MODERNBERT_MODEL_ID = "Lucius-Morningstar/mailroom-modernbert-classifier"

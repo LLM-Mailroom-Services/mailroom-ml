@@ -43,7 +43,6 @@ import numpy as np
 import pandas as pd
 
 from mailroom_ml.dataset import (
-    dedup_by_sha,
     filename_leak_audit,
 )
 from mailroom_ml.labels import normalize_subclass

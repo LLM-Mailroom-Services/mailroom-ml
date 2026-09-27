@@ -3,7 +3,8 @@
 # Deliberately minimal GPU surface: ONE deploy (bakes plus parquet) + ONE run.
 #
 # Prerequisites (env):
-#   HF_TOKEN, MODAL_TOKEN_ID, MODAL_TOKEN_SECRET (exios66 workspace)
+#   MODAL_TOKEN_ID, MODAL_TOKEN_SECRET (exios66 workspace) — required
+#   HF_TOKEN — optional for heldout-plus (public corpus + pinned training data)
 #
 # Usage:
 #   RUN_TAG=m9a-local-20260927-014429 MODULE=latest \
@@ -22,17 +23,36 @@ if [[ -f "${ROOT}/secrets.env" ]]; then
   set -a && source "${ROOT}/secrets.env" && set +a
 fi
 
-: "${HF_TOKEN:?export HF_TOKEN (finetune + Enron + Modal stage pull)}"
-: "${MODAL_TOKEN_ID:?export MODAL_TOKEN_ID for exios66}"
-: "${MODAL_TOKEN_SECRET:?export MODAL_TOKEN_SECRET for exios66}"
+if [[ -z "${HF_TOKEN:-}${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
+  _hf_cached="$(uv run python -c "from huggingface_hub import get_token; print(get_token() or '')" 2>/dev/null || true)"
+  if [[ -n "${_hf_cached}" ]]; then
+    export HF_TOKEN="${_hf_cached}"
+    echo "[heldout-plus] HF_TOKEN from huggingface_hub cache (not logged)" >&2
+  fi
+  unset _hf_cached
+fi
+if [[ -z "${HF_TOKEN:-}${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
+  echo "[heldout-plus] ERROR: HF_TOKEN required (private mailroom-finetune pin for eval)" >&2
+  echo "  export HF_TOKEN=… or add to secrets.env (gitignored)" >&2
+  exit 1
+fi
+export HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
 
 export MODAL_PROFILE="${MODAL_PROFILE:-exios66}"
-uv run --extra deploy modal token set \
-  --token-id "${MODAL_TOKEN_ID}" \
-  --token-secret "${MODAL_TOKEN_SECRET}" \
-  --profile "${MODAL_PROFILE}" \
-  --activate \
-  --verify
+if [[ -n "${MODAL_TOKEN_ID:-}" && -n "${MODAL_TOKEN_SECRET:-}" ]]; then
+  uv run --extra deploy modal token set \
+    --token-id "${MODAL_TOKEN_ID}" \
+    --token-secret "${MODAL_TOKEN_SECRET}" \
+    --profile "${MODAL_PROFILE}" \
+    --activate \
+    --verify
+else
+  echo "[heldout-plus] MODAL_TOKEN_* unset — using existing Modal profile ${MODAL_PROFILE}" >&2
+  if ! MODAL_PROFILE="${MODAL_PROFILE}" uv run --extra deploy modal app list >/dev/null 2>&1; then
+    echo "ERROR: Modal profile ${MODAL_PROFILE} not authenticated — export MODAL_TOKEN_ID + MODAL_TOKEN_SECRET" >&2
+    exit 1
+  fi
+fi
 
 RUN_TAG="${RUN_TAG:-m9a-local-20260927-014429}"
 MODULE="${MODULE:-latest}"

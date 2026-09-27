@@ -16,6 +16,7 @@ M9a local training session. Metrics here come from `training/eval_modernbert.py`
 | [gates-check-armA.txt](./gates-check-armA.txt) | `check_m9a_gates.py` output (Arm A) |
 | [eval_m9a-local-20260927-014429.json](./eval_m9a-local-20260927-014429.json) | Eval artifact copy (constellation / import friendly) |
 | [eval_m9a-local-gpu1-armA-1ep-20260927-025236.json](./eval_m9a-local-gpu1-armA-1ep-20260927-025236.json) | Eval artifact copy |
+| [telemetry/](./telemetry/) | Modal eval sidecars (`experiment_record`, OTLP spans, per-doc trace) |
 
 **Sibling training-focused write-ups** (validation epochs, wall time, Hub publish
 notes) remain under `reports/M9a-REPORT-*.md` and
@@ -38,8 +39,14 @@ and #112 gates.
 The harness emits JSON with: doc_type and conditional subclass accuracy,
 window-level calibrated ECE (+ band ECE), per-head test macro-F1 with per-class
 **support**, #104 single- vs multi-window **cohorts**, selective-risk sweep
-(when sidecars permit), and **recorded_gates** (P0 report-only thresholds
-separate from #112).
+(when sidecars permit), **recorded_gates** (P0 report-only thresholds
+separate from #112), and a top-level **`comparable_metrics`** block
+(`mailroom-ml/comparable-metrics/v1`) for pairing with LLM sorter eval exports
+via `training/compare_runs.py`.
+
+Canonical eval JSON lives under `reports/eval_*.json`; this directory holds
+TEST-EVAL copies, markdown reports, and `telemetry/<eval-stem>/` sidecars from
+Modal runs (never co-located as `*_otel_spans.jsonl` beside the canonical JSON).
 
 Reproduce gate summary:
 

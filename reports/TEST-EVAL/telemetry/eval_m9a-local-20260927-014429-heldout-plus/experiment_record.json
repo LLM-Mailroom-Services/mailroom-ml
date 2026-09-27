@@ -1,0 +1,55 @@
+{
+  "artifact_sha": "10cfcd60a91f5160e3870e1d0a666cc6436eee3062939962456ad65c77910caa",
+  "checkpoint": "/checkpoints/latest",
+  "classifier": "modernbert",
+  "dataset_fingerprint": "modernbert-heldout-plus-n1323-per_stratum0-seed42-10cfcd60a91f",
+  "e2e_latency_seconds": 0.183111,
+  "estimated_gpu_cost_usd": 0.053835,
+  "eval_split_counts": {
+    "test": 1323
+  },
+  "eval_subset": "heldout-plus",
+  "experiment_name": "modernbert_heldout-plus_n1323_seed42",
+  "fast_path_rate": 0.0,
+  "finetune_revision": "19720ceb4e29bc3134a88507aa57cdfac7a64a1b",
+  "gpu": "L4",
+  "gpu_cost_per_document": 4.069e-05,
+  "mock": false,
+  "modal_app": "mailroom-ml-eval",
+  "model": "Lucius-Morningstar/mailroom-modernbert-classifier",
+  "model_kind": "pytorch",
+  "n": 1323,
+  "profile": "exios66",
+  "provider": "modal-gpu",
+  "recorded_gates": {
+    "P0_doc_type": {
+      "actual": 0.0128,
+      "met": false,
+      "report_only": true,
+      "threshold": 0.95
+    },
+    "P0_subclass": {
+      "actual": 0.2353,
+      "met": false,
+      "report_only": true,
+      "threshold": 0.75
+    }
+  },
+  "sample_per_stratum": 0,
+  "scores": {
+    "accuracy": 0.0128,
+    "doc_type_accuracy": 0.0128,
+    "exact_match": 0.0128,
+    "subclass_accuracy": 0.2353
+  },
+  "serving_kind": "modernbert",
+  "suite": "modernbert_eval",
+  "task": "modernbert_eval",
+  "tracing_backend": "phoenix",
+  "wall_seconds": 242.256,
+  "window_calibration": {
+    "band_ece": 0.0,
+    "ece": 0.1991,
+    "n_windows": 1554
+  }
+}

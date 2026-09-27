@@ -58,6 +58,7 @@ markers = [
 [tool.ruff]
 line-length = 88
 target-version = "py311"
+extend-exclude = ["*.sh"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

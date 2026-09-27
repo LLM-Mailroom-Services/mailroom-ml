@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "training"))
 
 from compare_runs import compare_reports, format_markdown, load_eval_json  # noqa: E402
+from eval_modernbert import build_comparable_metrics  # noqa: E402
 
 TEST_EVAL = ROOT / "reports" / "TEST-EVAL"
 MANIFEST = TEST_EVAL / "MANIFEST.json"
@@ -140,6 +141,44 @@ def _write_report(
     ]
     for head, m in (report.get("per_head") or {}).items():
         lines.append(f"- **{head}**: macro_f1={m.get('macro_f1')}")
+    cm = report.get("comparable_metrics") or build_comparable_metrics(report)
+    lines += [
+        "",
+        "## LLM sorter comparable metrics (`compare_runs` / shadow eval)",
+        "",
+        "Structured block also embedded in eval JSON as `comparable_metrics` "
+        "(schema `mailroom-ml/comparable-metrics/v1`). Pair with an LLM sorter "
+        "eval export via `training/compare_runs.py` on shared filenames.",
+        "",
+        "| Metric | Value |",
+        "| --- | ---: |",
+        f"| doc_type_accuracy | {cm.get('doc_type_accuracy')} |",
+        f"| subclass_accuracy_conditional | {cm.get('subclass_accuracy_conditional')} |",
+        f"| window_ece | {cm.get('window_ece')} |",
+        f"| window_band_ece | {cm.get('window_band_ece')} |",
+        f"| mean_window_agreement | {cm.get('mean_window_agreement')} |",
+        f"| fast_path_rate | {cm.get('fast_path_rate')} |",
+        f"| fast_path_n_docs | {cm.get('fast_path_n_docs')} |",
+        f"| ood_rate | {cm.get('ood_rate')} |",
+    ]
+    sr = cm.get("selective_risk") or {}
+    if sr.get("refused"):
+        lines.append(f"| selective_risk | REFUSED: {sr.get('reason')} |")
+    elif sr:
+        lines.append(
+            f"| selective_risk threshold | {sr.get('recommended_threshold')} "
+            f"(budget_met={sr.get('budget_met')}, coverage={sr.get('coverage')}) |"
+        )
+    lat = cm.get("latency_seconds_per_document")
+    if lat is not None:
+        lines.append(f"| latency_s_per_doc (Modal) | {lat} |")
+    lines += [
+        "",
+        "### Per-head macro-F1 (comparable block)",
+        "",
+    ]
+    for head, mf1 in (cm.get("per_head_macro_f1") or {}).items():
+        lines.append(f"- **{head}**: {mf1}")
     if baseline:
         cmp_payload = compare_reports(baseline, report, cohort="")
         cmp_text = format_markdown(
@@ -174,6 +213,8 @@ def _update_manifest(run_tag: str, eval_name: str, report: dict) -> None:
         "eval_subset": report.get("eval_subset"),
         "artifact_sha": report.get("artifact_sha"),
         "note": "Extended pool; not used for #112 gate replacement.",
+        "comparable_metrics_schema": "mailroom-ml/comparable-metrics/v1",
+        "telemetry_dir": f"reports/TEST-EVAL/telemetry/{eval_name.replace('.json', '')}",
     }
     runs = manifest.get("runs") or []
     runs = [r for r in runs if r.get("run_tag") != run_tag or r.get("role") != entry["role"]]

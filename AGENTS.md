@@ -147,6 +147,8 @@ One-shot **1,323-doc** held-out-plus test eval on **exios66 Modal L4**
 - **Done when:** `reports/eval_<run_tag>-heldout-plus.json` has
   `eval_subset: heldout-plus` and `n_docs: 1323`, plus TEST-EVAL 323 vs 1,323
   markdown under `reports/TEST-EVAL/`.
+- **Pickup issue:** mailroom-ml **#40**; full handoff
+  `governance/HELDOUT-PLUS-EVAL-PICKUP.md`; PR **#39**.
 
 ## Data & Hub pin law
 

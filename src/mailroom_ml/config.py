@@ -3,7 +3,7 @@
 All Hub pins are verified against the live Hub API (2026-09-18):
 
 - ``mailroom-dataset`` (canonical, immutable eval corpus) @
-  46a4d3c240a36671cde0182fff4960f6b8b73aca — the evals harness pin.
+  ed7576b676343e0b402ec5412cded301e629bdee — the evals harness pin (v9.1).
 - ``mailroom-finetune`` (the working duplicate for ML) @
   19720ceb4e29bc3134a88507aa57cdfac7a64a1b — created 2026-09-18, byte-schema
   identical to the canonical corpus (36-col ``ground_truth`` incl.
@@ -35,7 +35,7 @@ REPORTS_DIR = ROOT / "reports"
 # Hub pins (verified 2026-09-18 against api.huggingface.co)
 # ---------------------------------------------------------------------------
 CANONICAL_REPO = "Lucius-Morningstar/mailroom-dataset"
-CANONICAL_REVISION = "46a4d3c240a36671cde0182fff4960f6b8b73aca"
+CANONICAL_REVISION = "ed7576b676343e0b402ec5412cded301e629bdee"
 
 # The modifiable working copy — change this one constant if the duplicate is
 # ever re-homed under a different repo id.

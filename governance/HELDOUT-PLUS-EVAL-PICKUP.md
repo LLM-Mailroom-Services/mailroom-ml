@@ -2,7 +2,7 @@
 
 > **Full original plan + progress log:** [`HELDOUT-PLUS-PLAN-AND-PROGRESS.md`](./HELDOUT-PLUS-PLAN-AND-PROGRESS.md) (canonical; mirrored in [#40](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40) and [#39](https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39)).
 
-**Status:** BLOCKED on credentials / manual GHA dispatch (2026-09-27 UTC).  
+**Status:** BLOCKED on credentials / manual GHA dispatch (2026-09-27 UTC; re-verified same pod `bc-01a0e2b1`).  
 **Parent context:** mailroom-issues **#112** (M9a); extended monitoring pool, **not** the canonical 323-doc #112 gates.  
 **Cloud agent run that prepared this handoff:** `bc-01a0e2b1-55b8-787b-a518-e08c7ce8dfc5`  
 **PR (merge before or dispatch from):** https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39  
@@ -44,7 +44,8 @@ Then produce **TEST-EVAL interpretation** including **323 vs 1,323** slices and 
 ### CPU / local (this VM snapshot)
 
 - Pool: `data/heldout_plus_v1/` — `audit.json` → `gates_ok: true`, `selected: 1000`, seed 42 (**gitignored**; rebuild below if missing).
-- Preflight: `uv run python training/preflight_heldout_plus.py` → 1323/1323 windowed, 1554 windows.
+- Preflight (2026-09-27): `uv run python training/preflight_heldout_plus.py` → **1323 docs, 1554 windows**, `preflight heldout-plus OK`.
+- Environment setup actions requested for `MODAL_TOKEN_ID` / `MODAL_TOKEN_SECRET` (+ optional `HF_TOKEN`) on environment `f88eb111-b84f-11f1-977f-f6b8f2fcf9b2` — **start a new agent after saving secrets**.
 - Baseline 323 eval: `reports/eval_m9a-local-20260927-014429.json`.
 
 ### Code on branch `cursor/heldout-plus-modal-hf-optional-dfc5` (PR #39)

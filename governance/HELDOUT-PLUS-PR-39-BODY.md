@@ -1,3 +1,9 @@
+## This pull request
+
+Ships held-out-plus Modal eval tooling + GHA results push + handoff for [#40](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40). **Next agent:** §5 below + [`HELDOUT-PLUS-EVAL-PICKUP.md`](https://github.com/LLM-Mailroom-Services/mailroom-ml/blob/cursor/heldout-plus-modal-hf-optional-dfc5/governance/HELDOUT-PLUS-EVAL-PICKUP.md).
+
+---
+
 # Held-out-plus — full original plan, progress, and remaining work
 
 > **Issue #40 / PR #39 bodies:** GitHub’s Cursor integration cannot edit issue #40 or post comments (403). This file is the **canonical** full plan + progress — it is committed on branch `cursor/heldout-plus-modal-hf-optional-dfc5` and copied into [`HELDOUT-PLUS-PR-39-BODY.md`](./HELDOUT-PLUS-PR-39-BODY.md) for the PR description. To mirror on #40, paste this file into the issue description in the GitHub UI.

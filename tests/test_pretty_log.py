@@ -10,11 +10,13 @@ from training.pretty_log import (
     ALT_LEAVE,
     CURSOR_HOME,
     epoch_strip,
+    job_completed_summary,
     parse_log_step_line,
     progress_bar,
     render_epoch_event,
     render_header_banner,
     render_hardware_panel,
+    render_job_completed_banner,
     render_step_event,
     render_watch_snapshot,
     stage_gremlin,
@@ -541,6 +543,43 @@ def test_plain_output_free_of_alt_screen_sequences():
     )
     assert "?1049" not in colored
     assert CURSOR_HOME not in colored
+
+
+def test_job_completed_banner_in_snapshot():
+    summary = {
+        "epochs_run": 1,
+        "epochs": [{"epoch": 1}],
+        "wall_s": 5578.9,
+        "test_metrics": {
+            "n_docs": 323,
+            "doc_type_acc": 0.8669,
+            "subclass_acc_conditional": 0.475,
+        },
+    }
+    assert job_completed_summary(
+        run_tag="m9a-smoke",
+        trainer_lines=[],
+        jsonl_row={"epoch": 1, "epochs": 1, "micro_done": 100, "micro_planned": 100},
+        log_tail=["run summary: device=cuda"],
+        summary_path=None,
+    ) == {}
+    snap = render_watch_snapshot(
+        timestamp="2026-09-27 04:00:00",
+        lock_line=None,
+        trainer_lines=[],
+        log_tail=["run summary: device=cuda"],
+        jsonl_row={"epoch": 1, "epochs": 1, "micro_done": 100, "micro_planned": 100},
+        run_tag="m9a-smoke",
+        on=False,
+        width=80,
+        height=24,
+        resources=None,
+        summary_path=None,
+    )
+    assert "JOB COMPLETED" in snap
+    assert "stage ▸DONE◂" in snap
+    banner = render_job_completed_banner(summary, run_tag="m9a-smoke", on=False, width=60)
+    assert "test doc_type acc: 0.8669" in banner
 
 
 def test_pipeline_stages_no_gremlins():

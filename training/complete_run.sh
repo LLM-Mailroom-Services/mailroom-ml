@@ -25,6 +25,12 @@ cd "$ROOT"
 PY="${ROOT}/.venv/bin/python"
 [[ -x "$PY" ]] || { echo "missing Linux venv at .venv" >&2; exit 1; }
 
+hf_hub_token_ready() {
+  [[ -n "${HF_TOKEN:-}${HUGGING_FACE_HUB_TOKEN:-}" ]] && return 0
+  "$PY" -c "from huggingface_hub import get_token; raise SystemExit(0 if get_token() else 1)" \
+    >/dev/null 2>&1
+}
+
 RUN_TAG=""
 PUBLISH=0
 DRY_RUN=0
@@ -151,8 +157,8 @@ if (( GATE_RC != 0 )) && (( FORCE_PUBLISH == 0 )) && (( DRY_RUN == 0 )); then
   exit "$GATE_RC"
 fi
 
-if [[ -z "${HF_TOKEN:-}" && -z "${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
-  echo "SKIP Hub publish: HF_TOKEN not set — dry-run plan:" >&2
+if ! hf_hub_token_ready; then
+  echo "SKIP Hub publish: no Hub token (HF_TOKEN or hf auth login) — dry-run plan:" >&2
   "${PUBLISH_ARGS[@]}" --dry-run
   exit "$GATE_RC"
 fi

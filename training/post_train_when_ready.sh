@@ -54,10 +54,16 @@ try_complete() {
     return 0
   fi
   echo "=== complete_run: $tag on GPU $gpu ==="
-  CUDA_VISIBLE_DEVICES="$gpu" ./training/complete_run.sh --run-tag "$tag"
-  if [[ "$tag" == "$TAG_A" ]]; then
-    touch "$MARKER"
+  local rc=0
+  CUDA_VISIBLE_DEVICES="$gpu" ./training/complete_run.sh --run-tag "$tag" || rc=$?
+  if [[ -f "$eval" ]]; then
+    if [[ "$tag" == "$TAG_A" ]]; then
+      touch "$MARKER"
+    fi
+    echo "NOTE $tag eval+gates done (complete_run exit=$rc; gate FAIL is ok for smoke compare)"
+    return 0
   fi
+  return "$rc"
 }
 
 CUSTOM_TAG=""

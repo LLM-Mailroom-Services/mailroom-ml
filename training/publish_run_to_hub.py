@@ -209,7 +209,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _token_present() -> bool:
-    return bool(os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"))
+    if os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN"):
+        return True
+    try:
+        from huggingface_hub import get_token
+
+        return bool(get_token())
+    except Exception:
+        return False
 
 
 def main(argv: list[str] | None = None) -> int:

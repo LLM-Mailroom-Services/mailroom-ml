@@ -197,10 +197,22 @@ if (( PRETTY == 1 )) && [[ -x "$PY" ]]; then
   (( INTERVAL_SET == 0 )) && live_iv=2
   live_args=( -m training.pretty_log --follow --interval "$live_iv" )
   (( PLAIN == 1 )) && live_args+=( --plain )
-  [[ -n "$LOG" ]] && live_args+=( --log "$LOG" )
+  follow_tag=""
+  if [[ -n "$LOG" ]]; then
+    live_args+=( --log "$LOG" )
+    follow_tag="$(basename "$LOG" .log)"
+    live_args+=( --run-tag "$follow_tag" )
+  fi
   [[ -n "$JSONL" ]] && live_args+=( --jsonl "$JSONL" )
   [[ -n "$EPOCH_JSONL" ]] && live_args+=( --epoch-jsonl "$EPOCH_JSONL" )
-  [[ -f "$LOCK" ]] && live_args+=( --lock-path "$LOCK" )
+  # Only attach canonical lock when watching that run (avoid GPU0 lock on GPU1 log watch).
+  if [[ -f "$LOCK" ]]; then
+    lock_tag=""
+    read -r _ lock_tag _ < "$LOCK" 2>/dev/null || lock_tag=""
+    if [[ -z "$follow_tag" || "$follow_tag" == "$lock_tag" ]]; then
+      live_args+=( --lock-path "$LOCK" )
+    fi
+  fi
   if ( cd "$ROOT" && "$PY" "${live_args[@]}" ); then
     exit 0
   fi

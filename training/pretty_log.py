@@ -1070,6 +1070,135 @@ def _active_stage(jsonl_row: dict | None, epoch_jsonl_row: dict | None) -> str:
     return "TRAIN"
 
 
+def _filter_trainers_for_run(trainer_lines: list[str], run_tag: str | None) -> list[str]:
+    if not run_tag:
+        return trainer_lines
+    needle = f"runs/{run_tag}/"
+    return [ln for ln in trainer_lines if needle in ln or f"/{run_tag}/" in ln]
+
+
+def summary_path_for_watch(
+    run_tag: str | None,
+    jsonl_path: Path | None,
+    log_path: Path | None,
+) -> Path | None:
+    if jsonl_path and jsonl_path.is_file():
+        if jsonl_path.name == "train_steps.jsonl" and jsonl_path.parent.name == "latest":
+            candidate = jsonl_path.parent / "summary.json"
+            if candidate.is_file():
+                return candidate
+    tag = run_tag
+    if not tag and log_path and log_path.suffix == ".log":
+        tag = log_path.stem
+    if not tag:
+        return None
+    for base in (Path.cwd(), Path(__file__).resolve().parent.parent):
+        candidate = base / "data/modernbert_training/runs" / tag / "latest/summary.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _planned_epoch_count(summary: dict[str, Any], jsonl_row: dict | None) -> int | None:
+    epochs = summary.get("epochs")
+    if isinstance(epochs, list):
+        if epochs:
+            return len(epochs)
+        # Fall through — some summaries use epochs=[] until first boundary.
+    elif isinstance(epochs, int) and epochs > 0:
+        return epochs
+    for key in ("num_epochs", "max_epochs", "n_epochs"):
+        val = summary.get(key)
+        if val is not None:
+            try:
+                return int(val)
+            except (TypeError, ValueError):
+                pass
+    if jsonl_row:
+        try:
+            n = int(jsonl_row.get("epochs") or 0)
+            return n if n > 0 else None
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def job_completed_summary(
+    *,
+    run_tag: str | None,
+    trainer_lines: list[str],
+    jsonl_row: dict | None,
+    log_tail: list[str],
+    summary_path: Path | None,
+) -> dict[str, Any] | None:
+    """True when this run's trainer has exited and planned epochs finished."""
+    if trainer_lines:
+        return None
+    summary: dict[str, Any] | None = None
+    if summary_path and summary_path.is_file():
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            summary = None
+    if summary:
+        planned = _planned_epoch_count(summary, jsonl_row)
+        er = int(summary.get("epochs_run") or 0)
+        if planned and er >= planned:
+            return summary
+    if log_tail and any("run summary:" in ln for ln in log_tail):
+        return summary or {}
+    if jsonl_row:
+        md = int(jsonl_row.get("micro_done") or 0)
+        mp = int(jsonl_row.get("micro_planned") or 0)
+        ep = int(jsonl_row.get("epoch") or 0)
+        eps = int(jsonl_row.get("epochs") or 0)
+        if mp > 0 and md >= mp and eps > 0 and ep >= eps:
+            return summary or {}
+    return None
+
+
+def render_job_completed_banner(
+    summary: dict[str, Any],
+    *,
+    run_tag: str | None,
+    on: bool,
+    width: int,
+) -> str:
+    p = palette(on)
+    tag = run_tag or summary.get("run_id") or "run"
+    tm = summary.get("test_metrics") or {}
+    dt = tm.get("doc_type_acc")
+    sc = tm.get("subclass_acc_conditional")
+    n = tm.get("n_docs")
+    wall = summary.get("wall_s")
+    lines: list[str] = [
+        "JOB COMPLETED",
+        f"run: {tag}",
+    ]
+    if wall is not None:
+        try:
+            lines.append(f"train wall: {float(wall):.0f}s")
+        except (TypeError, ValueError):
+            pass
+    if n is not None:
+        lines.append(f"held-out docs: {n}")
+    if dt is not None:
+        lines.append(f"test doc_type acc: {float(dt):.4f}")
+    if sc is not None:
+        lines.append(f"test subclass acc (cond): {float(sc):.4f}")
+    lines.append("trainer stopped · post-train: complete_run.sh")
+    title = p["gold"]("✓ COMPLETE") if on else "✓ COMPLETE"
+    styled: list[str] = []
+    for i, ln in enumerate(lines):
+        if i == 0:
+            styled.append(p["gold"](ln) if on else ln)
+        elif on:
+            styled.append(p["cream"](ln))
+        else:
+            styled.append(ln)
+    return _box(title, styled, on=on, width=width)
+
+
 def _trainer_pid(lock_line: str | None) -> int | None:
     if not lock_line:
         return None
@@ -1251,6 +1380,7 @@ def render_watch_snapshot(
     prev_step_row: dict | None = None,
     blink: bool = False,
     tick: int = 0,
+    summary_path: Path | None = None,
 ) -> str:
     on = use_color() if on is None else on
     p = palette(on)
@@ -1270,13 +1400,37 @@ def render_watch_snapshot(
     chunks.extend(render_header_banner(run_tag=run_tag, on=on, width=panel_w, blink=blink, compact=compact))
     chunks.append("")
 
-    stage = _active_stage(jsonl_row, epoch_jsonl_row)
+    completed = job_completed_summary(
+        run_tag=run_tag,
+        trainer_lines=trainer_lines,
+        jsonl_row=jsonl_row,
+        log_tail=log_tail,
+        summary_path=summary_path,
+    )
+    stage = "DONE" if completed is not None else _active_stage(jsonl_row, epoch_jsonl_row)
     chunks.append(render_status_bar(timestamp=timestamp, stage=stage, on=on, width=panel_w, blink=blink))
 
+    if completed is not None:
+        chunks.append(
+            render_job_completed_banner(
+                completed,
+                run_tag=run_tag,
+                on=on,
+                width=panel_w,
+            )
+        )
+        chunks.append("")
+
     meta: list[str] = []
+    if run_tag:
+        meta.append(f"watch: {run_tag}")
     if lock_line:
-        meta.append(f"lock: {lock_line.strip()}")
-    else:
+        lock_tag = lock_line.strip().split()[1] if len(lock_line.strip().split()) > 1 else ""
+        if run_tag and lock_tag and lock_tag != run_tag:
+            meta.append(f"lock (canonical GPU0): {lock_line.strip()}")
+        else:
+            meta.append(f"lock: {lock_line.strip()}")
+    elif not run_tag:
         meta.append("lock: (none)")
     if trainer_lines:
         meta.append("trainer: running")
@@ -1352,9 +1506,10 @@ def render_watch_snapshot(
             chunks.append(render_hardware_panel(resources, on=on, width=box_w, compact=False, blink=blink))
 
     face = owl_emoticon(blink=blink, on=on)
-    footer_plain = f"{owl_emoticon(blink=blink, on=False)} {mailroom_route_banner()}  ·  {mailroom_pipeline_hint(stage)}"
+    pipe_stage = "HUB" if stage == "DONE" else stage
+    footer_plain = f"{owl_emoticon(blink=blink, on=False)} {mailroom_route_banner()}  ·  {mailroom_pipeline_hint(pipe_stage)}"
     if on:
-        footer = face + " " + p["dim"](f"{mailroom_route_banner()}  ·  {mailroom_pipeline_hint(stage)}")
+        footer = face + " " + p["dim"](f"{mailroom_route_banner()}  ·  {mailroom_pipeline_hint(pipe_stage)}")
         chunks.append(_panel_row(footer, on=False, sides=True, width=panel_w))
     else:
         chunks.append(_panel_row(footer_plain, on=on, sides=True, width=panel_w))
@@ -1497,6 +1652,11 @@ def follow_live(
                         continue
             except Exception:
                 pass
+            eff_tag = run_tag
+            if not eff_tag and log_path and log_path.suffix == ".log":
+                eff_tag = log_path.stem
+            trainer_lines = _filter_trainers_for_run(trainer_lines, eff_tag)
+            summary_p = summary_path_for_watch(eff_tag, jsonl_path, log_path)
             log_tail: list[str] = []
             if log_path and log_path.is_file():
                 try:
@@ -1512,6 +1672,9 @@ def follow_live(
             resources = sample_resources(lock_line, trainer_lines)
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             blink = (tick % 6 == 5)
+            snap_tag = run_tag or eff_tag or (
+                lock_line.split()[1] if lock_line and len(lock_line.split()) > 1 else None
+            )
             text = render_watch_snapshot(
                 timestamp=ts,
                 lock_line=lock_line,
@@ -1519,12 +1682,13 @@ def follow_live(
                 log_tail=log_tail,
                 jsonl_row=row,
                 epoch_jsonl_row=epoch_row,
-                run_tag=run_tag or (lock_line.split()[1] if lock_line and len(lock_line.split()) > 1 else None),
+                run_tag=snap_tag,
                 on=on,
                 resources=resources,
                 prev_step_row=prev_row,
                 blink=blink,
                 tick=tick,
+                summary_path=summary_p,
             )
             if use_alt:
                 sys.stdout.write(CURSOR_HOME + CLEAR_SCREEN + text)
@@ -1614,19 +1778,25 @@ def main(argv: list[str] | None = None) -> int:
             resources = sample_resources(args.lock_line or None, list(args.trainer_line))
         except Exception:
             resources = None
+        rt = args.run_tag or None
+        if not rt and args.log and args.log.suffix == ".log":
+            rt = args.log.stem
+        trainers = _filter_trainers_for_run(list(args.trainer_line), rt)
+        summ = summary_path_for_watch(rt, args.jsonl, args.log)
         text = render_watch_snapshot(
             timestamp=ts,
             lock_line=args.lock_line or None,
-            trainer_lines=list(args.trainer_line),
+            trainer_lines=trainers,
             log_tail=log_tail,
             jsonl_row=row,
             epoch_jsonl_row=epoch_row,
-            run_tag=args.run_tag or None,
+            run_tag=rt,
             on=on,
             width=args.width,
             height=args.height,
             resources=resources,
             prev_step_row=prev_row,
+            summary_path=summ,
         )
         sys.stdout.write(text)
         return 0

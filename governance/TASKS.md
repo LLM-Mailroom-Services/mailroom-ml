@@ -59,7 +59,7 @@ email share 0.57 train / 0.511 val, macro-F1 0.0845 ≈ the collapse floor;
 | M9a-U8 board evidence audit | general (board-evidence-auditor protocol — not callable pre-restart) | ✅ done | commit `f6a49a1` + audit: all execution claims VERIFIED (diffs, 233/3/3, issues #113–#116); 4 forward-narrative corrections landed |
 | M9a-U9 docs/board close | atom | ⏳ pending | — |
 | M9a-U10 **Hub release + test metrics** | operator | ⏳ **gate — post-train** | `training/publish_run_to_hub.py` + `governance/M9a-HANDOFF.md` § post-train; repo `Lucius-Morningstar/mailroom-modernbert-classifier`; **blocked until** train/eval/gates for active run `m9a-local-20260927-010430` finish |
-| **Held-out-plus Modal eval (1,323 docs)** | next agent | ⏳ **BLOCKED — Modal/GHA** | **`governance/HELDOUT-PLUS-EVAL-PICKUP.md`** + mailroom-ml issue + **PR #39**; pool CPU-ready; **zero** full L4 run; needs Modal secrets or manual GHA |
+| **Held-out-plus Modal eval (1,323 docs)** | operator / cloud | ✅ done | **`main` @ `65d2591`** (#39) + `a5f8df1`; eval JSON + TEST-EVAL 323 vs 1,323; pickup closed in follow-up PR |
 
 **M9a-U10 authoritative checklist (post-train, not optional):**
 

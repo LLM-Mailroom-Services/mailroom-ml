@@ -2,11 +2,10 @@
 
 > **Full original plan + progress log:** [`HELDOUT-PLUS-PLAN-AND-PROGRESS.md`](./HELDOUT-PLUS-PLAN-AND-PROGRESS.md) (canonical; mirrored in [#40](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40) and [#39](https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39)).
 
-**Status:** BLOCKED on credentials / manual GHA dispatch (2026-09-27 UTC; re-verified same pod `bc-01a0e2b1`).  
+**Status:** ✅ **CLOSED** — artifacts on `main` (merge **#39** `65d2591`, organize `a5f8df1`).  
 **Parent context:** mailroom-issues **#112** (M9a); extended monitoring pool, **not** the canonical 323-doc #112 gates.  
-**Cloud agent run that prepared this handoff:** `bc-01a0e2b1-55b8-787b-a518-e08c7ce8dfc5`  
-**PR (merge before or dispatch from):** https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39  
-**Dedicated tracker:** https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40
+**Evidence:** `reports/eval_m9a-local-20260927-014429-heldout-plus.json` (`eval_subset: heldout-plus`, `n_docs: 1323`, `n_windows: 1554`); TEST-EVAL compare + `MANIFEST.json` entry.  
+**Dedicated tracker:** https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40 (close with SHAs above).
 
 ---
 

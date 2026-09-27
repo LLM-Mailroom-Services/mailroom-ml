@@ -1,0 +1,5 @@
+{
+  "span_count": 1,
+  "phoenix_endpoint": null,
+  "spans_jsonl": "reports/eval_m9a-local-20260927-014429-heldout-plus_otel_spans.jsonl"
+}

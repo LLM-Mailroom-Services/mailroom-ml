@@ -4,9 +4,10 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 _SPANS: list[dict[str, Any]] = []
 
@@ -66,7 +67,9 @@ def configure_tracing(
     if use_phoenix:
         try:
             from opentelemetry import trace as oteltrace
-            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+                OTLPSpanExporter,
+            )
             from opentelemetry.sdk.resources import Resource
             from opentelemetry.sdk.trace import TracerProvider
             from opentelemetry.sdk.trace.export import BatchSpanProcessor

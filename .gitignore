@@ -24,3 +24,6 @@ secrets.env
 /.playwright-mcp/
 *.png
 .DS_Store
+
+# Editor / session scratch (never commit)
+:memory:.ses

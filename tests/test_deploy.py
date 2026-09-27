@@ -478,3 +478,17 @@ def test_spawn_train_forwards_export_onnx() -> None:
     ns = build_parser().parse_args(["--no-export-onnx"])
     assert ns.export_onnx is False
     assert build_parser().parse_args([]).export_onnx is True
+
+
+def test_eval_app_parses_mixed_stdout_json() -> None:
+    _need_modal()
+    from deploy.eval_app import _parse_eval_report_stdout
+
+    report = {"n_docs": 1323, "eval_subset": "heldout-plus", "doc_type_accuracy": 0.9}
+    blob = (
+        "[eval_modernbert] pulling repo\n"
+        + __import__("json").dumps(report, sort_keys=True, indent=2)
+    )
+    parsed = _parse_eval_report_stdout(blob)
+    assert parsed["n_docs"] == 1323
+    assert parsed["eval_subset"] == "heldout-plus"

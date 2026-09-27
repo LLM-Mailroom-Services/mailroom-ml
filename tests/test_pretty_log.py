@@ -14,8 +14,8 @@ from training.pretty_log import (
     parse_log_step_line,
     progress_bar,
     render_epoch_event,
-    render_header_banner,
     render_hardware_panel,
+    render_header_banner,
     render_job_completed_banner,
     render_step_event,
     render_watch_snapshot,
@@ -579,7 +579,7 @@ def test_job_completed_banner_in_snapshot():
     assert "JOB COMPLETED" in snap
     assert "stage ▸DONE◂" in snap
     banner = render_job_completed_banner(summary, run_tag="m9a-smoke", on=False, width=60)
-    assert "test doc_type acc: 0.8669" in banner
+    assert "test doc_type acc 0.8669" in banner
 
 
 def test_pipeline_stages_no_gremlins():

@@ -151,3 +151,9 @@ Outputs: `reports/eval_<run_tag>-heldout-plus.json` and `reports/TEST-EVAL/TEST-
    content-overlap check vs training contracts.
 4. Publish `heldout-plus-v1` as a versioned Hub dataset once the set is validated
    by a clean GPU eval.
+
+## GPU validation (2026-09-27)
+
+- Eval JSON: `reports/eval_m9a-local-20260927-014429-heldout-plus.json`
+- Report: `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9a-local-20260927-014429.md`
+- n_docs=1323 windows=1554

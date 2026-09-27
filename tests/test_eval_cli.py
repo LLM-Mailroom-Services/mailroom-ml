@@ -14,6 +14,7 @@ from mailroom_ml.calibration import ece, ece_from_conf
 from training.eval_modernbert import (
     _macro_f1_observed,
     _per_head_report,
+    build_comparable_metrics,
     build_parser,
     stratified_sample,
 )
@@ -352,6 +353,43 @@ def test_per_head_pairs_conditional_and_overflow_excluded(monkeypatch):
     assert contract["support"] == {"a": 1, "b": 1, "c": 1}
     # only the doc_type-correct doc contributed a pair -> macro-F1 1.0
     assert contract["macro_f1"] == 1.0
+
+
+def test_build_comparable_metrics_matches_compare_runs_scalars():
+    report = {
+        "n_docs": 10,
+        "eval_subset": "test",
+        "doc_type_accuracy": 0.9,
+        "subclass_accuracy_conditional": 0.5,
+        "fast_path_rate": 0.3,
+        "window_calibration": {"ece": 0.04, "band_ece": 0.05, "n_windows": 12},
+        "selective_risk": {
+            "refused": False,
+            "recommended_threshold": 0.88,
+            "budget_met": True,
+            "coverage": 0.4,
+            "error_budget": 0.02,
+        },
+        "ood": {"rate": 0.01, "probe_status": "ok"},
+        "per_head": {"contract": {"macro_f1": 0.2}},
+        "head_ece": {"doc_type": 0.03},
+        "cohorts": {
+            "single-window": {
+                "n_docs": 8,
+                "doc_type_accuracy": 0.875,
+                "mean_agreement": 1.0,
+                "window_ece": 0.05,
+            },
+        },
+        "per_doc": [{"agreement": 0.9, "fast_path": True}] * 10,
+    }
+    cm = build_comparable_metrics(report)
+    assert cm["schema"] == "mailroom-ml/comparable-metrics/v1"
+    assert cm["doc_type_accuracy"] == 0.9
+    assert cm["window_ece"] == 0.04
+    assert cm["fast_path_n_docs"] == 10
+    assert cm["selective_risk"]["recommended_threshold"] == 0.88
+    assert "doc_type_accuracy" in cm["compare_runs_scalar_keys"]
 
 
 def test_eval_main_exits_when_checkpoint_missing(tmp_path):

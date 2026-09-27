@@ -765,6 +765,90 @@
       "window_ece": 0.0426
     }
   },
+  "comparable_metrics": {
+    "cohorts": {
+      "multi-window": {
+        "doc_type_accuracy": 0.9592,
+        "mean_agreement": 0.9724,
+        "n_docs": 49,
+        "selective_risk": {
+          "budget_met": false,
+          "recommended_threshold": null,
+          "refused": false
+        },
+        "window_ece": 0.0168
+      },
+      "single-window": {
+        "doc_type_accuracy": 0.9489,
+        "mean_agreement": 1.0,
+        "n_docs": 274,
+        "selective_risk": {
+          "budget_met": false,
+          "recommended_threshold": null,
+          "refused": false
+        },
+        "window_ece": 0.0426
+      }
+    },
+    "compare_runs_scalar_keys": [
+      "doc_type_accuracy",
+      "window_ece",
+      "fast_path_rate",
+      "selective_risk.recommended_threshold",
+      "ood.rate"
+    ],
+    "doc_type_accuracy": 0.9505,
+    "eval_subset": null,
+    "fast_path_n_docs": 98,
+    "fast_path_rate": 0.3034,
+    "latency_seconds_per_document": null,
+    "mean_window_agreement": 0.9958,
+    "n_docs": 323,
+    "n_windows": 541,
+    "ood_probe_status": "ok",
+    "ood_rate": 0.0991,
+    "per_head_ece": {
+      "contract": 0.0327,
+      "corporate_record": 0.071,
+      "correspondence": 0.1384,
+      "doc_type": 0.02,
+      "insurance_claim": 0.0025,
+      "merger_agreement": 0.1083
+    },
+    "per_head_macro_f1": {
+      "contract": 0.0195,
+      "corporate_record": 0.2485,
+      "correspondence": 0.1289,
+      "insurance_claim": 0.9889,
+      "merger_agreement": 0.2381
+    },
+    "purpose": "paired compare_runs / LLM sorter shadow eval",
+    "routing_contract": {
+      "composite_score": "p_calibrated * agreement * margin",
+      "fast_path_error_budget": 0.02,
+      "gate_thresholds": {
+        "gate_required_agreement": 0.8,
+        "route_doc_confidence": 0.97,
+        "route_margin": 0.1,
+        "route_subclass_confidence": 0.95,
+        "route_window_agreement": 0.8
+      }
+    },
+    "schema": "mailroom-ml/comparable-metrics/v1",
+    "selective_risk": {
+      "budget_met": true,
+      "coverage": 0.37707948243992606,
+      "error_budget": 0.02,
+      "min_n": 30,
+      "n_at_pick": 470,
+      "reason": null,
+      "recommended_threshold": 0.9,
+      "refused": false
+    },
+    "subclass_accuracy_conditional": 0.5831,
+    "window_band_ece": 0.0525,
+    "window_ece": 0.0259
+  },
   "doc_type_accuracy": 0.9505,
   "fast_path_rate": 0.3034,
   "head_ece": {

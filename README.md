@@ -70,7 +70,7 @@ Pins live in `pyproject.toml` + `uv.lock`. There is no parallel
 
 | Role | Repo | Revision (prefix) |
 | --- | --- | --- |
-| Canonical eval corpus | `Lucius-Morningstar/mailroom-dataset` | `46a4d3c2…` |
+| Canonical eval corpus | `Lucius-Morningstar/mailroom-dataset` | `ed7576b6…` |
 | Working ML duplicate | `Lucius-Morningstar/mailroom-finetune` | `19720ceb…` |
 | Prepared training set | `Lucius-Morningstar/mailroom-modernbert-training` | `5b72a345…` |
 | Classifier publish target | `Lucius-Morningstar/mailroom-modernbert-classifier` | operator-set per run |

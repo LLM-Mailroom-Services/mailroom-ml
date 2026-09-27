@@ -86,6 +86,25 @@ label through the full `id2label`; regression test
 exact production traceback line and passes on the new (36/36 inference tests,
 51/51 with the eval-CLI suite).
 
+## Pre-flight validation (2026-09-27, local CPU)
+
+Full-pool contract check over all **1,323** docs (labels, emptiness, title
+leak, `window_document` at 8,192/512):
+
+| check | result |
+| --- | --- |
+| windowed without error | **1,323 / 1,323** |
+| label mismatches (`normalize_subclass`) | 0 |
+| empty bodies | 0 |
+| `title == filename` | 0 |
+| single-window / multi-window docs | 1,269 / 54 (max 13 windows) |
+| total windows | **1,554** |
+
+Runtime projection from the 323-doc Modal run (541 windows in ~200 s remote
+wall incl. stage pull + weight load): eval time scales ~linearly in windows,
+so the full 1,323-doc run should land **under ~12 min wall ≈ $0.16** at
+$0.80/hr L4. The pool will not crash or fail-open on windowing.
+
 ## Cost / runtime note (no new GPU billing this turn)
 
 - This turn: **$0 Modal** (one failed L4 run from the prior session surfaced

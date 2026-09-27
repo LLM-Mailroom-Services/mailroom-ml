@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
             label_bad += 1
             errors += 1
         try:
-            wins = window_document(title, text, max_length=MAX_TOKENS, overlap=OVERLAP)
+            wins = window_document(title, text, max_tokens=MAX_TOKENS, overlap=OVERLAP)
         except Exception as exc:
             print(f"window error {fn}: {exc}", flush=True)
             errors += 1

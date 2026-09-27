@@ -2,7 +2,6 @@
 """Fetch Enron test jsonl inputs for ``build_heldout_plus.py`` (CPU, pinned)."""
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -20,8 +19,6 @@ PATTERNS = (
 
 
 def main() -> int:
-    if not os.environ.get("HF_TOKEN"):
-        raise SystemExit("HF_TOKEN required to download Enron heldout inputs")
     from huggingface_hub import snapshot_download  # noqa: PLC0415
 
     marker_gt = OUT / "ground_truth" / "test.jsonl"

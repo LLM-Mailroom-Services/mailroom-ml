@@ -17,9 +17,22 @@ cd "$ROOT"
 
 export PATH="${HOME}/.local/bin:${ROOT}/.venv/bin:${PATH}"
 
+if [[ -f "${ROOT}/secrets.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a && source "${ROOT}/secrets.env" && set +a
+fi
+
 : "${HF_TOKEN:?export HF_TOKEN (finetune + Enron + Modal stage pull)}"
 : "${MODAL_TOKEN_ID:?export MODAL_TOKEN_ID for exios66}"
 : "${MODAL_TOKEN_SECRET:?export MODAL_TOKEN_SECRET for exios66}"
+
+export MODAL_PROFILE="${MODAL_PROFILE:-exios66}"
+uv run --extra deploy modal token set \
+  --token-id "${MODAL_TOKEN_ID}" \
+  --token-secret "${MODAL_TOKEN_SECRET}" \
+  --profile "${MODAL_PROFILE}" \
+  --activate \
+  --verify
 
 RUN_TAG="${RUN_TAG:-m9a-local-20260927-014429}"
 MODULE="${MODULE:-latest}"

@@ -19,6 +19,7 @@ artifacts/
 
 # Env
 .env
+secrets.env
 *.log
 /.playwright-mcp/
 *.png

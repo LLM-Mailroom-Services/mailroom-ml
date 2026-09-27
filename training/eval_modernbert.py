@@ -42,13 +42,17 @@ if str(ROOT / "src") not in sys.path:
 from mailroom_ml.calibration import (  # noqa: E402
     ece_from_conf,
     ece_within_band,
+    routing_thresholds_from_sweep,
     selective_risk_sweep,
+    write_routing_thresholds,
 )
 from mailroom_ml.config import (  # noqa: E402
+    GATE_REQUIRED_AGREEMENT,
     HEAD_ECE_EXCLUSION_THRESHOLD,
     MAX_TOKENS,
     RANDOM_STATE,
     ROUTE_DOC_CONFIDENCE,
+    ROUTE_MARGIN,
     SELECTIVE_RISK_MIN_N,
     STAGE_DIR,
 )
@@ -56,8 +60,8 @@ from mailroom_ml.inference import (  # noqa: E402
     BundleLoadError,
     BundleUnavailable,
     load_bundle,
-    window_titles,
 )
+from mailroom_ml.ood import score_ood  # noqa: E402
 from mailroom_ml.windows import window_document  # noqa: E402
 
 __all__ = ["build_parser", "stratified_sample", "evaluate_documents",
@@ -81,6 +85,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--selective-risk", action="store_true",
                     help="run the selective-risk threshold sweep and report "
                          "the deployment threshold")
+    ap.add_argument("--write-routing-thresholds", type=Path, default=None,
+                    help="write routing_thresholds.json (#25) from the "
+                         "selective-risk sweep (implies --selective-risk). "
+                         "PATH may be a file or a directory")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="emit the report as JSON")
     return ap
@@ -170,6 +178,10 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     confusion: dict[tuple[str, str], int] = Counter()
     win_confs: list[float] = []
     win_correct: list[bool] = []
+    per_doc: list[dict] = []
+    n_fast = 0
+    n_ood = 0
+    n_ood_scored = 0
     # #104 cohort split: single-window (agreement trivially 1.0 — the gate
     # reduces to one miscalibrated p) vs multi-window — scored separately
     # so the cohorts never conflate.
@@ -186,10 +198,16 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         gt_dt = str(r["doc_type"])
         gt_sc = str(r.get("subclass") or "")
         try:
-            wins = window_document(title, doc_text, max_tokens=max_length)
+            version = getattr(bundle, "input_construction", "v1")
+            filename = str(r.get("filename") or "")
+            wins = window_document(
+                title, doc_text, max_tokens=max_length,
+                version=version, filename=filename)
         except RuntimeError as exc:  # transformers absent
             raise SystemExit(f"eval needs the transformers tokenizer: {exc}") from exc
-        decorated = window_titles(title, wins)
+        # window_document already applies the construction prefix — do not
+        # re-decorate (that would double-prefix and mismatch training).
+        decorated = wins
         try:
             merged = _merge_windows(bundle, decorated, max_length)
         except ValueError:
@@ -212,7 +230,9 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         cohort = "single-window" if len(wins) == 1 else "multi-window"
         cohorts[cohort]["n_docs"] += 1
         cohorts[cohort]["agreements"].append(float(merged.get("agreement", 0.0)))
-        if dt_pred == gt_dt:
+        dt_ok = dt_pred == gt_dt
+        sc_ok = bool(dt_ok and sc_pred is not None and sc_pred == gt_sc)
+        if dt_ok:
             correct_dt += 1
             cohorts[cohort]["correct_dt"] += 1
             dt_cond_denom += 1
@@ -222,8 +242,40 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
                 # never reaches here (dt_pred != gt_dt): its docs stay in
                 # support but are excluded from the macro-F1 denominator.
                 per_head_pairs[gt_dt].append((gt_sc, sc_pred))
-            if sc_pred is not None and sc_pred == gt_sc:
+            if sc_ok:
                 correct_sc += 1
+        p_dt = float(merged.get("calibrated_confidence") or 0.0)
+        agree = float(merged.get("agreement") or 0.0)
+        margin = float(merged.get("margin") or 0.0)
+        fast = (
+            dt_pred not in ("llm_overflow", "unknown")
+            and p_dt >= doc_confidence
+            and agree >= GATE_REQUIRED_AGREEMENT
+            and margin >= ROUTE_MARGIN
+        )
+        ood_flag = None
+        logits = merged.get("window_doc_type_logits") or []
+        if getattr(bundle, "ood_probe", None) and logits:
+            _, ood_flag, _ = score_ood(np.stack(logits), bundle.ood_probe)
+            n_ood_scored += 1
+            if ood_flag:
+                n_ood += 1
+                fast = False
+        if fast:
+            n_fast += 1
+        per_doc.append({
+            "filename": str(r.get("filename") or ""),
+            "gt_doc_type": gt_dt,
+            "pred_doc_type": dt_pred,
+            "dt_correct": dt_ok,
+            "gt_subclass": gt_sc,
+            "pred_subclass": sc_pred,
+            "sc_correct": sc_ok,
+            "n_windows": len(wins),
+            "agreement": agree,
+            "fast_path": fast,
+            "ood_flag": ood_flag,
+        })
         # window-level calibration data (doc_type head only)
         for p in merged["_window_probs"]:
             win_confs.append(float(p.max()))
@@ -264,6 +316,15 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         "head_ece": _head_ece_report(bundle),
         "per_head": _per_head_report(bundle, subclass_heads, per_head_pairs,
                                      per_head_support),
+        "fast_path_rate": round(n_fast / n, 4) if n else 0.0,
+        "ood": {
+            "probe_status": (
+                "ok" if getattr(bundle, "ood_probe", None) else "absent"),
+            "n_scored": n_ood_scored,
+            "n_flagged": n_ood,
+            "rate": round(n_ood / n_ood_scored, 4) if n_ood_scored else None,
+        },
+        "per_doc": per_doc,
         "recorded_gates": {
             "P0_doc_type": {"threshold": 0.95, "actual": round(acc_dt, 4),
                             "met": acc_dt >= 0.95, "report_only": True},
@@ -452,6 +513,13 @@ def format_report(report: dict) -> str:
                 f"(n={sr['n_at_pick']}, min_n={sr['min_n']})",
                 f"  insufficient data     : {sr['insufficient_data']}",
             ]
+    lines += [
+        "",
+        f"fast-path rate    : {report.get('fast_path_rate')}",
+        f"ood probe         : {(report.get('ood') or {}).get('probe_status')} "
+        f"flagged={(report.get('ood') or {}).get('n_flagged')} "
+        f"rate={(report.get('ood') or {}).get('rate')}",
+    ]
     lines += ["", "recorded gates (report-only, plan §7):"]
     for name, g in report["recorded_gates"].items():
         lines.append(f"  {name:<12s} actual {g['actual']} vs "
@@ -467,9 +535,16 @@ def main(argv: list[str] | None = None) -> int:
     except (BundleUnavailable, BundleLoadError) as exc:
         raise SystemExit(str(exc)) from exc
     docs = _load_test_docs(args.stage)
+    want_sweep = args.selective_risk or args.write_routing_thresholds
     report = evaluate_documents(
         bundle, docs, sample=args.sample, seed=args.seed,
-        max_length=args.max_length, selective_risk=args.selective_risk)
+        max_length=args.max_length, selective_risk=want_sweep)
+    if args.write_routing_thresholds is not None:
+        sweep = report.get("selective_risk") or {
+            "refused": True, "reason": "selective_risk not in report"}
+        payload = routing_thresholds_from_sweep(sweep)
+        dest = write_routing_thresholds(args.write_routing_thresholds, payload)
+        report["routing_thresholds_path"] = str(dest)
     if args.as_json:
         print(json.dumps(report, sort_keys=True, indent=2))
     else:

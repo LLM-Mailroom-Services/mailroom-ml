@@ -71,7 +71,9 @@ from mailroom_ml.enrichment import (  # noqa: E402
     assemble_enron_gt,
     assemble_gnotheia_pool,
     assemble_insurbias_pool,
+    assemble_maud_pool,
     assemble_pseudo_labels,
+    assemble_s1_pool,
     build_enrichment_windows,
     combine_tier1,
     evaluate_eligibility,
@@ -93,6 +95,8 @@ DEFAULT_CAPS = default_enrichment_caps()
 POOL_FLAGS = (
     ("enron_pool", "enron", cfg.ENRON_DEDUP_REPO, cfg.ENRON_DEDUP_REVISION),
     ("cuad_pool", "cuad", cfg.CUAD_FULL_REPO, cfg.CUAD_FULL_REVISION),
+    ("maud_pool", "maud", cfg.MAUD_REPO, cfg.MAUD_REVISION),
+    ("s1_pool", "s1", cfg.S1_REPO, cfg.S1_REVISION),
     ("cms_pool", "cms", cfg.CMS_POOL_REPO, cfg.CMS_POOL_REVISION),
     ("gnotheia_pool", "gnotheia", cfg.GNOTHEIA_REPO, cfg.GNOTHEIA_REVISION),
     ("bdr_pool", "bdr", cfg.BDR_REPO, cfg.BDR_REVISION),
@@ -398,6 +402,8 @@ def assemble_tier1(canonical: pd.DataFrame, caps: dict[str, float],
         "enron": (assemble_enron_gt, {"cap_mult": caps["enron_cap_mult"],
                                       "lineage_cols": None}),
         "cuad": (assemble_cuad_pool, {"cap_mult": caps["cuad_cap_mult"]}),
+        "maud": (assemble_maud_pool, {"cap_mult": caps["maud_cap_mult"]}),
+        "s1": (assemble_s1_pool, {"cap_mult": caps["s1_cap_mult"]}),
         "cms": (assemble_cms_pool, {}),
         "gnotheia": (assemble_gnotheia_pool, {}),
         "bdr": (assemble_bdr_pool, {}),
@@ -556,12 +562,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--enron-pool", default=None, help="path or repo_id@rev")
     ap.add_argument("--cuad-pool", default=None,
                     help="path or repo_id@rev (contract, JSONL)")
+    ap.add_argument("--maud-pool", default=None,
+                    help="path or repo_id@rev (merger_agreement; no Hub pin yet)")
+    ap.add_argument("--s1-pool", default=None,
+                    help="path or repo_id@rev (corporate_record; no Hub pin yet)")
     ap.add_argument("--cms-pool", default=None)
     ap.add_argument("--gnotheia-pool", default=None)
     ap.add_argument("--bdr-pool", default=None)
     ap.add_argument("--insurbias-pool", default=None)
     ap.add_argument("--blind-pool", default=None,
-                    help="tier-2 candidates (must carry confidence columns)")
+                    help="tier-2 candidates with doc_type_conf/subclass_conf/"
+                         "agreement. Default: pinned Enron blind source "
+                         f"({cfg.BLIND_POOL_REPO}@{cfg.BLIND_POOL_REVISION[:8]}…) "
+                         "— score it first if those columns are missing")
     ap.add_argument("--family-col", default="thread_id",
                     help="family column for the grouped-split seam (tier 2)")
     ap.add_argument("--tier3-cards", type=Path, default=None,
@@ -592,6 +605,9 @@ def main(argv: list[str] | None = None) -> int:
         pools: dict[str, pd.DataFrame] = {}
         for flag_attr, name, repo, rev in POOL_FLAGS:
             spec = getattr(args, flag_attr)
+            if spec is None and not rev:
+                # #16: MAUD/S1 have no Hub pin yet — skip unless a path given.
+                continue
             pool_df, src, rev_used = _load_pool(spec, name, repo, rev)
             if not pool_df.empty:
                 pools[name] = pool_df
@@ -602,13 +618,22 @@ def main(argv: list[str] | None = None) -> int:
         stats["tier1"] = tier1_stats
 
     if 2 in tiers:
-        if args.blind_pool is None:
-            print("ERROR: tier 2 needs --blind-pool (candidates with "
-                  "doc_type_conf/subclass_conf/agreement columns)",
-                  file=sys.stderr)
+        blind_spec = args.blind_pool
+        if blind_spec is None:
+            # #26: default to the pinned Enron blind source (no hand-picked path).
+            blind_spec = f"{cfg.BLIND_POOL_REPO}@{cfg.BLIND_POOL_REVISION}"
+        blind, src, rev = _load_pool(blind_spec, "blind",
+                                     cfg.BLIND_POOL_REPO, cfg.BLIND_POOL_REVISION)
+        missing = [c for c in cfg.BLIND_REQUIRED_COLUMNS if c not in blind.columns]
+        if missing:
+            print(
+                f"ERROR: tier 2 blind pool is missing {missing}. "
+                "The Enron blind pin is text-only — score it first:\n"
+                "  uv run python training/score_blind_pool.py "
+                "--pool <path> --checkpoint artifacts/pytorch/model "
+                "--out data/enrichment/blind_scored.parquet",
+                file=sys.stderr)
             return 2
-        blind, src, rev = _load_pool(args.blind_pool, "blind",
-                                     cfg.ENRON_DEDUP_REPO, cfg.ENRON_DEDUP_REVISION)
         stats.setdefault("pools", {})["blind"] = {"source": src,
                                                   "revision": rev,
                                                   "rows_in": int(len(blind))}

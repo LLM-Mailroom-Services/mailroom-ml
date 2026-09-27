@@ -20,7 +20,8 @@ Verified against the current Modal SDK on 2026-09-18:
 
 Behavior (mirrors the committed app):
 
-- bundles ``src/`` + ``training/`` + ``configs/`` into the image at deploy time,
+- bundles ``src/`` + ``training/`` + ``configs/`` + ``deploy/`` into the image
+  at deploy time (``deploy/`` is required for the in-container ONNX export),
 - pulls the published training dataset from ``config.TRAINING_DATA_REPO`` — never
   a local copy; the pinned ``config.TRAINING_DATA_REVISION`` is the contract and
   is validated (HfApi) plus exported as ``TRAINING_DATA_REVISION`` env before the
@@ -139,10 +140,14 @@ image = (
         "pyyaml>=6.0",
         "tqdm>=4.0",
         "huggingface_hub>=0.24",
+        "onnxruntime>=1.19",
+        "onnx>=1.16",
+        "onnxscript",
     )
     .add_local_dir(ROOT / "src", remote_path="/root/src")
     .add_local_dir(ROOT / "training", remote_path="/root/training")
     .add_local_dir(ROOT / "configs", remote_path="/root/configs")
+    .add_local_dir(ROOT / "deploy", remote_path="/root/deploy")
 )
 
 checkpoint_vol = modal.Volume.from_name(CHECKPOINT_VOLUME_NAME, create_if_missing=True)
@@ -248,6 +253,7 @@ def train(
     log_every: int = 0,
     resume: str = "",
     trainer_extra: list[str] | None = None,
+    export_onnx: bool = True,
 ) -> dict:
     """Run the fine-tune inside an L4 GPU container.
 
@@ -289,12 +295,18 @@ def train(
         )
     print(f"[mailroom-ml-train] dataset pin verified: {info.sha}", flush=True)
 
+    run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    is_smoke = bool(max_steps)
+    # Non-smoke trains into runs/<run-id> first.  latest/ is promoted only
+    # after a successful train (+ optional ONNX parity).  A failed parity
+    # check therefore leaves latest/ on the last good checkpoint (#19).
+    output = (
+        f"{CHECKPOINT_MOUNT}/smoke-{run_id}" if is_smoke
+        else f"{CHECKPOINT_MOUNT}/runs/{run_id}"
+    )
     cmd = _build_train_cmd(epochs, batch_size, grad_accum, lr, seed,
                            push_to_hub, eval_test, max_steps, log_every,
-                           resume,
-                           output=(f"{CHECKPOINT_MOUNT}/smoke-"
-                                   f"{datetime.now(UTC).strftime('%Y%m%d-%H%M%S')}"
-                                   if max_steps else f"{CHECKPOINT_MOUNT}/latest"),
+                           resume, output=output,
                            trainer_extra=trainer_extra)
     print("[mailroom-ml-train] " + " ".join(cmd), flush=True)
 
@@ -307,26 +319,26 @@ def train(
     if result.returncode != 0:
         raise RuntimeError(f"train_modernbert.py exited {result.returncode}")
 
-    # Rollback: keep every successful run under runs/<run-id>/; latest/ stays
-    # the stable pointer the export/serve steps consume.  A smoke run
-    # (max_steps > 0) writes to smoke-<ts>, NOT latest/ — archiving it would
-    # copy a STALE latest/ (R5, 2026-09-20 audit), so smoke skips the archive.
-    run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     archive_dir = ""
-    if max_steps:
+    onnx_dir = ""
+    if is_smoke:
         print("[mailroom-ml-train] smoke run — skipping the runs/ archive "
-              "(latest/ untouched)", flush=True)
+              "and ONNX export (latest/ untouched)", flush=True)
     else:
-        archive_dir = f"{CHECKPOINT_MOUNT}/runs/{run_id}"
-        shutil.copytree(f"{CHECKPOINT_MOUNT}/latest", archive_dir)
+        archive_dir = output
+        if export_onnx:
+            onnx_dir = _export_onnx_and_parity(output)
+        _promote_latest(output)
         checkpoint_vol.commit()
-        print(f"[mailroom-ml-train] archived checkpoint to {archive_dir}",
-              flush=True)
+        print(f"[mailroom-ml-train] archived checkpoint to {archive_dir}; "
+              f"latest/ promoted", flush=True)
 
     return {
         "returncode": result.returncode,
         "run_id": run_id,
         "archive_dir": archive_dir,
+        "onnx_dir": onnx_dir,
+        "export_onnx": bool(export_onnx) and not is_smoke,
         "epochs": epochs,
         "batch_size": batch_size,
         "grad_accum": grad_accum,
@@ -335,6 +347,67 @@ def train(
         "push_to_hub": push_to_hub,
         "eval_test": eval_test,
     }
+
+
+def _export_onnx_and_parity(checkpoint_dir: str, *,
+                            require_int8: bool = True) -> str:
+    """Run the committed torch.onnx.export path + parity gate (#19).
+
+    Never uses ``optimum-cli`` (random heads on this architecture).
+    A non-zero exit leaves ``latest/`` untouched (caller has not promoted).
+    """
+    onnx_dir = str(Path(checkpoint_dir) / "onnx")
+    export_cmd = [
+        sys.executable, "/root/deploy/onnx_export.py",
+        "--pytorch-dir", checkpoint_dir,
+        "--out-dir", onnx_dir,
+    ]
+    print("[mailroom-ml-train] " + " ".join(export_cmd), flush=True)
+    exported = subprocess.run(export_cmd)
+    if exported.returncode != 0:
+        raise RuntimeError(
+            f"onnx_export.py exited {exported.returncode} — latest/ not updated")
+    parity_cmd = [
+        sys.executable, "/root/deploy/onnx_parity_check.py",
+        "--pytorch-dir", checkpoint_dir,
+        "--onnx-dir", onnx_dir,
+    ]
+    if require_int8:
+        parity_cmd.append("--require-int8")
+    print("[mailroom-ml-train] " + " ".join(parity_cmd), flush=True)
+    parity = subprocess.run(parity_cmd)
+    if parity.returncode != 0:
+        raise RuntimeError(
+            f"onnx_parity_check.py exited {parity.returncode} — "
+            "latest/ not updated (fail loud)")
+    return onnx_dir
+
+
+def _promote_latest(run_dir: str, dest: str | None = None) -> None:
+    """Replace ``latest/`` with a successful run via copy + rename (#19).
+
+    Copy to a sibling ``*.promoting`` directory first, then swap.  A crash
+    mid-copy leaves the previous ``latest/`` intact.  ``dest`` is injectable
+    for tests; production uses ``{CHECKPOINT_MOUNT}/latest``.
+    """
+    latest = dest or f"{CHECKPOINT_MOUNT}/latest"
+    tmp = f"{latest}.promoting"
+    if Path(tmp).exists():
+        shutil.rmtree(tmp)
+    shutil.copytree(run_dir, tmp)
+    backup = f"{latest}.bak"
+    if Path(latest).exists():
+        if Path(backup).exists():
+            shutil.rmtree(backup)
+        os.rename(latest, backup)
+    try:
+        os.rename(tmp, latest)
+    except OSError:
+        if Path(backup).exists() and not Path(latest).exists():
+            os.rename(backup, latest)
+        raise
+    if Path(backup).exists():
+        shutil.rmtree(backup)
 
 
 @app.local_entrypoint()
@@ -346,9 +419,11 @@ def main(
     seed: int = 42,
     push_to_hub: str = "",
     eval_test: bool = True,
+    export_onnx: bool = True,
 ) -> None:
     print(f"mailroom-ml-train: epochs={epochs} batch={batch_size} "
           f"grad_accum={grad_accum} lr={lr} seed={seed} "
-          f"push={push_to_hub or 'no'}")
+          f"push={push_to_hub or 'no'} export_onnx={export_onnx}")
     train.remote(epochs=epochs, batch_size=batch_size, grad_accum=grad_accum,
-                 lr=lr, seed=seed, push_to_hub=push_to_hub, eval_test=eval_test)
+                 lr=lr, seed=seed, push_to_hub=push_to_hub, eval_test=eval_test,
+                 export_onnx=export_onnx)

@@ -38,6 +38,14 @@ def test_cli_surface_accepts_documented_flags():
     assert ns.as_json is True
 
 
+def test_cli_write_routing_thresholds_flag():
+    ns = build_parser().parse_args([
+        "--write-routing-thresholds", "/tmp/routing_thresholds.json",
+    ])
+    assert ns.write_routing_thresholds == Path("/tmp/routing_thresholds.json")
+    assert build_parser().parse_args([]).write_routing_thresholds is None
+
+
 def test_cli_defaults_match_plan_surface():
     ns = build_parser().parse_args([])
     assert ns.subset == "test"
@@ -175,7 +183,7 @@ def test_evaluate_documents_reports_cohorts_separately(monkeypatch):
     conflated with the multi-window cohort's."""
     import training.eval_modernbert as ev
 
-    def _fake_window(title, text, max_tokens):
+    def _fake_window(title, text, max_tokens, **_kwargs):
         return ["w1", "w2"] if text == "multi" else ["w1"]
 
     monkeypatch.setattr(ev, "window_document", _fake_window)
@@ -198,7 +206,7 @@ def test_sweep_refused_without_ece_sidecar(monkeypatch):
     import training.eval_modernbert as ev
 
     monkeypatch.setattr(ev, "window_document",
-                        lambda title, text, max_tokens: ["w1"])
+                        lambda title, text, max_tokens, **_k: ["w1"])
     report = ev.evaluate_documents(
         _stub_bundle(_confident_predict), _eval_docs(),
         sample=0, seed=42, max_length=8192, selective_risk=True)
@@ -216,7 +224,7 @@ def test_sweep_refused_when_head_ece_over_threshold(monkeypatch):
         "doc_type": {"excluded": False, "ece_calibrated": 0.161},
         "contract": {"excluded": True, "ece_calibrated": 0.09}}}
     monkeypatch.setattr(ev, "window_document",
-                        lambda title, text, max_tokens: ["w1"])
+                        lambda title, text, max_tokens, **_k: ["w1"])
     report = ev.evaluate_documents(
         _stub_bundle(_confident_predict, exclusion_policy=policy),
         _eval_docs(), sample=0, seed=42, max_length=8192,
@@ -236,7 +244,7 @@ def test_sweep_runs_with_clean_sidecar(monkeypatch):
     policy = {"budget": 0.05, "excluded": {
         "doc_type": {"excluded": False, "ece_calibrated": 0.02}}}
     monkeypatch.setattr(ev, "window_document",
-                        lambda title, text, max_tokens: ["w1"])
+                        lambda title, text, max_tokens, **_k: ["w1"])
     report = ev.evaluate_documents(
         _stub_bundle(_confident_predict, exclusion_policy=policy),
         _eval_docs(), sample=0, seed=42, max_length=8192,
@@ -315,7 +323,7 @@ def test_per_head_pairs_conditional_and_overflow_excluded(monkeypatch):
     assert _macro_f1_observed([]) is None
 
     monkeypatch.setattr(ev, "window_document",
-                        lambda title, text, max_tokens: [text])
+                        lambda title, text, max_tokens, **_k: [text])
 
     def _fake_merge(bundle, decorated, max_length):
         text = decorated[0]

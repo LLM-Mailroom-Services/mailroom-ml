@@ -61,11 +61,20 @@ What happens inside the container:
    broken pin fails before any GPU minute) and exported to the container as
    `TRAINING_DATA_REVISION`.
 3. `train_modernbert.py` runs via subprocess with the exact documented flags
-   (`--data <repo> --output /checkpoints/latest --epochs … --batch-size …
+   (`--data <repo> --output /checkpoints/runs/<run-id> --epochs … --batch-size …
    --grad-accum … --lr … --seed … [--push-to-hub <repo>] [--eval-test]`).
-4. The trainer output lands at `/checkpoints/latest` on the
-   **`modernbert-checkpoints`** Volume; on success the run is archived at
-   `/checkpoints/runs/<run-id>/` and the Volume is committed once.
+   Smoke runs write to `/checkpoints/smoke-<ts>` and never touch `latest/`.
+4. On a successful **non-smoke** train (`#19`, default `--export-onnx`):
+   1. `deploy/onnx_export.py` writes `onnx/` beside the run checkpoint
+      (`torch.onnx.export`, never `optimum-cli`).
+   2. `deploy/onnx_parity_check.py --require-int8` must pass.
+   3. Only then is `/checkpoints/latest` promoted (copy + rename). Failed
+      export/parity raises and **leaves `latest/` on the last good
+      checkpoint**.
+   Skip the chain with `--no-export-onnx` on `spawn_train.py` / `modal run`.
+5. The run directory stays at `/checkpoints/runs/<run-id>/` on the
+   **`modernbert-checkpoints`** Volume for rollback; the Volume is committed
+   after a successful promote.
 
 ### Cost notes (L4)
 

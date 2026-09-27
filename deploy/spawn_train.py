@@ -207,7 +207,8 @@ def _watch_logs(app_id: str, needle: str, timeout_s: int) -> list[str]:
     return all_lines
 
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
+    """CLI surface for the fire-and-forget launcher (tested offline)."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--batch-size", type=int, default=4)
@@ -231,18 +232,28 @@ if __name__ == "__main__":
                          "/checkpoints/latest) to continue a cut run from — "
                          "the trainer resumes at the next epoch; pass the "
                          "ORIGINAL --epochs (the trainer continues to it)")
+    ap.add_argument("--export-onnx", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="after a successful non-smoke train, export ONNX "
+                         "and run the parity gate before promoting latest/ "
+                         "(#19; default on). --no-export-onnx skips it")
     ap.add_argument("--trainer-extra", action="append", default=None,
                     help="extra trainer flags passed through verbatim "
                          "(repeatable; the '=' form is REQUIRED — argparse "
                          "treats a space-separated value as a new option: "
                          "--trainer-extra=--label-smoothing=0.05 "
                          "--trainer-extra=--mlp-heads). Audit levers: "
-                         "--loss-lambda-dt, --label-smoothing, --weight-mode, "
-                         "--weight-cap, --mlp-heads, --head-dropout, "
-                         "--freeze-backbone-epochs, --early-stop-patience, "
-                         "--weight-decay, --betas, --eps, "
-                         "--subclass-min-train-rows")
-    args = ap.parse_args()
+                         "--loss-lambda-dt, --label-smoothing, "
+                         "--subclass-label-smoothing, --input-construction, "
+                         "--weight-mode, --weight-cap, --mlp-heads, "
+                         "--head-dropout, --freeze-backbone-epochs, "
+                         "--early-stop-patience, --weight-decay, --betas, "
+                         "--eps, --subclass-min-train-rows")
+    return ap
+
+
+if __name__ == "__main__":
+    args = build_parser().parse_args()
 
     if not os.environ.get("HF_TOKEN"):
         print("HF_TOKEN not set — the trainer cannot pull the dataset or "
@@ -295,6 +306,7 @@ if __name__ == "__main__":
         log_every=SMOKE_LOG_EVERY if args.smoke else 0,
         resume="" if args.smoke else args.resume,
         trainer_extra=None if args.smoke else args.trainer_extra,
+        export_onnx=False if args.smoke else args.export_onnx,
     )
     print(f"spawned training call: {call.object_id}")
 

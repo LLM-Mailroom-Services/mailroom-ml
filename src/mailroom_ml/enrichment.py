@@ -21,11 +21,11 @@ Implements the augmentation pillar of the intake-classifier plan
 - **Tier 3 — constrained-synthesis machinery** (§6.5): eligibility table,
   tier caps ``((5,3),(15,2),(30,1),(75,0))``, mixture-cap math (<=40% global,
   <=50% per-subclass batch, synthetic weight 0.6), the ``LabelCard`` spec,
-  and the seven gates.  Real logic: schema gate, lexical n-gram
-  contamination, entity overlap; stubs (``not_run``): rule-cue checks,
-  independent adjudication, embedding diversity, model disagreement.  A
-  ``not_run`` decision blocks adoption — nothing is "adopted" until the
-  ladder A/B (plan §6.1) measures it.
+  and the seven gates.  All seven gates are implemented (no ``not_run``
+  stubs): schema, lexical n-gram contamination, rule-cue checks (#28),
+  entity overlap, independent adjudication (card structure + optional
+  second-model label), character-n-gram diversity, and model-disagreement
+  (requires ``model_doc_type`` / ``model_subclass`` on the candidate).
 
 Disciplines carried in (issues #52/#57/#75): every source is revision-pinned
 (config pins carried as defaults; local overrides record a content-sha
@@ -68,7 +68,9 @@ from mailroom_ml.config import (
     GNOTHEIA_REVISION,
     INSURBIAS_REPO,
     INSURBIAS_REVISION,
+    MAUD_REPO,
     RANDOM_STATE,
+    S1_REPO,
     SYNTHETIC_ELIGIBILITY_MAX_AUTHENTIC,
     SYNTHETIC_MAX_GLOBAL_SHARE,
     SYNTHETIC_MAX_PER_SUBCLASS_SHARE,
@@ -95,6 +97,8 @@ __all__ = [
     "content_sha256",
     "assemble_enron_gt",
     "assemble_cuad_pool",
+    "assemble_maud_pool",
+    "assemble_s1_pool",
     "assemble_cms_pool",
     "assemble_gnotheia_pool",
     "assemble_bdr_pool",
@@ -155,6 +159,8 @@ TAIL_PRIORITY: tuple[str, ...] = (
 ENRON_LINEAGE_COLS: tuple[str, ...] = ("aeslc_join", "llm_zero_shot")
 ENRON_LABEL_SOURCE = "enron_gt"
 CUAD_LABEL_SOURCE = "cuad_full"
+MAUD_LABEL_SOURCE = "maud"
+S1_LABEL_SOURCE = "s1"
 PSEUDO_LABEL_SOURCE = "pseudo_enron"
 SYNTHETIC_LABEL_SOURCE = "synthetic_card"
 
@@ -163,6 +169,8 @@ SYNTHETIC_LABEL_SOURCE = "synthetic_card"
 # ``cap_mult`` x the current contract TRAIN rows *in total* (i.e. a new-row
 # allowance of ``cap_mult - 1`` x today's mass).  CLI knob: ``cuad_cap_mult``.
 CUAD_CAP_MULT = 2.0
+MAUD_CAP_MULT = 2.0
+S1_CAP_MULT = 2.0
 
 # Tier-1 Enron rows are source-matched authentic GT (``label_source=
 # enron_gt``), never synthetic, so neither the Tier-3 synthesis tier table
@@ -301,6 +309,27 @@ def _is_bad_subclass(subclass: str, head: tuple[str, ...]) -> bool:
     """True when the normalized subclass is off the observed head (#75:
     never a fabricated label — the row is a reject instead)."""
     return subclass not in head
+
+
+def _silent_other_remap(raw: Any, subclass: str, head: tuple[str, ...]) -> bool:
+    """True when ``normalize_subclass`` invented ``other`` for an OOV token.
+
+    Merger/corporate heads include canonical ``other``.  Adopting every
+    unrecognised raw label as ``other`` would hide surface drift (#16/#75).
+    Empty / unknown tokens that remapped are rejects; an explicit ``other``
+    (or a raw token already on the head) is not.
+    """
+    if subclass != "other":
+        return False
+    token = (
+        str(raw or "").strip().lower().replace(" ", "_").replace("-", "_")
+    )
+    return token not in {"other", *head}
+
+
+def _source_matched_cap(n_train: int, cap_mult: float) -> int:
+    """Max adopted rows from a source-matched pool: ``cap_mult × TRAIN``."""
+    return max(0, int(round(float(cap_mult) * n_train)))
 
 
 def _dedup_within_pool(records: list[dict[str, Any]]) -> tuple[
@@ -633,6 +662,175 @@ def assemble_cuad_pool(
             "filename": fn, "reason": "cap_contract",
             "detail": f"CUAD contract cap {cap} (cap_mult={cap_mult} x "
                       f"{n_contract_train} contract train rows) exceeded",
+        } for fn in cut["filename"])
+        rows = rows.iloc[:cap].reset_index(drop=True)
+    return PoolResult(rows, _reject_frame(rejects), _reject_frame([]))
+
+
+def _pool_text_and_id(row: dict[str, Any]) -> tuple[str, str]:
+    """Resolve ``(filename, doc_text)`` from a CUAD-like or flat pool row."""
+    fn = str(row.get("id") or row.get("filename") or row.get("document_id") or "")
+    text = str(row.get("doc_text") or "")
+    if not text.strip():
+        text = str(_nested_field(row.get("input"), "doc_text") or "")
+    return fn, text
+
+
+def _pool_subclass_raw(row: dict[str, Any], *keys: str) -> Any:
+    meta = row.get("metadata")
+    for key in keys:
+        if key in row and row.get(key) not in (None, ""):
+            return row.get(key)
+        nested = _nested_field(meta, key)
+        if nested not in (None, ""):
+            return nested
+    return None
+
+
+def _title_leaks_label(title: str, subclass: str) -> bool:
+    """True when a non-empty title carries the subclass token (leak law)."""
+    if not str(title).strip() or not subclass:
+        return False
+    t = str(title).lower()
+    token = subclass.replace("_", " ").lower()
+    return subclass.lower() in t or token in t
+
+
+def assemble_maud_pool(
+    pool_df: pd.DataFrame,
+    canonical_docs: pd.DataFrame,
+    *,
+    cap_mult: float = MAUD_CAP_MULT,
+    source_corpus: str = MAUD_REPO,
+    source_revision: str = "",
+    head_subclasses: tuple[str, ...] | None = None,
+    label_confidence: float = 1.0,
+) -> PoolResult:
+    """Tier-1 MAUD merger-agreement pool (#16).
+
+    Accepts CUAD-shaped rows (``id`` / ``input.doc_text`` /
+    ``metadata.consideration_type|category``) or a flat frame
+    (``filename``, ``doc_text``, ``subclass``).  Titles default empty
+    (leak law); a supplied title that names the subclass is a loud
+    ``leak_title`` reject.  Cap: ``cap_mult`` × merger_agreement TRAIN rows.
+    """
+    if pool_df.empty:
+        return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
+    head = head_subclasses if head_subclasses is not None \
+        else _head_surface(canonical_docs, "merger_agreement")
+    n_train = int(
+        ((canonical_docs["doc_type"] == "merger_agreement")
+         & (canonical_docs["split"] == "train")).sum())
+    cap = _source_matched_cap(n_train, cap_mult)
+    records: list[dict[str, Any]] = []
+    rejects: list[dict[str, str]] = []
+    sort_key = "id" if "id" in pool_df.columns else (
+        "filename" if "filename" in pool_df.columns else pool_df.columns[0])
+    for r in pool_df.sort_values(sort_key).to_dict("records"):
+        fn, text = _pool_text_and_id(r)
+        if not fn:
+            fn = f"maud:{content_sha256(text)[:12]}"
+        if not text.strip():
+            rejects.append({"filename": fn, "reason": "missing_doc_text",
+                            "detail": "MAUD row carries no doc_text"})
+            continue
+        raw = _pool_subclass_raw(
+            r, "subclass", "consideration_type", "category")
+        subclass = _normalized_subclass("merger_agreement", raw)
+        if _is_bad_subclass(subclass, head) or _silent_other_remap(raw, subclass, head):
+            rejects.append({
+                "filename": fn, "reason": "subclass_not_on_head",
+                "detail": f"{raw!r} resolves to {subclass!r}, not on "
+                          f"the observed merger_agreement head {tuple(head)}"})
+            continue
+        title = str(r.get("title") or "")
+        if _title_leaks_label(title, subclass):
+            rejects.append({
+                "filename": fn, "reason": "leak_title",
+                "detail": f"title {title!r} names subclass {subclass!r}"})
+            continue
+        records.append(_doc_record(
+            filename=fn, doc_text=text, doc_type="merger_agreement",
+            subclass=subclass, title="", source_corpus=source_corpus,
+            source_revision=source_revision or "local",
+            label_source=MAUD_LABEL_SOURCE, label_confidence=label_confidence,
+            lineage="maud", tier=1))
+    rows, post = _finalize_pool(records, canonical_docs)
+    rejects.extend(post)
+    if len(rows) > cap:
+        cut = rows.iloc[cap:]
+        rejects.extend({
+            "filename": fn, "reason": "cap_merger_agreement",
+            "detail": f"MAUD cap {cap} (cap_mult={cap_mult} x "
+                      f"{n_train} merger_agreement train rows) exceeded",
+        } for fn in cut["filename"])
+        rows = rows.iloc[:cap].reset_index(drop=True)
+    return PoolResult(rows, _reject_frame(rejects), _reject_frame([]))
+
+
+def assemble_s1_pool(
+    pool_df: pd.DataFrame,
+    canonical_docs: pd.DataFrame,
+    *,
+    cap_mult: float = S1_CAP_MULT,
+    source_corpus: str = S1_REPO,
+    source_revision: str = "",
+    head_subclasses: tuple[str, ...] | None = None,
+    label_confidence: float = 1.0,
+) -> PoolResult:
+    """Tier-1 S1 corporate-record pool (#16).
+
+    Same hygiene as CUAD/MAUD: sha/filename dedup, observed-head check,
+    empty titles, leak-title reject, ``cap_mult`` × corporate_record TRAIN.
+    """
+    if pool_df.empty:
+        return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
+    head = head_subclasses if head_subclasses is not None \
+        else _head_surface(canonical_docs, "corporate_record")
+    n_train = int(
+        ((canonical_docs["doc_type"] == "corporate_record")
+         & (canonical_docs["split"] == "train")).sum())
+    cap = _source_matched_cap(n_train, cap_mult)
+    records: list[dict[str, Any]] = []
+    rejects: list[dict[str, str]] = []
+    sort_key = "id" if "id" in pool_df.columns else (
+        "filename" if "filename" in pool_df.columns else pool_df.columns[0])
+    for r in pool_df.sort_values(sort_key).to_dict("records"):
+        fn, text = _pool_text_and_id(r)
+        if not fn:
+            fn = f"s1:{content_sha256(text)[:12]}"
+        if not text.strip():
+            rejects.append({"filename": fn, "reason": "missing_doc_text",
+                            "detail": "S1 row carries no doc_text"})
+            continue
+        raw = _pool_subclass_raw(r, "subclass", "category", "record_type")
+        subclass = _normalized_subclass("corporate_record", raw)
+        if _is_bad_subclass(subclass, head) or _silent_other_remap(raw, subclass, head):
+            rejects.append({
+                "filename": fn, "reason": "subclass_not_on_head",
+                "detail": f"{raw!r} resolves to {subclass!r}, not on "
+                          f"the observed corporate_record head {tuple(head)}"})
+            continue
+        title = str(r.get("title") or "")
+        if _title_leaks_label(title, subclass):
+            rejects.append({
+                "filename": fn, "reason": "leak_title",
+                "detail": f"title {title!r} names subclass {subclass!r}"})
+            continue
+        records.append(_doc_record(
+            filename=fn, doc_text=text, doc_type="corporate_record",
+            subclass=subclass, title="", source_corpus=source_corpus,
+            source_revision=source_revision or "local",
+            label_source=S1_LABEL_SOURCE, label_confidence=label_confidence,
+            lineage="s1", tier=1))
+    rows, post = _finalize_pool(records, canonical_docs)
+    rejects.extend(post)
+    if len(rows) > cap:
+        cut = rows.iloc[cap:]
+        rejects.extend({
+            "filename": fn, "reason": "cap_corporate_record",
+            "detail": f"S1 cap {cap} (cap_mult={cap_mult} x "
+                      f"{n_train} corporate_record train rows) exceeded",
         } for fn in cut["filename"])
         rows = rows.iloc[:cap].reset_index(drop=True)
     return PoolResult(rows, _reject_frame(rejects), _reject_frame([]))
@@ -1469,16 +1667,44 @@ def gate_lexical_contamination(
                       {"overlap_count": len(hits)})
 
 
+def _cue_present(text: str, cue: str) -> bool:
+    """Case-insensitive cue match: word-boundary for single tokens."""
+    cue = str(cue).strip()
+    if not cue:
+        return False
+    t = str(text).lower()
+    c = cue.lower()
+    if re.search(r"\s", c) or len(c) > 24:
+        return c in t
+    return bool(re.search(rf"\b{re.escape(c)}\b", t))
+
+
 def gate_rule_cues(candidate: dict[str, Any], card: LabelCard,
                    *args: Any, **kwargs: Any) -> GateResult:
-    """Gate 3 (STUB): rule-based positive/negative cue checks per label card.
+    """Gate 3: rule-based positive/negative cue checks per label card (#28).
 
-    Scaffold only — the cue checker is not implemented; ``not_run`` blocks
-    adoption until it lands (no gate, no adoption).
+    If the card lists ``positive_cues``, at least one must appear in
+    ``doc_text`` (reason ``missing_positive_cue``).  Any ``negative_cues``
+    hit is a reject (``negative_cue_present``).  An empty cue list is a
+    vacuous pass (``no_cues_on_card``) — cards without cues cannot invent
+    them here.
     """
-    del candidate, card, args, kwargs
-    return GateResult("rule_cues", "not_run",
-                      "stub: rule-based cue checker not implemented (Tier-3 scaffold)")
+    del args, kwargs
+    text = str(candidate.get("doc_text") or "")
+    hits = [c for c in card.positive_cues if _cue_present(text, c)]
+    if card.positive_cues and not hits:
+        return GateResult(
+            "rule_cues", "reject", "missing_positive_cue",
+            {"required": list(card.positive_cues), "hits": []})
+    negs = [c for c in card.negative_cues if _cue_present(text, c)]
+    if negs:
+        return GateResult(
+            "rule_cues", "reject", "negative_cue_present",
+            {"hits": negs})
+    reason = "no_cues_on_card" if not card.positive_cues and not card.negative_cues \
+        else "cues_satisfied"
+    return GateResult("rule_cues", "pass", reason,
+                      {"positive_hits": hits})
 
 
 def gate_entity_overlap(
@@ -1519,27 +1745,129 @@ def gate_entity_overlap(
 def gate_independent_adjudication(
     candidate: dict[str, Any], card: LabelCard,
     *args: Any, **kwargs: Any) -> GateResult:
-    """Gate 5 (STUB): a second model — never the generator — adjudicates."""
-    del candidate, card, args, kwargs
-    return GateResult("independent_adjudication", "not_run",
-                      "stub: independent adjudicator not wired (second model required)")
+    """Gate 5: a second adjudicator, never the generator (#28).
+
+    Prefers an explicit ``adjudication`` / ``adjudicator_*`` label from a
+    second model.  Otherwise applies the card's structural rules
+    (``title_patterns``, ``required_structure``, ``prohibited_facts``) as
+    an independent rule set that Gate 3 does not use.
+    """
+    del args
+    adj = candidate.get("adjudication")
+    if isinstance(adj, dict):
+        adj_parent = str(adj.get("parent_class") or adj.get("doc_type") or "")
+        adj_sc = str(adj.get("subclass") or adj.get("label") or "")
+        if adj_parent and adj_parent != card.parent_class:
+            return GateResult(
+                "independent_adjudication", "reject", "adjudication_mismatch",
+                {"adjudicator_parent": adj_parent})
+        if adj_sc and adj_sc != card.subclass:
+            return GateResult(
+                "independent_adjudication", "reject", "adjudication_mismatch",
+                {"adjudicator_subclass": adj_sc})
+        return GateResult("independent_adjudication", "pass",
+                          "adjudicator_agrees",
+                          {"source": "adjudication"})
+    title = str(candidate.get("title") or "")
+    text = str(candidate.get("doc_text") or "")
+    if card.title_patterns and not any(
+            p.lower() in title.lower() for p in card.title_patterns if p):
+        return GateResult(
+            "independent_adjudication", "reject", "title_pattern_miss",
+            {"patterns": list(card.title_patterns)})
+    missing = [s for s in card.required_structure
+               if s and s.lower() not in text.lower()]
+    if missing:
+        return GateResult(
+            "independent_adjudication", "reject", "required_structure_miss",
+            {"missing": missing})
+    banned = [s for s in card.prohibited_facts
+              if s and s.lower() in text.lower()]
+    if banned:
+        return GateResult(
+            "independent_adjudication", "reject", "prohibited_fact_present",
+            {"hits": banned})
+    extra = kwargs.get("known_entities") or ()
+    del extra
+    if not (card.title_patterns or card.required_structure
+            or card.prohibited_facts):
+        return GateResult(
+            "independent_adjudication", "pass", "no_independent_rules",
+            {"source": "vacuous"})
+    return GateResult("independent_adjudication", "pass",
+                      "structure_satisfied", {"source": "label_card"})
+
+
+def _char_ngrams(text: str, n: int = 4) -> set[str]:
+    t = re.sub(r"\s+", " ", str(text).lower())
+    return {t[i:i + n] for i in range(max(0, len(t) - n + 1))}
+
+
+def _jaccard(a: set[str], b: set[str]) -> float:
+    if not a or not b:
+        return 0.0
+    inter = len(a & b)
+    union = len(a | b)
+    return inter / union if union else 0.0
 
 
 def gate_embedding_diversity(
     candidate: dict[str, Any], *args: Any, **kwargs: Any) -> GateResult:
-    """Gate 6 (STUB): candidate embedding must clear the pool's diversity
-    floor (chromatic-diversity baseline from the blind Enron pool)."""
-    del candidate, args, kwargs
-    return GateResult("embedding_diversity", "not_run",
-                      "stub: embedding diversity check not implemented")
+    """Gate 6: character n-gram Jaccard vs the accepted/authentic pool.
+
+    CPU-only (no embedding model).  Rejects near-duplicates above
+    ``max_similarity`` (default 0.85) with reason ``near_duplicate``.
+    An empty pool is a vacuous pass.
+    """
+    del args
+    pool = list(kwargs.get("pool_texts") or ())
+    max_sim = float(kwargs.get("max_similarity") or 0.85)
+    n = int(kwargs.get("n_gram") or 4)
+    text = str(candidate.get("doc_text") or "")
+    cand = _char_ngrams(text, n)
+    if not pool:
+        return GateResult("embedding_diversity", "pass", "empty_pool",
+                          {"max_similarity": max_sim})
+    best = 0.0
+    for other in pool:
+        best = max(best, _jaccard(cand, _char_ngrams(str(other), n)))
+        if best > max_sim:
+            return GateResult(
+                "embedding_diversity", "reject", "near_duplicate",
+                {"similarity": round(best, 4), "max_similarity": max_sim})
+    return GateResult(
+        "embedding_diversity", "pass", "diverse",
+        {"similarity": round(best, 4), "max_similarity": max_sim})
 
 
 def gate_model_disagreement(
     candidate: dict[str, Any], *args: Any, **kwargs: Any) -> GateResult:
-    """Gate 7 (STUB): the fine-tune model must not disagree with the card."""
-    del candidate, args, kwargs
-    return GateResult("model_disagreement", "not_run",
-                      "stub: model-disagreement filter not implemented")
+    """Gate 7: the fine-tune (or any scorer) must agree with the card.
+
+    Requires ``model_doc_type`` and ``model_subclass`` on the candidate
+    (reason ``missing_model_prediction`` when absent — no silent pass).
+    Optional ``model_doc_type_prob`` must clear ``min_prob`` (default 0.5).
+    """
+    card = args[0] if args else kwargs.get("card")
+    min_prob = float(kwargs.get("min_prob") or 0.5)
+    model_dt = candidate.get("model_doc_type")
+    model_sc = candidate.get("model_subclass")
+    if model_dt is None or model_sc is None:
+        return GateResult(
+            "model_disagreement", "reject", "missing_model_prediction",
+            {"need": ["model_doc_type", "model_subclass"]})
+    if card is not None:
+        if str(model_dt) != card.parent_class or str(model_sc) != card.subclass:
+            return GateResult(
+                "model_disagreement", "reject", "model_label_mismatch",
+                {"model_doc_type": model_dt, "model_subclass": model_sc})
+    prob = candidate.get("model_doc_type_prob")
+    if prob is not None and float(prob) < min_prob:
+        return GateResult(
+            "model_disagreement", "reject", "model_prob_below_floor",
+            {"prob": float(prob), "min_prob": min_prob})
+    return GateResult("model_disagreement", "pass", "model_agrees",
+                      {"model_doc_type": model_dt, "model_subclass": model_sc})
 
 
 def run_seven_gates(
@@ -1549,14 +1877,18 @@ def run_seven_gates(
     *,
     known_entities: Iterable[str] = (),
     n_gram: int = 5,
+    pool_texts: Iterable[str] | None = None,
     audit: AuditStore | None = None,
 ) -> GateReport:
     """Run the ordered seven gates; short-circuit at the first non-pass.
 
-    A ``not_run`` stub blocks the candidate (reason names the missing gate)
-    — the pipeline cannot pass until every gate executed.  On failure the
-    candidate is written to ``audit`` (never fitted).
+    Every gate now executes (no ``not_run`` stubs).  On failure the
+    candidate is written to ``audit`` (never fitted).  Audit records use
+    stable reason codes from each gate (``missing_positive_cue``,
+    ``near_duplicate``, ``missing_model_prediction``, …).
     """
+    diversity_pool = list(pool_texts) if pool_texts is not None \
+        else list(corpus_texts)
     gate_steps: tuple[tuple[str, Callable[[], GateResult]], ...] = (
         ("schema", lambda: gate_schema(candidate, card)),
         ("lexical_contamination", lambda: gate_lexical_contamination(
@@ -1567,8 +1899,10 @@ def run_seven_gates(
             known_entities=known_entities)),
         ("independent_adjudication", lambda: gate_independent_adjudication(
             candidate, card)),
-        ("embedding_diversity", lambda: gate_embedding_diversity(candidate)),
-        ("model_disagreement", lambda: gate_model_disagreement(candidate)),
+        ("embedding_diversity", lambda: gate_embedding_diversity(
+            candidate, pool_texts=diversity_pool)),
+        ("model_disagreement", lambda: gate_model_disagreement(
+            candidate, card)),
     )
     results: list[GateResult] = []
     failed: GateResult | None = None

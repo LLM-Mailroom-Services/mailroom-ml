@@ -46,7 +46,9 @@ from mailroom_ml.enrichment import (
     assemble_enron_gt,
     assemble_gnotheia_pool,
     assemble_insurbias_pool,
+    assemble_maud_pool,
     assemble_pseudo_labels,
+    assemble_s1_pool,
     assign_grouped_split,
     build_enrichment_windows,
     combine_tier1,
@@ -754,13 +756,49 @@ def test_gate_entity_overlap():
     assert res3.decision == "pass"
 
 
-def test_stub_gates_are_not_run_not_pass():
-    card = LabelCard(parent_class="contract", subclass="hosting")
-    cand = {"doc_text": "x", "parent_class": "contract", "subclass": "hosting"}
-    assert gate_rule_cues(cand, card).decision == "not_run"
-    assert gate_independent_adjudication(cand, card).decision == "not_run"
-    assert gate_embedding_diversity(cand).decision == "not_run"
-    assert gate_model_disagreement(cand).decision == "not_run"
+def test_gate_rule_cues_positive_and_negative():
+    card = LabelCard(parent_class="contract", subclass="hosting",
+                     positive_cues=("hosting", "uptime"),
+                     negative_cues=("insurance claim",))
+    ok = {"doc_text": "This hosting schedule sets the uptime target.",
+          "parent_class": "contract", "subclass": "hosting"}
+    assert gate_rule_cues(ok, card).decision == "pass"
+    missing = {**ok, "doc_text": "A generic commercial arrangement."}
+    miss = gate_rule_cues(missing, card)
+    assert miss.decision == "reject"
+    assert miss.reason == "missing_positive_cue"
+    banned = {**ok, "doc_text": "hosting plus an insurance claim packet"}
+    neg = gate_rule_cues(banned, card)
+    assert neg.decision == "reject"
+    assert neg.reason == "negative_cue_present"
+    empty = LabelCard(parent_class="contract", subclass="hosting")
+    vacuous = gate_rule_cues(ok, empty)
+    assert vacuous.decision == "pass"
+    assert vacuous.reason == "no_cues_on_card"
+
+
+def test_gate_independent_and_diversity_and_model():
+    card = LabelCard(parent_class="contract", subclass="hosting",
+                     title_patterns=("Hosting",),
+                     required_structure=("service level",),
+                     prohibited_facts=("Enron Corp",))
+    cand = {"doc_text": "Vertex Dynamics hosted a service level target.",
+            "title": "Hosting Schedule", "parent_class": "contract",
+            "subclass": "hosting", "model_doc_type": "contract",
+            "model_subclass": "hosting"}
+    assert gate_independent_adjudication(cand, card).decision == "pass"
+    assert gate_independent_adjudication(
+        {**cand, "title": "Other"}, card).reason == "title_pattern_miss"
+    assert gate_embedding_diversity(cand).decision == "pass"  # empty pool
+    near = gate_embedding_diversity(
+        cand, pool_texts=[cand["doc_text"]], max_similarity=0.2)
+    assert near.decision == "reject"
+    assert near.reason == "near_duplicate"
+    miss = gate_model_disagreement({"doc_text": "x"}, card)
+    assert miss.reason == "missing_model_prediction"
+    bad = gate_model_disagreement({**cand, "model_subclass": "license"}, card)
+    assert bad.reason == "model_label_mismatch"
+    assert gate_model_disagreement(cand, card).decision == "pass"
 
 
 def test_run_seven_gates_short_circuits_and_audits():
@@ -776,16 +814,24 @@ def test_run_seven_gates_short_circuits_and_audits():
     assert report.first_failure.gate == "lexical_contamination"
     assert len(report.gates) == 2  # schema passed, lexical rejected -> stop
     assert len(audit) == 1
-    # a clean candidate still cannot pass while stub gates are not_run:
-    # nothing is adopted without the full gate pipeline
+    # a clean candidate without model scores fails Gate 7 (not a stub)
     clean = {"id": "c2", "parent_class": "contract", "subclass": "hosting",
              "title": "t", "doc_text": "Vertex Dynamics hosted a migration."}
     report2 = run_seven_gates(clean, card, corpus, known_entities=("acme corp",),
                               audit=audit)
     assert report2.passed is False
-    assert report2.first_failure.gate == "rule_cues"
+    assert report2.first_failure.gate == "model_disagreement"
+    assert report2.first_failure.reason == "missing_model_prediction"
     assert len(audit) == 2
     assert all(r["passed"] is False for r in audit.records)
+    # the same candidate with model agreement + cues can pass
+    card2 = LabelCard(parent_class="contract", subclass="hosting",
+                      positive_cues=("hosted",))
+    ready = {**clean, "id": "c3", "model_doc_type": "contract",
+             "model_subclass": "hosting"}
+    report3 = run_seven_gates(ready, card2, corpus,
+                              known_entities=("acme corp",), audit=audit)
+    assert report3.passed is True
 
 
 def test_run_seven_gates_does_not_run_later_gates_after_failure(monkeypatch):
@@ -1051,12 +1097,17 @@ def test_cli_rerun_is_byte_identical(tmp_path):
                          (stage_dir / "enrichment_audit.jsonl").read_bytes())
 
 
-def test_cli_tier2_requires_blind_pool(tmp_path, capsys):
+def test_cli_tier2_requires_scored_columns(tmp_path, capsys):
     stage_dir = tmp_path / "stage"
     write_stage(stage_dir, _canonical())
-    args = ["--stage", str(stage_dir), "--tiers", "2", "--no-windows"]
+    blind = tmp_path / "blind.parquet"
+    pd.DataFrame([{"filename": "x.txt", "doc_text": "hello"}]).to_parquet(blind)
+    args = ["--stage", str(stage_dir), "--tiers", "2", "--no-windows",
+            "--blind-pool", str(blind)]
     assert assemble_cli.main(args) == 2
-    assert "blind-pool" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "doc_type_conf" in err
+    assert "score_blind_pool" in err
 
 
 def test_cli_tier2_end_to_end(tmp_path):
@@ -1117,7 +1168,8 @@ def test_cli_tier3_eligibility_and_gates(tmp_path):
     candidates.write_text(
         json.dumps({"id": "s1", "parent_class": "contract", "subclass": "hosting",
                     "title": "Hosting Agreement", "doc_text": "Vertex Dynamics "
-                    "agreed to host the production systems for three years."})
+                    "agreed to provide hosting for the production systems "
+                    "for three years."})
         + "\n", encoding="utf-8")
     args = ["--stage", str(stage_dir), "--tiers", "3", "--no-windows",
             "--tier3-cards", str(cards),
@@ -1127,10 +1179,11 @@ def test_cli_tier3_eligibility_and_gates(tmp_path):
     audit = [json.loads(line) for line in
              (stage_dir / "enrichment_audit.jsonl").read_text(encoding="utf-8")
              .splitlines() if line.strip()]
-    # stub gates (rule_cues + 3 more) block adoption in the scaffold
+    # no model_* fields -> Gate 7 rejects with a stable reason code
     assert all(not r["passed"] for r in audit if "candidate_id" in r)
     admission = [r for r in audit if r.get("candidate_id") == "s1"]
-    assert admission and admission[0]["first_failure"] == "rule_cues"
+    assert admission and admission[0]["first_failure"] == "model_disagreement"
+    assert admission[0]["reason"] == "missing_model_prediction"
     # eligibility/mixture facts land in the manifest block
     manifest = (stage_dir / "manifest.txt").read_text(encoding="utf-8")
     assert "tier3" in manifest
@@ -1150,3 +1203,96 @@ def test_cli_unknown_cap_is_loud(tmp_path, capsys):
             "--caps", "bogus=1.0"]
     with pytest.raises(SystemExit):
         assemble_cli.main(args)
+
+
+def _legal_canonical() -> pd.DataFrame:
+    rows = []
+    for i in range(4):
+        rows.append({
+            "filename": f"ma_gt_{i}.txt", "document_id": "",
+            "content_sha256": content_sha256(f"merger {i}"),
+            "source_revision": cfg.FINETUNE_REVISION,
+            "title": f"merger {i}", "doc_text": f"merger body {i}",
+            "doc_type": "merger_agreement", "subclass": "all_cash",
+            "corpus_split": "train", "token_estimate": 1, "split": "train",
+        })
+    for i in range(4):
+        rows.append({
+            "filename": f"cr_gt_{i}.txt", "document_id": "",
+            "content_sha256": content_sha256(f"bylaws {i}"),
+            "source_revision": cfg.FINETUNE_REVISION,
+            "title": f"bylaws {i}", "doc_text": f"bylaws body {i}",
+            "doc_type": "corporate_record", "subclass": "bylaws",
+            "corpus_split": "train", "token_estimate": 1, "split": "train",
+        })
+    return pd.DataFrame(rows)
+
+
+def test_maud_pool_maps_and_head_checks():
+    canonical = _legal_canonical()
+    pool = pd.DataFrame([
+        {"id": "maud_ok", "input": {"doc_text": "Buyer will pay cash at close."},
+         "metadata": {"consideration_type": "all_cash"}},
+        {"id": "maud_bad", "input": {"doc_text": "Odd consideration."},
+         "metadata": {"consideration_type": "not_a_real_type"}},
+        {"id": "maud_leak", "input": {"doc_text": "Stock deal."},
+         "metadata": {"consideration_type": "all_stock"},
+         "title": "All Stock Merger Agreement"},
+    ])
+    res = assemble_maud_pool(pool, canonical)
+    assert list(res.rows["filename"]) == ["maud_ok"]
+    assert res.rows.iloc[0]["doc_type"] == "merger_agreement"
+    assert res.rows.iloc[0]["subclass"] == "all_cash"
+    assert res.rows.iloc[0]["title"] == ""
+    reasons = set(res.rejected["reason"])
+    assert "subclass_not_on_head" in reasons
+    assert "leak_title" in reasons
+
+
+def test_s1_pool_caps_and_dedups():
+    canonical = _legal_canonical()
+    pool = pd.DataFrame([
+        {"filename": "s1_ok.txt", "doc_text": "These bylaws govern Vertex.",
+         "subclass": "bylaws"},
+        {"filename": "s1_dup.txt", "doc_text": "bylaws 0",
+         "subclass": "bylaws"},  # sha-collides with canonical content_sha256
+        {"filename": "s1_off.txt", "doc_text": "Something else.",
+         "subclass": "not_on_head"},
+    ])
+    res = assemble_s1_pool(pool, canonical, cap_mult=1.0)
+    assert "s1_ok.txt" in set(res.rows["filename"])
+    reasons = set(res.rejected["reason"])
+    assert "duplicate_sha_canonical" in reasons
+    assert "subclass_not_on_head" in reasons
+
+
+def test_cli_maud_s1_local_paths(tmp_path):
+    stage_dir = tmp_path / "stage"
+    write_stage(stage_dir, _canonical())
+    maud = tmp_path / "maud.jsonl"
+    maud.write_text(json.dumps({
+        "id": "maud_cli", "input": {"doc_text": "All cash merger consideration."},
+        "metadata": {"consideration_type": "all_cash"},
+    }) + "\n", encoding="utf-8")
+    s1 = tmp_path / "s1.jsonl"
+    s1.write_text(json.dumps({
+        "filename": "s1_cli.txt", "doc_text": "The board adopted these bylaws.",
+        "subclass": "bylaws",
+    }) + "\n", encoding="utf-8")
+    pools = {
+        "enron": _tiny_enron_pool(tmp_path),
+        "cuad": _tiny_cuad_pool(tmp_path),
+        "cms": _empty_pools(tmp_path, ("cms",))["cms"],
+        "gnotheia": _tiny_gnotheia_pool(tmp_path),
+        "bdr": _empty_pools(tmp_path, ("bdr",))["bdr"],
+        "insurbias": _empty_pools(tmp_path, ("insurbias",))["insurbias"],
+        "maud": maud,
+        "s1": s1,
+    }
+    rc = assemble_cli.main(_cli_args(stage_dir, pools))
+    assert rc == 0
+    docs = pd.read_parquet(
+        stage_dir / "data" / "documents" / "train"
+        / "enrichment-00000-of-00001.parquet")
+    assert "maud_cli" in set(docs["filename"])
+    assert "s1_cli.txt" in set(docs["filename"])

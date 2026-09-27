@@ -198,7 +198,10 @@ class LossConfig:
       dominated the shared backbone. Weighted blend::
           loss = λ · CE_dt + (1-λ) · mean(CE_subclass_heads)
     - ``label_smoothing``: applied to the doc_type head only (calibration
-      lever; subclass heads keep hard targets).
+      lever).
+    - ``subclass_label_smoothing``: applied to each subclass CE head
+      independently (#22). Default 0.0 preserves hard targets. Does not
+      affect the doc_type head (``--label-smoothing`` stays separate).
     - ``weight_mode``: "inverse" (labels.json inverse-frequency, as before),
       "sqrt-inverse" (sqrt of the stored weights ≈ inverse-sqrt frequency —
       tames the rare-class amplification), "none" (uniform).
@@ -208,6 +211,7 @@ class LossConfig:
     """
     lambda_dt: float = 0.65
     label_smoothing: float = 0.0
+    subclass_label_smoothing: float = 0.0
     weight_mode: str = "inverse"
     weight_cap: float = 10.0
 
@@ -281,6 +285,7 @@ def head_loss(model, batch, heads, device,
                 weight=cfg.transform_weights(heads[cls]["weights"],
                                              heads[cls]["labels"],
                                              device=logits[cls].device),
+                label_smoothing=cfg.subclass_label_smoothing,
                 ignore_index=CE_IGNORE_INDEX))
     if sc_ces:
         loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
@@ -656,6 +661,23 @@ def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
         json.dumps(summary, sort_keys=True, indent=2))
 
 
+def _write_ood_probe(output: Path, val_logits: dict) -> None:
+    """Fit the energy OOD probe on validation doc_type logits (#18).
+
+    Validation only — never the held-out test (plan D11).  Missing or
+    empty logits leave any existing sidecar untouched.
+    """
+    rows = val_logits.get("doc_type") if val_logits else None
+    if not rows:
+        return
+    stacked = torch.cat(rows).detach().cpu().numpy()
+    if stacked.size == 0:
+        return
+    from mailroom_ml.ood import fit_ood_probe, write_ood_probe
+
+    write_ood_probe(output / "ood_probe.json", fit_ood_probe(stacked))
+
+
 def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
                   n_train_rows: int, batch_size: int,
                   grad_accum: int) -> dict:
@@ -910,7 +932,20 @@ def build_parser() -> argparse.ArgumentParser:
                          "gradient (default 0.65)")
     ap.add_argument("--label-smoothing", type=float, default=0.0,
                     help="label smoothing on the doc_type head only "
-                         "(calibration lever; 0.05 recommended)")
+                         "(calibration lever; 0.05 recommended). Does not "
+                         "touch subclass CE — see --subclass-label-smoothing")
+    ap.add_argument("--subclass-label-smoothing", type=float, default=0.0,
+                    help="label smoothing on subclass CE heads only "
+                         "(#22; default 0.0 keeps hard targets). Independent "
+                         "of --label-smoothing (doc_type). Interacts with "
+                         "--weight-mode: smoothing is applied after class "
+                         "weights inside F.cross_entropy")
+    ap.add_argument("--input-construction", choices=["v1", "v2"],
+                    default="v1",
+                    help="window decoration version (#29). v1 = title + "
+                         "blank line + body (published Hub pin). v2 = "
+                         "[FILE_NAME]/[TITLE]/[WINDOW_INDEX] prefix. Never "
+                         "mix v2 windows into the v1 Hub revision")
     ap.add_argument("--weight-mode", choices=["inverse", "sqrt-inverse",
                                               "none"], default="inverse",
                     help="class-weight transform: inverse (labels.json), "
@@ -1043,6 +1078,7 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
         "test_metrics": test_metrics or {},
         "epochs": events,
         "temperatures": {k: round(v, 3) for k, v in temps.items()},
+        "input_construction": getattr(args, "input_construction", "v1"),
     }
 
 
@@ -1152,6 +1188,7 @@ def main() -> int:
 
     loss_cfg = LossConfig(lambda_dt=args.loss_lambda_dt,
                           label_smoothing=args.label_smoothing,
+                          subclass_label_smoothing=args.subclass_label_smoothing,
                           weight_mode=args.weight_mode,
                           weight_cap=args.weight_cap)
 
@@ -1178,6 +1215,7 @@ def main() -> int:
         print(f"resumed from {args.resume}: continuing at epoch "
               f"{start_epoch} (opt-steps {steps_done}, "
               f"prior epochs {len(events)})", flush=True)
+    val_logits: dict = {}
     t0 = time.time()
     if not args.resume:
         steps_done = 0
@@ -1265,6 +1303,7 @@ def main() -> int:
                         optimizer=optimizer, scheduler=scheduler,
                         epoch=epoch, steps_done=steps_done,
                         steps_done_micro=steps_done_micro)
+        _write_ood_probe(args.output, val_logits)
         # smoke (--max-steps) never archives: the run is a cadence probe, not
         # a checkpoint family — keep runs/ for real epochs only.
         if not args.max_steps:
@@ -1351,6 +1390,7 @@ def main() -> int:
                     optimizer=optimizer, scheduler=scheduler,
                     epoch=len(events), steps_done=steps_done,
                     steps_done_micro=steps_done_micro)
+    _write_ood_probe(args.output, val_logits)
 
     # selection enforcement (2026-09-20 audit R1): the pushed artifact must be
     # the SELECTED epoch, not merely the last one. Promote the selected

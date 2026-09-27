@@ -59,6 +59,26 @@ email share 0.57 train / 0.511 val, macro-F1 0.0845 ≈ the collapse floor;
 | M9a-U8 board evidence audit | general (board-evidence-auditor protocol — not callable pre-restart) | ✅ done | commit `f6a49a1` + audit: all execution claims VERIFIED (diffs, 233/3/3, issues #113–#116); 4 forward-narrative corrections landed |
 | M9a-U9 docs/board close | atom | ⏳ pending | — |
 
+## Mission: open-issues pass (mailroom-ml #1 / #16–#29)
+
+Claimed by: orchestrator (this session), 2026-09-26. Scope is every
+**achievable** open issue on `LLM-Mailroom-Services/mailroom-ml`; GPU spend
+and unpublished Hub source pools stay blocked.
+
+| Card | Owner | Status | Evidence |
+| --- | --- | --- | --- |
+| #22 subclass CE label smoothing | orchestrator | ✅ shipped this pass | `--subclass-label-smoothing`; `tests/test_train.py` |
+| #17 `compare_runs.py` paired bootstrap | orchestrator | ✅ shipped this pass | `training/compare_runs.py`; `tests/test_compare_runs.py` |
+| #25 routing-threshold overlay | orchestrator | ✅ shipped this pass | `routing_thresholds.json` + `load_bundle`; eval `--write-routing-thresholds` |
+| #29 input construction v2 | orchestrator | ✅ shipped this pass | `decorate_window` / `--input-construction`; v1 path unchanged |
+| #28 Tier-3 seven gates | orchestrator | ✅ shipped this pass | `gate_rule_cues` / adjudication / diversity / disagreement live |
+| #19 Modal ONNX export + parity | orchestrator | ✅ shipped this pass | `_export_onnx_and_parity` before `_promote_latest` |
+| #18 energy OOD probe | orchestrator | ✅ shipped this pass | `ood.py`; trainer writes val-fit `ood_probe.json`; fast-path fail-closed |
+| #1 README / AGENTS / runbooks | orchestrator | ✅ shipped this pass | this README + AGENTS + `deploy/README.md` |
+| #16 MAUD + S1 adapters | orchestrator | 🔄 plumbing only | adapters + CLI + tests; **Hub datasets unpublished** (empty revision) |
+| #26 Tier-2 blind pin + scorer | orchestrator | 🔄 plumbing only | pin + `score_blind_pool.py`; Enron blind is text-only (no confidences on Hub) |
+| #13 M9a-U6 L4 Arm B | — | ⛔ BLOCKED — budget | smoke GREEN; 3-epoch arm ≈ $6.0 vs $4.32; needs operator `--budget 7` |
+
 ### U6 run configuration (decided: ONE arm, 3 epochs — smoke-validated)
 
 **Operator decision:** a single arm, 3 epochs (not the earlier two-arm/4-epoch

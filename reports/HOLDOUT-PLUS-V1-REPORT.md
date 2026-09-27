@@ -130,9 +130,20 @@ $0.80/hr L4. The pool will not crash or fail-open on windowing.
   approval before spending it; the set is built and the crash is fixed, so the
   next run should complete in one attempt.
 
+## Run the one-shot GPU eval (~$0.16)
+
+**Do not** run smoke or partial samples — one full pass only.
+
+| Path | Command |
+| --- | --- |
+| **exios66 shell** | `export HF_TOKEN=… MODAL_TOKEN_ID=… MODAL_TOKEN_SECRET=…` then `./training/run_heldout_plus_modal_eval.sh` (optional `SKIP_DEPLOY=1` if `eval_app` already baked the current `data/heldout_plus_v1`) |
+| **GitHub Actions** | Repo → Actions → **heldout-plus-modal-eval** → Run workflow (requires the same three secrets in repo settings) |
+
+Outputs: `reports/eval_<run_tag>-heldout-plus.json` plus `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-*.md`.
+
 ## Phase 2 (tracked, not started)
 
-1. Full 1,323-doc Modal eval on exios66 + interpretive report (needs GPU approval).
+1. Full 1,323-doc Modal eval on exios66 + interpretive report — **script/workflow above**; pending one authorized run.
 2. Corporate-record top-up from newly sourced documents (acceptance criteria above).
 3. CUAD-full contract mapping (41 clause categories → 25 subclasses) + SEC-exhibit
    content-overlap check vs training contracts.

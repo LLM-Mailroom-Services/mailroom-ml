@@ -24,6 +24,8 @@ ROOT = _b
 sys.path.insert(0, str(ROOT / "src"))
 
 from mailroom_ml.config import (  # noqa: E402
+    CANONICAL_REPO,
+    CANONICAL_REVISION,
     CORPUS_DOCUMENT_COUNT,
     DATA_DIR,
     FINETUNE_REPO,
@@ -55,14 +57,34 @@ def main() -> int:
         print(f"marker path : {marker}")
         return 0
 
+    import os
+
     from huggingface_hub import snapshot_download  # noqa: PLC0415
 
-    snapshot_download(
-        repo_id=FINETUNE_REPO,
-        repo_type="dataset",
-        revision=FINETUNE_REVISION,
-        local_dir=str(args.local_dir),
-    )
+    marker = args.local_dir / "parquet" / "ground_truth" / "train"
+    if not (marker.is_dir() and list(marker.glob("*.parquet"))):
+        try:
+            snapshot_download(
+                repo_id=FINETUNE_REPO,
+                repo_type="dataset",
+                revision=FINETUNE_REVISION,
+                local_dir=str(args.local_dir),
+            )
+        except Exception as exc:
+            if os.environ.get("HF_TOKEN"):
+                raise
+            print(
+                f"[fetch_corpus] finetune pull failed ({exc}); "
+                f"using public {CANONICAL_REPO} @ {CANONICAL_REVISION[:8]}…",
+                flush=True,
+            )
+            snapshot_download(
+                repo_id=CANONICAL_REPO,
+                repo_type="dataset",
+                revision=CANONICAL_REVISION,
+                local_dir=str(args.local_dir),
+                allow_patterns=["parquet/**"],
+            )
     rows = load_corpus_rows()
     if len(rows) != CORPUS_DOCUMENT_COUNT:
         print(

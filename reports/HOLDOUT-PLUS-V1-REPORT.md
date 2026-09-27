@@ -136,8 +136,8 @@ $0.80/hr L4. The pool will not crash or fail-open on windowing.
 
 | Path | Command |
 | --- | --- |
-| **exios66 shell** | `export HF_TOKEN=… MODAL_TOKEN_ID=… MODAL_TOKEN_SECRET=…` (or put them in gitignored `secrets.env`) then `./training/run_heldout_plus_modal_eval.sh`. Use `SKIP_DEPLOY=1` only if `eval_app` already baked the current `data/heldout_plus_v1`. |
-| **GitHub Actions** | Actions → **heldout-plus-modal-eval** → Run workflow (repo secrets: same three vars). |
+| **exios66 shell** | `export MODAL_TOKEN_ID=… MODAL_TOKEN_SECRET=…` (optional `HF_TOKEN` for private Hub; public pins suffice). Or gitignored `secrets.env` from `secrets.env.example`, then `./training/run_heldout_plus_modal_eval.sh`. Use `SKIP_DEPLOY=1` only if `eval_app` already baked the current `data/heldout_plus_v1`. |
+| **GitHub Actions** | Actions → **heldout-plus-modal-eval** → Run workflow (repo secrets: **Modal required**; `HF_TOKEN` optional). |
 
 Outputs: `reports/eval_<run_tag>-heldout-plus.json` and `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-*.md`.
 

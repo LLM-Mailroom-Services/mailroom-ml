@@ -3,7 +3,8 @@
 # Deliberately minimal GPU surface: ONE deploy (bakes plus parquet) + ONE run.
 #
 # Prerequisites (env):
-#   HF_TOKEN, MODAL_TOKEN_ID, MODAL_TOKEN_SECRET (exios66 workspace)
+#   MODAL_TOKEN_ID, MODAL_TOKEN_SECRET (exios66 workspace) — required
+#   HF_TOKEN — optional for heldout-plus (public corpus + pinned training data)
 #
 # Usage:
 #   RUN_TAG=m9a-local-20260927-014429 MODULE=latest \
@@ -22,9 +23,12 @@ if [[ -f "${ROOT}/secrets.env" ]]; then
   set -a && source "${ROOT}/secrets.env" && set +a
 fi
 
-: "${HF_TOKEN:?export HF_TOKEN (finetune + Enron + Modal stage pull)}"
 : "${MODAL_TOKEN_ID:?export MODAL_TOKEN_ID for exios66}"
 : "${MODAL_TOKEN_SECRET:?export MODAL_TOKEN_SECRET for exios66}"
+if [[ -z "${HF_TOKEN:-}${HUGGING_FACE_HUB_TOKEN:-}" ]]; then
+  echo "[heldout-plus] HF_TOKEN unset — public Hub fallbacks for corpus/stage" >&2
+fi
+export HF_TOKEN="${HF_TOKEN:-${HUGGING_FACE_HUB_TOKEN:-}}"
 
 export MODAL_PROFILE="${MODAL_PROFILE:-exios66}"
 uv run --extra deploy modal token set \

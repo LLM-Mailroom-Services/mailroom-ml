@@ -1,4 +1,5 @@
 # One-shot held-out-plus eval on exios66 Modal (L4). Manual only — ~$0.16 GPU.
+# Secrets: MODAL_TOKEN_ID + MODAL_TOKEN_SECRET required; HF_TOKEN optional (public Hub).
 name: heldout-plus-modal-eval
 
 on:

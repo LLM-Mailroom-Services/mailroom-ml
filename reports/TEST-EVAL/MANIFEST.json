@@ -1,0 +1,60 @@
+{
+  "schema": "mailroom-ml/test-eval-manifest/v1",
+  "generated": "2026-09-27",
+  "harness": {
+    "cli": "training/eval_modernbert.py",
+    "subset": "test",
+    "n_docs": 323,
+    "max_length": 8192,
+    "seed": 42,
+    "sample": 0,
+    "note": "Full held-out test split; authoritative for M9a #112 gates and Hub eval_report artifacts."
+  },
+  "gate_script": "training/check_m9a_gates.py",
+  "gates_ref": "governance/M9a-HANDOFF.md (mailroom-issues #112)",
+  "runs": [
+    {
+      "run_tag": "m9a-local-20260927-014429",
+      "arm": "B",
+      "role": "primary",
+      "eval_json": "reports/TEST-EVAL/eval_m9a-local-20260927-014429.json",
+      "eval_json_canonical": "reports/eval_m9a-local-20260927-014429.json",
+      "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-m9a-local-20260927-014429.md",
+      "training_report": "reports/M9a-REPORT-m9a-local-20260927-014429.md",
+      "artifact_sha": "faf97878b05a3426a787e8cea55f8b835e1010978cc7844e2a7c43dce09d78bc",
+      "gates_112": {
+        "overall": "FAIL",
+        "contract_macro_f1": { "actual": 0.0195, "threshold": 0.2, "met": false },
+        "correspondence_macro_f1": { "actual": 0.1289, "threshold": 0.25, "met": false },
+        "doc_type_accuracy": { "actual": 0.9505, "threshold": 0.89, "met": true },
+        "window_ece": { "actual": 0.0259, "threshold": 0.05, "met": true }
+      }
+    },
+    {
+      "run_tag": "m9a-local-gpu1-armA-1ep-20260927-025236",
+      "arm": "A",
+      "role": "smoke_compare",
+      "eval_json": "reports/TEST-EVAL/eval_m9a-local-gpu1-armA-1ep-20260927-025236.json",
+      "eval_json_canonical": "reports/eval_m9a-local-gpu1-armA-1ep-20260927-025236.json",
+      "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-m9a-local-gpu1-armA-1ep-20260927-025236.md",
+      "training_report": "reports/M9a-REPORT-m9a-local-gpu1-armA-1ep-20260927-025236.md",
+      "artifact_sha": "5ecea781599be293dcc80f32ac4b57b478d6787aed2c7bbf2cc2a01858b60aae",
+      "gates_112": {
+        "overall": "FAIL",
+        "contract_macro_f1": { "actual": 0.0039, "threshold": 0.2, "met": false },
+        "correspondence_macro_f1": { "actual": 0.0944, "threshold": 0.25, "met": false },
+        "doc_type_accuracy": { "actual": 0.8638, "threshold": 0.89, "met": false },
+        "window_ece": { "actual": 0.0397, "threshold": 0.05, "met": true }
+      }
+    }
+  ],
+  "comparison": "reports/TEST-EVAL/TEST-EVAL-COMPARE-ArmA-vs-ArmB-20260927.md",
+  "baselines": {
+    "run3_eval": "reports/eval_run3_20260921.json",
+    "run3_doc_type_accuracy": 0.8947
+  },
+  "related": {
+    "model_card": "docs/mailroom-modernbert-classifier-model-card.md",
+    "heldout_plus_v1": "reports/HOLDOUT-PLUS-V1-REPORT.md"
+  }
+}

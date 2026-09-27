@@ -1,0 +1,15 @@
+=== M9a #112 gates ===
+  contract_macro_f1: actual=0.0195 threshold=0.2 (ge) -> NOT MET
+  correspondence_macro_f1: actual=0.1289 threshold=0.25 (ge) -> NOT MET
+  doc_type_accuracy: actual=0.9505 threshold=0.89 (ge) -> MET
+  window_ece_calibrated: actual=0.0259 threshold=0.05 (le) -> MET
+=== calibration / subclass surfaces ===
+  subclass_accuracy_conditional: 0.5831
+  window_calibration: ece=0.0259 band_ece=0.0525
+  per_head.contract: macro_f1=0.0195 support={'affiliate': 2, 'agency': 0, 'co_branding': 5, 'collaboration': 2, 'consulting': 1, 'development': 4, 'distributor': 5, 'endorsement': 0, 'franchise': 1, 'hosting': 2, 'ip': 4, 'joint_venture': 2, 'license': 2, 'maintenance': 4, 'manufacturing': 2, 'marketing': 2, 'non_compete_no_solicit': 0, 'other': 0, 'outsourcing': 0, 'promotion': 0, 'reseller': 0, 'service': 8, 'sponsorship': 3, 'strategic_alliance': 4, 'supply': 5, 'transportation': 2} ece_calibrated=None
+  per_head.corporate_record: macro_f1=0.2485 support={'articles_of_incorporation': 5, 'board_resolution': 5, 'bylaws': 1, 'charter_amendment': 9, 'indenture': 4, 'officer_certificate': 7, 'other': 0, 'powers_of_attorney': 3, 'rights_instrument': 3, 'subsidiary_list': 10} ece_calibrated=None
+  per_head.correspondence: macro_f1=0.1289 support={'attorney_demand': 0, 'demand': 6, 'email': 39, 'letter': 14, 'meeting_request': 5, 'memo': 9, 'notice': 4, 'press_release': 8} ece_calibrated=None
+  per_head.insurance_claim: macro_f1=0.9889 support={'auto': 34, 'carrier': 20, 'inpatient': 15, 'outpatient': 15, 'pde': 14, 'property': 16} ece_calibrated=None
+  per_head.merger_agreement: macro_f1=0.2381 support={'all_cash': 6, 'all_stock': 2, 'mixed_cash_stock': 1, 'mixed_cash_stock_election': 0, 'other': 8} ece_calibrated=None
+=== overall ===
+FAIL

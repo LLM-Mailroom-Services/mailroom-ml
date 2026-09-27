@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import os
 import re
@@ -291,7 +292,17 @@ def _loading_status_line(
         and int(micro_planned) > 0
         and int(micro_done) < int(micro_planned)
     )
-    msg = "sorting…" if in_progress else "waiting on the next tray"
+    if (
+        micro_done is not None
+        and micro_planned is not None
+        and int(micro_planned) > 0
+        and int(micro_done) >= int(micro_planned)
+    ):
+        msg = "held-out test eval…"
+    elif in_progress:
+        msg = "sorting…"
+    else:
+        msg = "waiting on the next tray"
     if on:
         p = palette(on)
         return face + " " + p["dim"](msg)
@@ -979,6 +990,99 @@ def render_epoch_event(
     return _box(title, styled, on=on, width=width)
 
 
+def render_test_step_event(
+    row: dict,
+    *,
+    on: bool | None = None,
+    width: int = _INNER_BOX_W,
+    prev_row: dict | None = None,
+    tick: int = 0,
+    blink: bool = False,
+) -> str:
+    on = use_color() if on is None else on
+    p = palette(on)
+    done = int(row.get("doc_done") or 0)
+    planned = int(row.get("doc_planned") or 0)
+    dt_acc = row.get("doc_type_acc")
+    sc_acc = row.get("subclass_acc_conditional")
+    wall_s = row.get("wall_s")
+    face = owl_emoticon(blink=blink, on=on)
+    title = f"{face} test doc {done}/{planned} → GATE · held-out @ 8192"
+    inner_w = max(width - 2, 20)
+    bar_w = 12 if width < 52 else (30 if width > 70 else 22)
+    bar = progress_bar(done, planned, width=bar_w, tick=tick, on=bool(on))
+    prev_dt = (prev_row or {}).get("doc_type_acc")
+    delta = ""
+    if prev_dt is not None and dt_acc is not None:
+        try:
+            d = float(dt_acc) - float(prev_dt)
+            if abs(d) >= 1e-6:
+                delta = f" (Δ {d:+.4f})"
+        except (TypeError, ValueError):
+            pass
+    lines = [
+        f"held-out docs [{done}/{planned}]",
+        f"doc_type acc {fmt_f1(dt_acc)}{delta}",
+    ]
+    if sc_acc is not None:
+        lines.append(f"subclass acc (cond) {fmt_f1(sc_acc)}")
+    if row.get("doc_type_correct") is not None and planned:
+        lines.append(
+            f"correct {row.get('doc_type_correct')}/{planned}"
+            f"  ·  subclass {row.get('subclass_correct', '—')}/"
+            f"{row.get('subclass_scorable', '—')}"
+        )
+    if wall_s is not None:
+        lines.append(f"test wall {_fmt_duration(float(wall_s))}")
+    if bar:
+        lines.append(bar)
+    load = f"{face} scoring held-out docs…"
+    if on:
+        styled = [
+            p["accent"](lines[0]),
+            p["mint"](lines[1]),
+            *([p["cyan"](lines[2])] if len(lines) > 2 and sc_acc is not None else []),
+        ]
+        rest = lines[3:] if sc_acc is not None else lines[2:]
+        styled.extend(p["dim"](x) for x in rest)
+        styled.append(p["dim"](load))
+        return _box(title, styled, on=on, width=width)
+    lines.append(load)
+    return _box(title, lines, on=on, width=width)
+
+
+def render_test_metrics_event(
+    row: dict,
+    *,
+    on: bool | None = None,
+    width: int = _INNER_BOX_W,
+    blink: bool = False,
+) -> str:
+    on = use_color() if on is None else on
+    p = palette(on)
+    face = owl_emoticon(blink=blink, on=on)
+    n = row.get("n_docs") or row.get("doc_planned")
+    title = f"{face} TEST complete → GATE · {n or '—'} held-out docs"
+    lines = [
+        f"doc_type acc {fmt_f1(row.get('doc_type_acc'))}",
+        f"subclass acc (cond) {fmt_f1(row.get('subclass_acc_conditional'))}",
+    ]
+    if row.get("doc_type_correct") is not None and n:
+        lines.append(
+            f"doc_type {row.get('doc_type_correct')}/{n}"
+            f"  ·  subclass {row.get('subclass_correct', '—')}/"
+            f"{row.get('subclass_scorable', '—')}"
+        )
+    if row.get("subclass_unscorable"):
+        lines.append(f"unscorable subclass rows: {row.get('subclass_unscorable')}")
+    if row.get("wall_s") is not None:
+        lines.append(f"test wall {_fmt_duration(float(row['wall_s']))}")
+    if on:
+        styled = [p["gold"](lines[0]), p["mint"](lines[1]), *[p["dim"](x) for x in lines[2:]]]
+        return _box(title, styled, on=on, width=width)
+    return _box(title, lines, on=on, width=width)
+
+
 def _fmt_duration(seconds: float | None) -> str:
     if seconds is None:
         return "—"
@@ -1062,7 +1166,124 @@ def parse_log_step_line(line: str) -> dict | None:
     }
 
 
-def _active_stage(jsonl_row: dict | None, epoch_jsonl_row: dict | None) -> str:
+def parse_log_test_step_line(line: str) -> dict | None:
+    m = re.search(
+        r"test\s+doc\s+(\d+)/(\d+)\s+doc_type_acc\s+([\d.]+)"
+        r"(?:\s+subclass_cond\s+([\d.]+))?\s*$",
+        line.strip(),
+    )
+    if not m:
+        return None
+    row: dict[str, Any] = {
+        "event": "test_step",
+        "doc_done": int(m.group(1)),
+        "doc_planned": int(m.group(2)),
+        "doc_type_acc": float(m.group(3)),
+    }
+    if m.group(4) is not None:
+        row["subclass_acc_conditional"] = float(m.group(4))
+    return row
+
+
+def parse_log_test_metrics_line(line: str) -> dict | None:
+    m = re.search(r"test metrics:\s*(\{.*\})\s*$", line.strip())
+    if not m:
+        return None
+    try:
+        payload = ast.literal_eval(m.group(1))
+    except (SyntaxError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return {"event": "test_complete", **payload}
+
+
+def test_steps_path_for_watch(
+    run_tag: str | None,
+    jsonl_path: Path | None,
+    log_path: Path | None,
+) -> Path | None:
+    if jsonl_path and jsonl_path.is_file():
+        if jsonl_path.name == "train_steps.jsonl" and jsonl_path.parent.name == "latest":
+            candidate = jsonl_path.parent / "test_steps.jsonl"
+            if candidate.is_file():
+                return candidate
+    tag = run_tag
+    if not tag and log_path and log_path.suffix == ".log":
+        tag = log_path.stem
+    if not tag:
+        return None
+    for base in (Path.cwd(), Path(__file__).resolve().parent.parent):
+        candidate = base / "data/modernbert_training/runs" / tag / "latest/test_steps.jsonl"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _resolve_test_row(
+    test_jsonl_row: dict | None,
+    log_tail: list[str],
+    summary: dict[str, Any] | None,
+) -> dict | None:
+    if test_jsonl_row:
+        return test_jsonl_row
+    for line in reversed(log_tail):
+        parsed = parse_log_test_step_line(line)
+        if parsed:
+            return parsed
+        parsed = parse_log_test_metrics_line(line)
+        if parsed:
+            return parsed
+    if summary:
+        tm = summary.get("test_metrics")
+        if isinstance(tm, dict) and tm.get("n_docs") is not None:
+            return {"event": "test_complete", **tm}
+    return None
+
+
+def _load_summary_dict(summary_path: Path | None) -> dict[str, Any] | None:
+    if not summary_path or not summary_path.is_file():
+        return None
+    try:
+        data = json.loads(summary_path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _eval_test_enabled(summary: dict[str, Any] | None) -> bool:
+    if not summary:
+        return False
+    hp = summary.get("hyperparameters")
+    if isinstance(hp, dict) and hp.get("eval_test"):
+        return True
+    return bool(summary.get("eval_test"))
+
+
+def _test_eval_pending(summary: dict[str, Any] | None) -> bool:
+    if not _eval_test_enabled(summary):
+        return False
+    tm = summary.get("test_metrics") if isinstance(summary.get("test_metrics"), dict) else {}
+    return tm.get("n_docs") is None
+
+
+def _training_epochs_done(summary: dict[str, Any] | None, jsonl_row: dict | None) -> bool:
+    if not summary:
+        return False
+    planned = _planned_epoch_count(summary, jsonl_row)
+    er = int(summary.get("epochs_run") or 0)
+    return bool(planned and er >= planned)
+
+
+def _active_stage(
+    jsonl_row: dict | None,
+    epoch_jsonl_row: dict | None,
+    *,
+    summary: dict[str, Any] | None = None,
+    trainer_lines: list[str] | None = None,
+) -> str:
+    if trainer_lines and summary and _test_eval_pending(summary) and _training_epochs_done(summary, jsonl_row):
+        return "TEST"
     if jsonl_row and jsonl_row.get("event") == "epoch":
         return "VAL"
     if epoch_jsonl_row and epoch_jsonl_row.get("event") == "epoch":
@@ -1099,7 +1320,32 @@ def summary_path_for_watch(
     return None
 
 
+def eval_report_path_for_watch(run_tag: str | None) -> Path | None:
+    if not run_tag:
+        return None
+    for base in (Path.cwd(), Path(__file__).resolve().parent.parent):
+        candidate = base / "reports" / f"eval_{run_tag}.json"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def _planned_epoch_count(summary: dict[str, Any], jsonl_row: dict | None) -> int | None:
+    for key in ("epochs_requested", "num_epochs", "max_epochs", "n_epochs"):
+        val = summary.get(key)
+        if val is not None:
+            try:
+                n = int(val)
+                return n if n > 0 else None
+            except (TypeError, ValueError):
+                pass
+    hp = summary.get("hyperparameters")
+    if isinstance(hp, dict) and hp.get("epochs") is not None:
+        try:
+            n = int(hp["epochs"])
+            return n if n > 0 else None
+        except (TypeError, ValueError):
+            pass
     epochs = summary.get("epochs")
     if isinstance(epochs, list):
         if epochs:
@@ -1107,13 +1353,6 @@ def _planned_epoch_count(summary: dict[str, Any], jsonl_row: dict | None) -> int
         # Fall through — some summaries use epochs=[] until first boundary.
     elif isinstance(epochs, int) and epochs > 0:
         return epochs
-    for key in ("num_epochs", "max_epochs", "n_epochs"):
-        val = summary.get(key)
-        if val is not None:
-            try:
-                return int(val)
-            except (TypeError, ValueError):
-                pass
     if jsonl_row:
         try:
             n = int(jsonl_row.get("epochs") or 0)
@@ -1131,30 +1370,269 @@ def job_completed_summary(
     log_tail: list[str],
     summary_path: Path | None,
 ) -> dict[str, Any] | None:
-    """True when this run's trainer has exited and planned epochs finished."""
+    """True when this run's trainer has exited and the full train+test pipeline finished."""
     if trainer_lines:
         return None
-    summary: dict[str, Any] | None = None
-    if summary_path and summary_path.is_file():
-        try:
-            summary = json.loads(summary_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            summary = None
-    if summary:
-        planned = _planned_epoch_count(summary, jsonl_row)
-        er = int(summary.get("epochs_run") or 0)
-        if planned and er >= planned:
-            return summary
-    if log_tail and any("run summary:" in ln for ln in log_tail):
+    summary = _load_summary_dict(summary_path)
+    log_done = bool(log_tail and any("run summary:" in ln for ln in log_tail))
+
+    def _ready(summary_obj: dict[str, Any] | None) -> bool:
+        if not summary_obj:
+            return log_done
+        if _test_eval_pending(summary_obj):
+            return log_done
+        if _training_epochs_done(summary_obj, jsonl_row):
+            return True
+        return log_done
+
+    if summary and _ready(summary):
+        return summary
+    if log_done:
         return summary or {}
-    if jsonl_row:
-        md = int(jsonl_row.get("micro_done") or 0)
-        mp = int(jsonl_row.get("micro_planned") or 0)
-        ep = int(jsonl_row.get("epoch") or 0)
-        eps = int(jsonl_row.get("epochs") or 0)
-        if mp > 0 and md >= mp and eps > 0 and ep >= eps:
-            return summary or {}
     return None
+
+
+def _last_epoch_record(summary: dict[str, Any]) -> dict[str, Any]:
+    epochs = summary.get("epochs")
+    if isinstance(epochs, list) and epochs:
+        last = epochs[-1]
+        return last if isinstance(last, dict) else {}
+    return {}
+
+
+def _training_wall_s(summary: dict[str, Any]) -> float | None:
+    for key in ("training_wall_s", "wall_s"):
+        val = summary.get(key)
+        if val is None:
+            continue
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _load_eval_report(run_tag: str | None) -> dict[str, Any] | None:
+    path = eval_report_path_for_watch(run_tag)
+    if not path:
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def job_completed_banner_lines(
+    summary: dict[str, Any],
+    *,
+    run_tag: str | None,
+) -> list[str]:
+    """Plain-text lines for the completion panel (summary.json + optional eval report)."""
+    tag = run_tag or summary.get("run_id") or "run"
+    hp = summary.get("hyperparameters") if isinstance(summary.get("hyperparameters"), dict) else {}
+    lam = hp.get("loss_lambda_dt")
+    er = int(summary.get("epochs_run") or 0)
+    planned = _planned_epoch_count(summary, None) or er or None
+
+    lines: list[str] = ["JOB COMPLETED", f"run: {tag}"]
+    config_bits: list[str] = []
+    if lam is not None:
+        try:
+            config_bits.append(f"λ_dt={float(lam):g}")
+        except (TypeError, ValueError):
+            pass
+    if planned:
+        config_bits.append(f"{er}/{planned} epochs")
+    if config_bits:
+        lines.append(" · ".join(config_bits))
+
+    wall = _training_wall_s(summary)
+    if wall is not None:
+        hrs = wall / 3600.0
+        lines.append(f"train wall: {wall:.0f}s ({hrs:.2f}h)")
+
+    ep = _last_epoch_record(summary)
+    if ep:
+        f1 = ep.get("doc_type_macro_f1_observed", ep.get("doc_type_macro_f1"))
+        ece = ep.get("doc_type_ece_calibrated")
+        gate = ep.get("gate_met")
+        sub_obj = ep.get("subclass_objective")
+        val_bits: list[str] = []
+        if f1 is not None:
+            try:
+                val_bits.append(f"val doc_type F1 {float(f1):.4f}")
+            except (TypeError, ValueError):
+                pass
+        if ece is not None:
+            try:
+                val_bits.append(f"cal ECE {float(ece):.4f}")
+            except (TypeError, ValueError):
+                pass
+        if gate is not None:
+            val_bits.append("selection gate PASS" if gate else "selection gate FAIL")
+        if val_bits:
+            lines.append(" · ".join(val_bits))
+        if sub_obj is not None:
+            try:
+                lines.append(f"subclass objective: {float(sub_obj):.3f}")
+            except (TypeError, ValueError):
+                pass
+        head_f1: list[str] = []
+        for head in (
+            "insurance_claim",
+            "contract",
+            "correspondence",
+            "corporate_record",
+            "merger_agreement",
+        ):
+            key = f"{head}_macro_f1_observed"
+            if key not in ep and f"{head}_macro_f1" in ep:
+                key = f"{head}_macro_f1"
+            if key in ep:
+                try:
+                    head_f1.append(f"{head} F1 {float(ep[key]):.3f}")
+                except (TypeError, ValueError):
+                    continue
+        if head_f1:
+            lines.append("heads: " + " · ".join(head_f1[:3]))
+            if len(head_f1) > 3:
+                lines.append("       " + " · ".join(head_f1[3:]))
+
+    tm = summary.get("test_metrics") if isinstance(summary.get("test_metrics"), dict) else {}
+    dt = tm.get("doc_type_acc")
+    sc = tm.get("subclass_acc_conditional")
+    n = tm.get("n_docs")
+    test_bits: list[str] = []
+    if dt is not None:
+        try:
+            test_bits.append(f"test doc_type acc {float(dt):.4f}")
+        except (TypeError, ValueError):
+            pass
+    if sc is not None:
+        try:
+            test_bits.append(f"subclass (cond) {float(sc):.4f}")
+        except (TypeError, ValueError):
+            pass
+    if n is not None:
+        test_bits.append(f"n={n}")
+    if test_bits:
+        lines.append(" · ".join(test_bits))
+
+    eval_report = _load_eval_report(run_tag or tag)
+    if eval_report:
+        ev_bits: list[str] = []
+        acc = eval_report.get("doc_type_accuracy")
+        if acc is not None:
+            try:
+                ev_bits.append(f"eval harness acc {float(acc):.4f}")
+            except (TypeError, ValueError):
+                pass
+        fpr = eval_report.get("fast_path_rate")
+        if fpr is not None:
+            try:
+                ev_bits.append(f"fast_path {100.0 * float(fpr):.1f}%")
+            except (TypeError, ValueError):
+                pass
+        ood = eval_report.get("ood")
+        if isinstance(ood, dict) and ood.get("rate") is not None:
+            try:
+                ev_bits.append(f"ood {100.0 * float(ood['rate']):.1f}%")
+            except (TypeError, ValueError):
+                pass
+        if ev_bits:
+            lines.append(" · ".join(ev_bits))
+
+    sel = summary.get("checkpoint_selection")
+    gate_fail = ep.get("gate_met") is False or (
+        isinstance(sel, dict) and sel.get("gate_met") is False
+    )
+    if gate_fail:
+        lines.append("artifact: UNCALIBRATED (no epoch met doc_type ECE ≤ 0.05)")
+
+    if eval_report:
+        post = "complete_run done · eval on disk"
+    else:
+        post = "complete_run.sh"
+    lines.append(f"trainer stopped · post-train: {post}")
+    return lines
+
+
+def render_test_eval_pending_panel(
+    summary: dict[str, Any] | None,
+    *,
+    on: bool,
+    width: int,
+    blink: bool = False,
+) -> str:
+    p = palette(on)
+    face = owl_emoticon(blink=blink, on=on)
+    n = 323
+    tm = summary.get("test_metrics") if summary and isinstance(summary.get("test_metrics"), dict) else {}
+    if tm.get("n_docs") is not None:
+        try:
+            n = int(tm["n_docs"])
+        except (TypeError, ValueError):
+            pass
+    lines = [
+        "training epochs finished",
+        f"held-out test eval running ({n} docs @ 8192 tok)",
+        "progress bar may sit at 99% until test completes",
+    ]
+    title = f"{face} TEST → GATE"
+    if on:
+        styled = [p["mint"](lines[0]), p["cream"](lines[1]), p["dim"](lines[2])]
+        return _box(title, styled, on=on, width=width)
+    return _box(title, lines, on=on, width=width)
+
+
+def _step_row_for_display(
+    row: dict,
+    *,
+    summary: dict[str, Any] | None,
+    trainer_lines: list[str],
+) -> dict:
+    if not trainer_lines or not summary:
+        return row
+    if not _test_eval_pending(summary) or not _training_epochs_done(summary, row):
+        return row
+    patched = dict(row)
+    mp = patched.get("micro_planned")
+    if mp is not None:
+        patched["micro_done"] = mp
+    patched["eta"] = "test eval"
+    patched["eta_s"] = None
+    return patched
+
+
+def discover_trainer_lines(run_tag: str | None) -> list[str]:
+    """Read-only pgrep for the trainer matching run_tag (watch / --once)."""
+    if not run_tag:
+        return []
+    out: list[str] = []
+    try:
+        proc = subprocess.run(
+            ["pgrep", "-f", r"train_modernbert\.py"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        for pid in proc.stdout.strip().split():
+            try:
+                ps = subprocess.run(
+                    ["ps", "-o", "args=", "-p", pid],
+                    capture_output=True,
+                    text=True,
+                    timeout=3,
+                )
+                args = ps.stdout.strip()
+                if "training/train_modernbert.py" in args:
+                    out.append(f"{pid} {args}")
+            except Exception:
+                continue
+    except Exception:
+        return []
+    return _filter_trainers_for_run(out, run_tag)
 
 
 def render_job_completed_banner(
@@ -1165,33 +1643,16 @@ def render_job_completed_banner(
     width: int,
 ) -> str:
     p = palette(on)
-    tag = run_tag or summary.get("run_id") or "run"
-    tm = summary.get("test_metrics") or {}
-    dt = tm.get("doc_type_acc")
-    sc = tm.get("subclass_acc_conditional")
-    n = tm.get("n_docs")
-    wall = summary.get("wall_s")
-    lines: list[str] = [
-        "JOB COMPLETED",
-        f"run: {tag}",
-    ]
-    if wall is not None:
-        try:
-            lines.append(f"train wall: {float(wall):.0f}s")
-        except (TypeError, ValueError):
-            pass
-    if n is not None:
-        lines.append(f"held-out docs: {n}")
-    if dt is not None:
-        lines.append(f"test doc_type acc: {float(dt):.4f}")
-    if sc is not None:
-        lines.append(f"test subclass acc (cond): {float(sc):.4f}")
-    lines.append("trainer stopped · post-train: complete_run.sh")
+    lines = job_completed_banner_lines(summary, run_tag=run_tag)
     title = p["gold"]("✓ COMPLETE") if on else "✓ COMPLETE"
     styled: list[str] = []
     for i, ln in enumerate(lines):
         if i == 0:
             styled.append(p["gold"](ln) if on else ln)
+        elif "FAIL" in ln or "UNCALIBRATED" in ln:
+            styled.append(p["warn"](ln) if on else ln)
+        elif "PASS" in ln:
+            styled.append(p["mint"](ln) if on else ln)
         elif on:
             styled.append(p["cream"](ln))
         else:
@@ -1378,6 +1839,8 @@ def render_watch_snapshot(
     height: int | None = None,
     resources: dict[str, Any] | None = None,
     prev_step_row: dict | None = None,
+    test_jsonl_row: dict | None = None,
+    prev_test_jsonl_row: dict | None = None,
     blink: bool = False,
     tick: int = 0,
     summary_path: Path | None = None,
@@ -1400,6 +1863,7 @@ def render_watch_snapshot(
     chunks.extend(render_header_banner(run_tag=run_tag, on=on, width=panel_w, blink=blink, compact=compact))
     chunks.append("")
 
+    summary_obj = _load_summary_dict(summary_path)
     completed = job_completed_summary(
         run_tag=run_tag,
         trainer_lines=trainer_lines,
@@ -1407,8 +1871,26 @@ def render_watch_snapshot(
         log_tail=log_tail,
         summary_path=summary_path,
     )
-    stage = "DONE" if completed is not None else _active_stage(jsonl_row, epoch_jsonl_row)
+    test_row = _resolve_test_row(test_jsonl_row, log_tail, summary_obj)
+    stage = (
+        "DONE"
+        if completed is not None
+        else _active_stage(
+            jsonl_row,
+            epoch_jsonl_row,
+            summary=summary_obj,
+            trainer_lines=trainer_lines,
+        )
+    )
+    if test_row and test_row.get("event") == "test_step" and stage != "DONE":
+        stage = "TEST"
     chunks.append(render_status_bar(timestamp=timestamp, stage=stage, on=on, width=panel_w, blink=blink))
+
+    if stage == "TEST" and not test_row:
+        chunks.append(
+            render_test_eval_pending_panel(summary_obj, on=on, width=panel_w, blink=blink)
+        )
+        chunks.append("")
 
     if completed is not None:
         chunks.append(
@@ -1447,13 +1929,38 @@ def render_watch_snapshot(
     chunks.append(p["frame"](sep) if on else sep)
 
     metric_text = ""
-    if jsonl_row:
+    test_text = ""
+    if test_row:
+        if test_row.get("event") == "test_complete" or test_row.get("n_docs"):
+            test_text = render_test_metrics_event(test_row, on=on, width=box_w, blink=blink)
+        else:
+            test_text = render_test_step_event(
+                test_row,
+                on=on,
+                width=box_w,
+                prev_row=prev_test_jsonl_row,
+                tick=tick,
+                blink=blink,
+            )
+    if test_text:
+        metric_text = test_text
+    elif jsonl_row:
         ev = jsonl_row.get("event", "step")
         if ev == "epoch":
             metric_text = render_epoch_event(jsonl_row, on=on, width=box_w, blink=blink)
         else:
+            display_row = _step_row_for_display(
+                jsonl_row,
+                summary=summary_obj,
+                trainer_lines=trainer_lines,
+            )
             metric_text = render_step_event(
-                jsonl_row, on=on, width=box_w, prev_row=prev_step_row, tick=tick, blink=blink
+                display_row,
+                on=on,
+                width=box_w,
+                prev_row=prev_step_row,
+                tick=tick,
+                blink=blink,
             )
     elif log_tail:
         for line in reversed(log_tail):
@@ -1470,7 +1977,10 @@ def render_watch_snapshot(
 
     epoch_text = ""
     if epoch_jsonl_row and epoch_jsonl_row.get("event") == "epoch":
-        if not jsonl_row or jsonl_row.get("event") != "epoch":
+        show_epoch = not jsonl_row or jsonl_row.get("event") != "epoch"
+        if test_text:
+            show_epoch = True
+        if show_epoch:
             epoch_text = render_epoch_event(epoch_jsonl_row, on=on, width=box_w, blink=blink)
 
     hw_compact = compact
@@ -1540,6 +2050,11 @@ def follow_jsonl(path: Path, *, from_end: bool = True) -> None:
                 ev = row.get("event", "step")
                 if ev == "epoch":
                     print(render_epoch_event(row, on=on), flush=True)
+                elif ev in ("test_step", "test_complete"):
+                    if ev == "test_complete":
+                        print(render_test_metrics_event(row, on=on), flush=True)
+                    else:
+                        print(render_test_step_event(row, on=on), flush=True)
                 elif ev == "step":
                     print(render_step_event(row, on=on), flush=True)
             pos = fh.tell()
@@ -1561,6 +2076,7 @@ def follow_live(
     log_path: Path | None,
     jsonl_path: Path | None,
     epoch_path: Path | None,
+    test_path: Path | None,
     run_tag: str | None,
     lock_path: Path | None,
     on: bool,
@@ -1569,11 +2085,13 @@ def follow_live(
     tick = 0
     jsonl_pos = jsonl_path.stat().st_size if jsonl_path and jsonl_path.is_file() else 0
     epoch_pos = epoch_path.stat().st_size if epoch_path and epoch_path.is_file() else 0
+    test_pos = test_path.stat().st_size if test_path and test_path.is_file() else 0
     log_pos = log_path.stat().st_size if log_path and log_path.is_file() else 0
     last_sig = (
         _file_sig(log_path),
         _file_sig(jsonl_path),
         _file_sig(epoch_path),
+        _file_sig(test_path),
     )
     use_alt = bool(on)
     stop = False
@@ -1619,7 +2137,21 @@ def follow_live(
                         log_pos = size
                 except OSError:
                     pass
-            sig = (_file_sig(log_path), _file_sig(jsonl_path), _file_sig(epoch_path))
+            if test_path and test_path.is_file():
+                try:
+                    size = test_path.stat().st_size
+                    if size < test_pos:
+                        test_pos = 0
+                    else:
+                        test_pos = size
+                except OSError:
+                    pass
+            sig = (
+                _file_sig(log_path),
+                _file_sig(jsonl_path),
+                _file_sig(epoch_path),
+                _file_sig(test_path),
+            )
             changed = sig != last_sig
             last_sig = sig
 
@@ -1660,7 +2192,7 @@ def follow_live(
             log_tail: list[str] = []
             if log_path and log_path.is_file():
                 try:
-                    log_tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
+                    log_tail = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
                 except OSError:
                     log_tail = []
             prev_row, row = (None, None)
@@ -1668,6 +2200,11 @@ def follow_live(
                 prev_row, row = read_last_two_jsonl(jsonl_path)
                 if row is None and prev_row is not None:
                     row, prev_row = prev_row, None
+            prev_test, test_row = (None, None)
+            if test_path:
+                prev_test, test_row = read_last_two_jsonl(test_path)
+                if test_row is None and prev_test is not None:
+                    test_row, prev_test = prev_test, None
             epoch_row = read_last_jsonl(epoch_path) if epoch_path else None
             resources = sample_resources(lock_line, trainer_lines)
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1686,6 +2223,8 @@ def follow_live(
                 on=on,
                 resources=resources,
                 prev_step_row=prev_row,
+                test_jsonl_row=test_row,
+                prev_test_jsonl_row=prev_test,
                 blink=blink,
                 tick=tick,
                 summary_path=summary_p,
@@ -1700,7 +2239,7 @@ def follow_live(
             # ticks every `interval` even without new log lines.
             waited = 0.0
             step = 0.2
-            while waited < (interval if not changed else interval) and not stop:
+            while waited < interval and not stop:
                 time.sleep(step)
                 waited += step
             tick += 1
@@ -1720,6 +2259,7 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="LLM Mailroom retro digital TUI for M9a logs (read-only).")
     ap.add_argument("--jsonl", type=Path, help="train_steps.jsonl path")
     ap.add_argument("--epoch-jsonl", type=Path, help="epoch_metrics.jsonl path")
+    ap.add_argument("--test-jsonl", type=Path, help="test_steps.jsonl path")
     ap.add_argument("--log", type=Path, help="Plain trainer .log (fallback parse)")
     ap.add_argument("--once", action="store_true", help="Print latest event and exit")
     ap.add_argument("--follow", action="store_true", help="Follow logs for new events")
@@ -1749,11 +2289,18 @@ def main(argv: list[str] | None = None) -> int:
                 return 2
             follow_jsonl(args.jsonl)
             return 0
+        rt = args.run_tag or None
+        if not rt and args.log and args.log.suffix == ".log":
+            rt = args.log.stem
+        test_path = args.test_jsonl
+        if test_path is None:
+            test_path = test_steps_path_for_watch(rt, args.jsonl, args.log)
         return follow_live(
             log_path=args.log,
             jsonl_path=args.jsonl,
             epoch_path=args.epoch_jsonl,
-            run_tag=args.run_tag or None,
+            test_path=test_path,
+            run_tag=rt,
             lock_path=args.lock_path,
             on=on,
             interval=max(0.5, float(args.interval or 2.0)),
@@ -1767,7 +2314,7 @@ def main(argv: list[str] | None = None) -> int:
     epoch_row = read_last_jsonl(args.epoch_jsonl) if args.epoch_jsonl else None
     log_tail: list[str] = []
     if args.log and args.log.is_file():
-        log_tail = args.log.read_text(encoding="utf-8", errors="replace").splitlines()[-5:]
+        log_tail = args.log.read_text(encoding="utf-8", errors="replace").splitlines()[-40:]
 
     watch_mode = bool(args.timestamp or args.lock_line or args.trainer_line or args.run_tag)
     if watch_mode or row or log_tail or epoch_row:
@@ -1782,7 +2329,15 @@ def main(argv: list[str] | None = None) -> int:
         if not rt and args.log and args.log.suffix == ".log":
             rt = args.log.stem
         trainers = _filter_trainers_for_run(list(args.trainer_line), rt)
+        if rt and not trainers:
+            trainers = discover_trainer_lines(rt)
         summ = summary_path_for_watch(rt, args.jsonl, args.log)
+        test_path = args.test_jsonl or test_steps_path_for_watch(rt, args.jsonl, args.log)
+        prev_test, test_row = (None, None)
+        if test_path:
+            prev_test, test_row = read_last_two_jsonl(test_path)
+            if test_row is None and prev_test is not None:
+                test_row, prev_test = prev_test, None
         text = render_watch_snapshot(
             timestamp=ts,
             lock_line=args.lock_line or None,
@@ -1796,6 +2351,8 @@ def main(argv: list[str] | None = None) -> int:
             height=args.height,
             resources=resources,
             prev_step_row=prev_row,
+            test_jsonl_row=test_row,
+            prev_test_jsonl_row=prev_test,
             summary_path=summ,
         )
         sys.stdout.write(text)

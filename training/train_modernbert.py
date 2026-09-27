@@ -1519,9 +1519,11 @@ def main() -> int:
         run_t0=t0,
         micro_done_before=steps_done_micro,
     )
+    test_step_log = args.output / "test_steps.jsonl"
     print(
         f"[trainer] durable logs: steps={step_log} epochs_jsonl={epoch_jsonl} "
-        f"epochs_tsv={epoch_tsv} archives={runs_dir}/<run_id>-eN "
+        f"epochs_tsv={epoch_tsv} test_steps={test_step_log} "
+        f"archives={runs_dir}/<run_id>-eN "
         f"planned_micro={total_micro_planned} (ETA on each step line) "
         f"mid_epoch_ckpt_every={checkpoint_every}",
         flush=True)
@@ -1728,7 +1730,38 @@ def main() -> int:
         # train/val, and any residual unknown falls back to the head's `other`.
         test_docs = _apply_subclass_support_plan(test_docs, support_info)
         dt_correct = sc_correct = sc_scorable = sc_unscorable = 0
-        for r in test_docs:
+        n = len(test_docs)
+        test_t0 = time.time()
+        log_every = max(1, int(args.log_every))
+
+        def _log_test_progress(doc_done: int, *, final: bool = False) -> None:
+            acc = round(dt_correct / doc_done, 4) if doc_done else None
+            sc_acc = (
+                round(sc_correct / sc_scorable, 4) if sc_scorable else None
+            )
+            row = {
+                "ts": datetime.now(UTC).isoformat(),
+                "event": "test_complete" if final else "test_step",
+                "doc_done": doc_done,
+                "doc_planned": n,
+                "doc_type_acc": acc,
+                "subclass_acc_conditional": sc_acc,
+                "doc_type_correct": dt_correct,
+                "subclass_correct": sc_correct,
+                "subclass_scorable": sc_scorable,
+                "subclass_unscorable": sc_unscorable,
+                "wall_s": round(time.time() - test_t0, 1),
+            }
+            if final:
+                row["n_docs"] = n
+            _append_jsonl(test_step_log, row)
+            sc_bit = f" subclass_cond {sc_acc}" if sc_acc is not None else ""
+            print(
+                f"  test doc {doc_done}/{n} doc_type_acc {acc}{sc_bit}",
+                flush=True,
+            )
+
+        for i, r in enumerate(test_docs):
             wins = window_document(r["title"], r["doc_text"],
                                    max_tokens=args.max_length,
                                    overlap=WINDOW_OVERLAP_TOKENS)
@@ -1753,7 +1786,9 @@ def main() -> int:
                         sc_scorable += 1
                         if sc_pred == sc_label:
                             sc_correct += 1
-        n = len(test_docs)
+            doc_done = i + 1
+            if doc_done % log_every == 0 or doc_done == n:
+                _log_test_progress(doc_done, final=(doc_done == n))
         test_metrics = {
             "n_docs": n,
             "doc_type_acc": round(dt_correct / n, 4) if n else None,

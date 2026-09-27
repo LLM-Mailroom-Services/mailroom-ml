@@ -48,7 +48,11 @@ from mailroom_ml.calibration import (  # noqa: E402
     write_routing_thresholds,
 )
 from mailroom_ml.config import (  # noqa: E402
+    CANONICAL_REPO,
+    CANONICAL_REVISION,
     DATA_DIR,
+    FINETUNE_REPO,
+    FINETUNE_REVISION,
     GATE_REQUIRED_AGREEMENT,
     HEAD_ECE_EXCLUSION_THRESHOLD,
     MAX_TOKENS,
@@ -56,8 +60,6 @@ from mailroom_ml.config import (  # noqa: E402
     ROUTE_DOC_CONFIDENCE,
     ROUTE_MARGIN,
     SELECTIVE_RISK_MIN_N,
-    FINETUNE_REPO,
-    FINETUNE_REVISION,
     STAGE_DIR,
 )
 from mailroom_ml.inference import (  # noqa: E402
@@ -128,21 +130,33 @@ def _ensure_corpus_snapshot() -> None:
     marker = DATA_DIR / "parquet" / "ground_truth" / "train"
     if marker.is_dir() and list(marker.glob("*.parquet")):
         return
-    if not os.environ.get("HF_TOKEN"):
-        raise RuntimeError(
-            "HF_TOKEN required to download the finetune corpus for --subset "
-            "train|all (set HF_TOKEN locally or pass a Modal Secret).")
     from huggingface_hub import snapshot_download  # noqa: PLC0415
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"[eval_modernbert] pulling {FINETUNE_REPO} @ {FINETUNE_REVISION} "
-          f"-> {DATA_DIR}", flush=True)
-    snapshot_download(
-        repo_id=FINETUNE_REPO,
-        repo_type="dataset",
-        revision=FINETUNE_REVISION,
-        local_dir=str(DATA_DIR),
-    )
+    try:
+        print(f"[eval_modernbert] pulling {FINETUNE_REPO} @ {FINETUNE_REVISION} "
+              f"-> {DATA_DIR}", flush=True)
+        snapshot_download(
+            repo_id=FINETUNE_REPO,
+            repo_type="dataset",
+            revision=FINETUNE_REVISION,
+            local_dir=str(DATA_DIR),
+        )
+    except Exception as exc:
+        if os.environ.get("HF_TOKEN"):
+            raise
+        print(
+            f"[eval_modernbert] finetune pull failed ({exc}); "
+            f"using public {CANONICAL_REPO} @ {CANONICAL_REVISION[:8]}…",
+            flush=True,
+        )
+        snapshot_download(
+            repo_id=CANONICAL_REPO,
+            repo_type="dataset",
+            revision=CANONICAL_REVISION,
+            local_dir=str(DATA_DIR),
+            allow_patterns=["parquet/**"],
+        )
 
 
 def _load_parquet_split(stage: Path, *parts: str):

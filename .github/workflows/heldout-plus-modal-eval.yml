@@ -18,11 +18,18 @@ on:
         required: true
         type: boolean
         default: false
+      push_results:
+        description: Commit artifacts to branch heldout-plus-eval/<run_tag>
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   modal-heldout-plus:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -56,3 +63,29 @@ jobs:
             reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-*.md
             reports/TEST-EVAL/eval_*-heldout-plus.json
             reports/TEST-EVAL/MANIFEST.json
+
+      - name: Push eval artifacts to repo branch
+        if: success() && inputs.push_results
+        env:
+          RUN_TAG: ${{ inputs.run_tag }}
+        run: |
+          set -euo pipefail
+          eval_json="reports/eval_${RUN_TAG}-heldout-plus.json"
+          uv run python - <<PY
+          import json, sys
+          from pathlib import Path
+          p = Path("${eval_json}")
+          r = json.loads(p.read_text())
+          if r.get("eval_subset") != "heldout-plus":
+              sys.exit(f"eval_subset mismatch: {r.get('eval_subset')}")
+          if r.get("n_docs") != 1323:
+              sys.exit(f"expected n_docs=1323 got {r.get('n_docs')}")
+          print("artifact gate OK", flush=True)
+          PY
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git checkout -B "heldout-plus-eval/${RUN_TAG}"
+          git add reports/eval_${RUN_TAG}-heldout-plus.json reports/TEST-EVAL/
+          git diff --staged --quiet && echo "nothing to commit" && exit 0
+          git commit -m "#112 heldout-plus Modal eval (${RUN_TAG}, n_docs=1323)"
+          git push origin "HEAD:heldout-plus-eval/${RUN_TAG}"

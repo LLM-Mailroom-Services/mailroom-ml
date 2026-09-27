@@ -12,7 +12,7 @@ Ships held-out-plus Modal eval tooling + GHA results push + handoff for [#40](ht
 **PR (tooling + handoff):** [#39](https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39)  
 **Next-agent runbook:** [`HELDOUT-PLUS-EVAL-PICKUP.md`](./HELDOUT-PLUS-EVAL-PICKUP.md)  
 **Pool report:** [`../reports/HOLDOUT-PLUS-V1-REPORT.md`](../reports/HOLDOUT-PLUS-V1-REPORT.md)  
-**Last updated:** 2026-09-27 UTC · branch `cursor/heldout-plus-modal-hf-optional-dfc5` @ `4f75ac3`  
+**Last updated:** 2026-09-27 UTC · branch `cursor/heldout-plus-modal-hf-optional-dfc5` @ `0a76613`  
 **Repo copy:** [`governance/HELDOUT-PLUS-PLAN-AND-PROGRESS.md`](https://github.com/LLM-Mailroom-Services/mailroom-ml/blob/cursor/heldout-plus-modal-hf-optional-dfc5/governance/HELDOUT-PLUS-PLAN-AND-PROGRESS.md)
 
 ---

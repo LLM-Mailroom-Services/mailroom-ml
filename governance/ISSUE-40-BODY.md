@@ -1,3 +1,5 @@
+# Paste into GitHub issue #40 description (Cursor integration cannot PATCH issues)
+
 # Held-out-plus — full original plan, progress, and remaining work
 
 > **Issue #40 / PR #39 bodies:** GitHub’s Cursor integration cannot edit issue #40 or post comments (403). This file is the **canonical** full plan + progress — it is committed on branch `cursor/heldout-plus-modal-hf-optional-dfc5` and copied into [`HELDOUT-PLUS-PR-39-BODY.md`](./HELDOUT-PLUS-PR-39-BODY.md) for the PR description. To mirror on #40, paste this file into the issue description in the GitHub UI.

@@ -134,23 +134,13 @@ heavy extras.
 
 ## Cursor Cloud — held-out-plus eval (#112)
 
-One-shot **1,323-doc** held-out-plus test eval on **exios66 Modal L4**
-(`--subset heldout-plus --sample 0`, Arm B `latest` / `m9a-local-20260927-014429`):
+**Shipped on `main` (`65d2591`, #39):** `reports/eval_m9a-local-20260927-014429-heldout-plus.json`
+(1,323 docs, heldout-plus) + TEST-EVAL 323 vs 1,323 under `reports/TEST-EVAL/`.
 
-- **Secrets** (Cloud Agents environment dashboard, scoped to this repo):
-  `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` (exios66). `HF_TOKEN` is optional
-  for this path (public Hub corpus/training pins).
-- **New agent run required** after adding secrets — they are not injected into
-  an already-running session.
-- **Command:** `./training/run_heldout_plus_modal_eval.sh` (details:
-  `reports/HOLDOUT-PLUS-V1-REPORT.md`; GHA: **heldout-plus-modal-eval**).
-- **Done when:** `reports/eval_<run_tag>-heldout-plus.json` has
-  `eval_subset: heldout-plus` and `n_docs: 1323`, plus TEST-EVAL 323 vs 1,323
-  markdown under `reports/TEST-EVAL/`.
-- **Pickup issue:** mailroom-ml **#40**; **full plan + progress**
-  `governance/HELDOUT-PLUS-PLAN-AND-PROGRESS.md`; step-by-step
-  `governance/HELDOUT-PLUS-EVAL-PICKUP.md`; PR **#39**
-  (`governance/HELDOUT-PLUS-PR-39-BODY.md` = PR description template).
+To **re-run** the one-shot exios66 Modal L4 path (`./training/run_heldout_plus_modal_eval.sh`
+or GHA **heldout-plus-modal-eval**): `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` (exios66);
+`HF_TOKEN` optional. History: mailroom-ml **#40**,
+`governance/HELDOUT-PLUS-PLAN-AND-PROGRESS.md`.
 
 ## Data & Hub pin law
 

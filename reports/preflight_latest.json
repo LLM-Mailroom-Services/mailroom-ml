@@ -1,0 +1,20 @@
+{
+  "checks": {
+    "hub_pins": {
+      "ok": true,
+      "online": false
+    },
+    "stage": {
+      "ok": true,
+      "path": "/mnt/dv/wid/projects2/Rogers-dshb/jjb/modernBERT/data/modernbert_training/stage"
+    },
+    "synthetic_policy": {
+      "ok": true,
+      "path": "/mnt/dv/wid/projects2/Rogers-dshb/jjb/modernBERT/configs/synthetic_policy_v1.yaml",
+      "version": "v1"
+    }
+  },
+  "errors": [],
+  "ok": true,
+  "timestamp_utc": "2026-09-27T05:45:25.757127+00:00"
+}

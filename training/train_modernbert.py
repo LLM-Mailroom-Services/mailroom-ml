@@ -295,7 +295,48 @@ def head_loss(model, batch, heads, device,
     return loss, logits
 
 
-def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
+def _collate_batch(sel: list[dict], heads, device: torch.device,
+                   non_blocking: bool) -> dict:
+    to = {"non_blocking": non_blocking} if device.type == "cuda" else {}
+    return {
+        "input_ids": torch.stack([r["input_ids"] for r in sel]).to(device, **to),
+        "attention_mask": torch.stack([r["attention_mask"] for r in sel]).to(
+            device, **to),
+        "doc_type": torch.tensor(
+            [_label_id(heads["doc_type"], r["doc_type"]) for r in sel],
+            device=device),
+        "subclass": torch.tensor(
+            [_label_id(heads[r["doc_type"]], r["subclass"]) for r in sel],
+            device=device),
+        "filename": [r["filename"] for r in sel],
+    }
+
+
+def _prefetch_batches(it, depth: int):
+    """Overlap CPU collate/H2D with GPU forward (pre-tokenized rows, no DataLoader)."""
+    import queue
+    import threading
+
+    q: queue.Queue = queue.Queue(maxsize=max(1, depth))
+    _sentinel = object()
+
+    def _worker() -> None:
+        try:
+            for batch in it:
+                q.put(batch)
+        finally:
+            q.put(_sentinel)
+
+    threading.Thread(target=_worker, daemon=True).start()
+    while True:
+        item = q.get()
+        if item is _sentinel:
+            return
+        yield item
+
+
+def make_batches(rows, batch_size: int, shuffle: bool, heads, device,
+                 *, prefetch_batches: int = 0, non_blocking: bool = False):
     """Yield batches (rows are pre-padded to max_length by tokenize_rows).
 
     FIXED padding (not dynamic): the dynamic-padding variant (pad to the
@@ -307,30 +348,166 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device):
     idx = list(range(len(rows)))
     if shuffle:
         random.shuffle(idx)
-    for i in range(0, len(idx), batch_size):
-        sel = [rows[j] for j in idx[i:i + batch_size]]
-        yield {
-            "input_ids": torch.stack([r["input_ids"] for r in sel]).to(device),
-            "attention_mask": torch.stack([r["attention_mask"] for r in sel]).to(device),
-            "doc_type": torch.tensor(
-                [_label_id(heads["doc_type"], r["doc_type"]) for r in sel],
-                device=device),
-            "subclass": torch.tensor(
-                [_label_id(heads[r["doc_type"]], r["subclass"]) for r in sel],
-                device=device),
-            "filename": [r["filename"] for r in sel],
+
+    def _produce():
+        for i in range(0, len(idx), batch_size):
+            sel = [rows[j] for j in idx[i:i + batch_size]]
+            yield _collate_batch(sel, heads, device, non_blocking)
+
+    base = _produce()
+    if prefetch_batches > 0:
+        yield from _prefetch_batches(base, prefetch_batches)
+    else:
+        yield from base
+
+
+def _fmt_duration(seconds: float | None) -> str:
+    """Human-readable duration for ETA / wall lines (e.g. ``1h 02m 03s``)."""
+    if seconds is None or not math.isfinite(seconds) or seconds < 0:
+        return "unknown"
+    s = int(round(seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h {m:02d}m {sec:02d}s"
+    if m:
+        return f"{m}m {sec:02d}s"
+    return f"{sec}s"
+
+
+def _append_jsonl(path: Path, row: dict) -> None:
+    """Append one machine-parseable JSON object (durable step/epoch log)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+class TrainProgress:
+    """Step cadence tracker: throughput + ETA remaining wall time.
+
+    ETA = mean sec/micro-step (EMA) × remaining planned micro-steps. Early
+    stop may finish sooner; the printed ETA is an upper-bound estimate for
+    the requested epoch budget.
+    """
+
+    def __init__(self, *, total_micro_planned: int, batch_size: int,
+                 step_log: Path | None = None, run_t0: float | None = None,
+                 micro_done_before: int = 0):
+        self.total_micro_planned = max(0, int(total_micro_planned))
+        self.batch_size = max(1, int(batch_size))
+        self.step_log = step_log
+        self.run_t0 = run_t0 if run_t0 is not None else time.time()
+        self.micro_done = max(0, int(micro_done_before))
+        self._last_t = self.run_t0
+        self._ema_sec_per_step: float | None = None
+
+    def note_window(self, *, n_steps: int, epoch: int, epochs: int,
+                    step_in_epoch: int, loss: float,
+                    n_samples: int) -> dict:
+        """Record a window of ``n_steps`` micro-batches ending at this log."""
+        n_steps = max(1, int(n_steps))
+        now = time.time()
+        dt = max(1e-6, now - self._last_t)
+        self._last_t = now
+        self.micro_done += n_steps
+        sec_per = dt / n_steps
+        if self._ema_sec_per_step is None:
+            self._ema_sec_per_step = sec_per
+        else:
+            self._ema_sec_per_step = 0.2 * sec_per + 0.8 * self._ema_sec_per_step
+        steps_per_sec = 1.0 / self._ema_sec_per_step
+        samples_per_sec = steps_per_sec * max(1, n_samples)
+        remaining = max(0, self.total_micro_planned - self.micro_done)
+        eta_s = remaining * self._ema_sec_per_step
+        row = {
+            "ts": datetime.now(UTC).isoformat(),
+            "event": "step",
+            "epoch": epoch,
+            "epochs": epochs,
+            "step": step_in_epoch,
+            "micro_done": self.micro_done,
+            "micro_planned": self.total_micro_planned,
+            "loss": round(float(loss), 6),
+            "steps_per_sec": round(steps_per_sec, 4),
+            "samples_per_sec": round(samples_per_sec, 2),
+            "eta_s": round(eta_s, 1),
+            "eta": _fmt_duration(eta_s),
+            "wall_s": round(now - self.run_t0, 1),
         }
+        if self.step_log is not None:
+            _append_jsonl(self.step_log, row)
+        return row
+
+    def bump_unlogged(self, n: int) -> None:
+        """Advance counters for trailing steps with no printed log line."""
+        n = max(0, int(n))
+        if n == 0:
+            return
+        now = time.time()
+        dt = max(1e-6, now - self._last_t)
+        self._last_t = now
+        self.micro_done += n
+        sec_per = dt / n
+        if self._ema_sec_per_step is None:
+            self._ema_sec_per_step = sec_per
+        else:
+            self._ema_sec_per_step = 0.2 * sec_per + 0.8 * self._ema_sec_per_step
+
+    def eta_s(self) -> float | None:
+        if self._ema_sec_per_step is None:
+            return None
+        remaining = max(0, self.total_micro_planned - self.micro_done)
+        return remaining * self._ema_sec_per_step
+
+
+def _epoch_metrics_tsv_header() -> str:
+    return "\t".join([
+        "epoch", "train_loss", "train_loss_endpoint", "val_loss",
+        "doc_type_macro_f1_obs", "doc_type_ece", "doc_type_ece_cal",
+        "subclass_objective", "selected", "gate_met",
+        "checkpoint", "archive", "epoch_wall_s", "eta_remaining",
+    ])
+
+
+def _write_epoch_metrics(epoch_jsonl: Path, epoch_tsv: Path, row: dict) -> None:
+    """Durable epoch table: JSONL (full) + TSV (operator glance)."""
+    _append_jsonl(epoch_jsonl, row)
+    write_header = not epoch_tsv.exists()
+    with epoch_tsv.open("a", encoding="utf-8") as fh:
+        if write_header:
+            fh.write(_epoch_metrics_tsv_header() + "\n")
+        fh.write("\t".join([
+            str(row.get("epoch", "")),
+            str(row.get("loss", "")),
+            str(row.get("loss_endpoint", "")),
+            str(row.get("val_loss", "")),
+            str(row.get("doc_type_macro_f1_observed", "")),
+            str(row.get("doc_type_ece", "")),
+            str(row.get("doc_type_ece_calibrated", "")),
+            str(row.get("subclass_objective", "")),
+            str(row.get("selected_this_epoch", "")),
+            str(row.get("gate_met", "")),
+            str(row.get("checkpoint", "")),
+            str(row.get("archive", "")),
+            str(row.get("epoch_wall_s", "")),
+            str(row.get("eta_remaining", "")),
+        ]) + "\n")
 
 
 def train_epoch(model, batches, optimizer, scheduler, heads, device,
                 grad_accum: int, step_limit: int = 0,
                 log_every: int = 50,
-                loss_cfg: LossConfig | None = None) -> tuple[float, float, int, int]:
+                loss_cfg: LossConfig | None = None,
+                progress: TrainProgress | None = None,
+                epoch: int = 0, epochs: int = 0,
+                skip_micro: int = 0,
+                on_micro_step=None) -> tuple[float, float, int, int]:
     """One epoch. Returns (mean loss, endpoint loss, micro-steps, opt-steps).
 
     Guardrails:
     - ``log_every``: per-step progress line so a stalled/starved container is
       visible in ``modal app logs`` within seconds instead of at epoch end.
+      When ``progress`` is set, lines also include steps/sec, samples/sec, ETA.
     - ``step_limit``: cap micro-batches for the pre-flight smoke run (smoke
       exercises forward+backward+optimizer without burning an epoch).
     - Endpoint loss: the mean over the last ``grad_accum`` micro-batches —
@@ -347,7 +524,11 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
     total, n = 0.0, 0
     opt_steps = 0
     window: list[float] = []
+    since_log = 0
+    skip_micro = max(0, int(skip_micro))
     for step, batch in enumerate(batches):
+        if step < skip_micro:
+            continue
         loss, _ = head_loss(model, batch, heads, device, cfg)
         # divergence guard (2026-09-20 audit R6): a non-finite loss would
         # otherwise propagate NaN weights into a checkpoint that gets pushed.
@@ -364,13 +545,32 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
             opt_steps += 1
         total += loss.item()
         n += 1
+        since_log += 1
         window.append(loss.item())
         if len(window) > grad_accum:
             window.pop(0)
         if (step + 1) % log_every == 0:
-            print(f"  step {step + 1} loss {loss.item():.4f}", flush=True)
-        if step_limit and (step + 1) >= step_limit:
+            n_samples = int(batch["input_ids"].shape[0])
+            if progress is not None:
+                row = progress.note_window(
+                    n_steps=since_log, epoch=epoch, epochs=epochs,
+                    step_in_epoch=step + 1, loss=loss.item(),
+                    n_samples=n_samples)
+                print(
+                    f"  step {step + 1} loss {loss.item():.4f} "
+                    f"{row['steps_per_sec']:.2f} steps/s "
+                    f"{row['samples_per_sec']:.1f} samples/s "
+                    f"ETA {_fmt_duration(row['eta_s'])}",
+                    flush=True)
+            else:
+                print(f"  step {step + 1} loss {loss.item():.4f}", flush=True)
+            since_log = 0
+        if on_micro_step is not None:
+            on_micro_step(step + 1, opt_steps, loss.item())
+        if step_limit and (step + 1) - skip_micro >= step_limit:
             break
+    if progress is not None and since_log > 0:
+        progress.bump_unlogged(since_log)
     if n % grad_accum != 0:  # flush trailing accumulation (partial step)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
@@ -614,10 +814,32 @@ def _commit_checkpoint_volume() -> None:
         print(f"[trainer] volume commit failed: {exc}", flush=True)
 
 
+def _write_resume_manifest(
+        output: Path, *, checkpoint_dir: Path, epoch: int,
+        step_in_epoch: int, steps_done: int, steps_done_micro: int,
+        run_id: str, epoch_complete: bool) -> None:
+    """Operator-facing pointer: latest resumable bundle + exact CLI flags."""
+    output.mkdir(parents=True, exist_ok=True)
+    row = {
+        "ts": datetime.now(UTC).isoformat(),
+        "checkpoint_dir": str(checkpoint_dir.resolve()),
+        "epoch": epoch,
+        "step_in_epoch": step_in_epoch,
+        "epoch_complete": epoch_complete,
+        "steps_done": steps_done,
+        "steps_done_micro": steps_done_micro,
+        "run_id": run_id,
+        "resume_flag": f"--resume {checkpoint_dir.resolve()}",
+    }
+    (output / "resume_manifest.json").write_text(
+        json.dumps(row, sort_keys=True, indent=2))
+
+
 def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
                     temps: dict, summary: dict, *,
                     optimizer=None, scheduler=None, epoch: int = 0,
-                    steps_done: int = 0, steps_done_micro: int = 0) -> None:
+                    steps_done: int = 0, steps_done_micro: int = 0,
+                    step_in_epoch: int = 0, epoch_complete: bool = False) -> None:
     """Write the full checkpoint bundle (backbone + heads + sidecars).
 
     When ``optimizer`` is given, the optimizer/scheduler state and a
@@ -626,7 +848,8 @@ def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
     ``steps_done`` counts OPTIMIZER steps (the scheduler's unit — the
     2026-09-20 audit fixed the micro-batch/optimizer-step mismatch);
     ``steps_done_micro`` is the micro-batch count for --max-steps smoke
-    accounting.
+    accounting.  Mid-epoch saves set ``epoch_complete=False`` and a non-zero
+    ``step_in_epoch`` so ``--resume`` can skip already-trained micro-batches.
     """
     output.mkdir(parents=True, exist_ok=True)
     model.backbone.save_pretrained(output)
@@ -637,12 +860,21 @@ def save_checkpoint(output: Path, model, tokenizer, maps, heads, train_rows,
         torch.save(optimizer.state_dict(), output / "optimizer.pt")
         if scheduler is not None:
             torch.save(scheduler.state_dict(), output / "scheduler.pt")
-        (output / "resume.json").write_text(json.dumps({
+        resume_body = {
             "epoch": epoch,
             "steps_done": steps_done,
             "steps_done_micro": steps_done_micro,
+            "step_in_epoch": step_in_epoch,
+            "epoch_complete": epoch_complete,
             "run_id": summary.get("run_id", ""),
-        }, sort_keys=True, indent=2))
+        }
+        (output / "resume.json").write_text(
+            json.dumps(resume_body, sort_keys=True, indent=2))
+        _write_resume_manifest(
+            output, checkpoint_dir=output, epoch=epoch,
+            step_in_epoch=step_in_epoch, steps_done=steps_done,
+            steps_done_micro=steps_done_micro,
+            run_id=summary.get("run_id", ""), epoch_complete=epoch_complete)
     (output / "labels.json").write_text(
         json.dumps(maps, sort_keys=True, indent=2))
     # authentic-support sidecar: per (doc_type, subclass) train-row counts —
@@ -696,10 +928,15 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
             raise RuntimeError(f"checkpoint head {name!r} not in the model")
         model.heads[name].load_state_dict(sd)
     resume_json = resume_dir / "resume.json"
+    micro_skip = 0
     if resume_json.exists():
         rj = json.loads(resume_json.read_text())
         epoch_done, steps_done = rj["epoch"], rj["steps_done"]
         steps_done_micro = rj.get("steps_done_micro", 0)
+        step_in_epoch = int(rj.get("step_in_epoch", 0))
+        epoch_complete = bool(rj.get("epoch_complete", step_in_epoch == 0))
+        if step_in_epoch > 0 and not epoch_complete:
+            micro_skip = step_in_epoch
     else:
         summary_path = resume_dir / "summary.json"
         epoch_done = (json.loads(summary_path.read_text()).get("epochs_run", 0)
@@ -752,9 +989,10 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
         ece = e.get("doc_type_ece_calibrated")
         if dt is not None and ece is not None and ece <= ECE_BUDGET:
             best_doc_type = max(best_doc_type, dt)
-    return {"start_epoch": epoch_done + 1, "steps_done": steps_done,
-            "steps_done_micro": steps_done_micro, "events": events,
-            "selected": selected, "best_val": best_val,
+    start_epoch = epoch_done if micro_skip else epoch_done + 1
+    return {"start_epoch": start_epoch, "steps_done": steps_done,
+            "steps_done_micro": steps_done_micro, "micro_skip": micro_skip,
+            "events": events, "selected": selected, "best_val": best_val,
             "stale": stale, "temps": temps,
             "run_id": prior_run_id, "prior_wall_s": prior_wall_s,
             "best_doc_type": best_doc_type}
@@ -919,12 +1157,27 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--log-every", type=int, default=50,
                     help="print a per-step loss line every N micro-batches "
                          "(visibility guardrail for long GPU runs)")
+    ap.add_argument("--prefetch-batches", type=int, default=2,
+                    help="overlap batch collate/H2D with GPU via a prefetch "
+                         "thread (0=off). Rows are pre-tokenized in RAM — "
+                         "this replaces DataLoader num_workers for this trainer")
+    ap.add_argument("--cudnn-benchmark", action="store_true",
+                    help="cudnn.benchmark=True (faster conv/alg picks; breaks "
+                         "bitwise reproducibility with --seed)")
+    ap.add_argument("--no-gradient-checkpointing", action="store_true",
+                    help="disable activation checkpointing on CUDA (faster "
+                         "when VRAM allows; default on for 22 GB L4 @ 8192)")
+    ap.add_argument("--checkpoint-every", type=int, default=0,
+                    help="mid-epoch resume checkpoint every N micro-batches "
+                         "(0 = same as --log-every; writes resume.json under "
+                         "--output)")
     ap.add_argument("--model", default=MODEL_ID,
                     help="backbone model id (default: the committed pin)")
     ap.add_argument("--resume", type=Path, default=None,
                     help="checkpoint bundle dir to resume from — continues "
-                         "at the next epoch (optimizer/scheduler state when "
-                         "present; else reconstructed from the counters)")
+                         "at the next epoch or mid-epoch when resume.json "
+                         "has epoch_complete=false (optimizer/scheduler "
+                         "state when present)")
     # ---- 2026-09-20 audit levers (loss rebalance + regularization) --------
     ap.add_argument("--loss-lambda-dt", type=float, default=0.65,
                     help="doc_type share of the blended loss; the old summed "
@@ -1088,10 +1341,20 @@ def main() -> int:
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    cudnn_fast = args.cudnn_benchmark or os.environ.get(
+        "TRAINER_CUDNN_BENCHMARK", "").strip() in ("1", "true", "yes")
+    if cudnn_fast and torch.cuda.is_available():
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+    else:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"device: {device}", flush=True)
+    if device.type == "cuda":
+        print(f"[trainer] cudnn deterministic={torch.backends.cudnn.deterministic} "
+              f"benchmark={torch.backends.cudnn.benchmark} "
+              f"prefetch_batches={args.prefetch_batches}", flush=True)
 
     from transformers import AutoModel, AutoTokenizer
 
@@ -1128,8 +1391,11 @@ def main() -> int:
             labels_path = Path(hf_hub_download(args.data, "labels.json",
                                                repo_type="dataset",
                                                revision=_hub_revision()))
-    if device.type == "cuda":
+    if device.type == "cuda" and not args.no_gradient_checkpointing:
         base.gradient_checkpointing_enable()
+    elif device.type == "cuda":
+        print("[trainer] gradient checkpointing OFF (higher VRAM, faster step)",
+              flush=True)
     base = base.to(device)
 
     maps = normalize_label_maps(json.loads(labels_path.read_text()))
@@ -1206,27 +1472,81 @@ def main() -> int:
         start_epoch = resume_state["start_epoch"]
         steps_done = resume_state["steps_done"]
         steps_done_micro = resume_state["steps_done_micro"]
+        micro_skip = resume_state.get("micro_skip", 0)
         events = resume_state["events"]
         selected = resume_state["selected"]
         best_val = resume_state["best_val"]
         stale = resume_state["stale"]
         temps = resume_state["temps"]
         best_doc_type = resume_state.get("best_doc_type", best_doc_type)
+        skip_note = (f", skip {micro_skip} micro-batches in epoch "
+                     f"{start_epoch}") if micro_skip else ""
         print(f"resumed from {args.resume}: continuing at epoch "
               f"{start_epoch} (opt-steps {steps_done}, "
-              f"prior epochs {len(events)})", flush=True)
+              f"prior epochs {len(events)}{skip_note})", flush=True)
     val_logits: dict = {}
     t0 = time.time()
     if not args.resume:
         steps_done = 0
         steps_done_micro = 0
+        micro_skip = 0
         temps: dict[str, float] = {}
+    checkpoint_every = (args.checkpoint_every if args.checkpoint_every > 0
+                        else args.log_every)
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     if args.resume and resume_state.get("run_id"):
         # provenance: a resumed run keeps the ORIGINAL training run's identity
         # (its epochs are that run's; an eval-only resume must not rewrite it)
         run_id = resume_state["run_id"]
     runs_dir = args.output.parent / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    args.output.mkdir(parents=True, exist_ok=True)
+    step_log = args.output / "train_steps.jsonl"
+    epoch_jsonl = args.output / "epoch_metrics.jsonl"
+    epoch_tsv = args.output / "epoch_metrics.tsv"
+    micro_per_epoch = math.ceil(len(train_rows) / max(1, args.batch_size))
+    if args.max_steps:
+        total_micro_planned = min(
+            args.max_steps,
+            micro_per_epoch * max(0, args.epochs - start_epoch + 1)
+            + steps_done_micro)
+    else:
+        total_micro_planned = micro_per_epoch * args.epochs
+    progress = TrainProgress(
+        total_micro_planned=total_micro_planned,
+        batch_size=args.batch_size,
+        step_log=step_log,
+        run_t0=t0,
+        micro_done_before=steps_done_micro,
+    )
+    print(
+        f"[trainer] durable logs: steps={step_log} epochs_jsonl={epoch_jsonl} "
+        f"epochs_tsv={epoch_tsv} archives={runs_dir}/<run_id>-eN "
+        f"planned_micro={total_micro_planned} (ETA on each step line) "
+        f"mid_epoch_ckpt_every={checkpoint_every}",
+        flush=True)
+    last_manifest_ckpt = args.output.resolve()
+
+    def _maybe_mid_epoch_checkpoint(step_in_epoch: int, n_opt: int) -> None:
+        nonlocal last_manifest_ckpt
+        if checkpoint_every <= 0:
+            return
+        if step_in_epoch % checkpoint_every != 0:
+            return
+        partial_summary = _summary(
+            run_id, args, device, events, selected, temps,
+            time.time() - t0, len(events))
+        save_checkpoint(
+            args.output, model, tokenizer, maps, heads, train_rows,
+            temps, partial_summary, optimizer=optimizer, scheduler=scheduler,
+            epoch=epoch, steps_done=steps_done + n_opt,
+            steps_done_micro=steps_done_micro + step_in_epoch,
+            step_in_epoch=step_in_epoch, epoch_complete=False)
+        last_manifest_ckpt = args.output.resolve()
+        print(f"[trainer] mid-epoch resume checkpoint "
+              f"(epoch {epoch} step {step_in_epoch}): {args.output}",
+              flush=True)
+
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_t0 = time.time()
         if args.freeze_backbone_epochs > 0 \
@@ -1236,12 +1556,28 @@ def main() -> int:
             print(f"backbone unfrozen at epoch {epoch}", flush=True)
         remaining = max(0, args.max_steps - steps_done_micro) \
             if args.max_steps else 0
+        prev_selected_epoch = selected.get("epoch", 0)
+        epoch_skip = micro_skip if epoch == start_epoch and micro_skip else 0
+        if epoch_skip:
+            print(f"[trainer] skipping first {epoch_skip} micro-batches "
+                  f"in epoch {epoch} (--resume mid-epoch)", flush=True)
+            micro_skip = 0
+        _batch_kw = dict(prefetch_batches=args.prefetch_batches,
+                         non_blocking=(device.type == "cuda"))
+
+        def _on_micro(step_in_epoch: int, n_opt_in_epoch: int,
+                      _loss: float) -> None:
+            _maybe_mid_epoch_checkpoint(step_in_epoch, n_opt_in_epoch)
+
         loss, loss_endpoint, n_micro, n_opt = train_epoch(
             model, make_batches(train_rows, args.batch_size, True,
-                                heads, device),
+                                heads, device, **_batch_kw),
             optimizer, scheduler, heads, device,
             args.grad_accum, step_limit=remaining,
-            log_every=args.log_every, loss_cfg=loss_cfg)
+            log_every=args.log_every, loss_cfg=loss_cfg,
+            progress=progress, epoch=epoch, epochs=args.epochs,
+            skip_micro=epoch_skip,
+            on_micro_step=_on_micro if checkpoint_every > 0 else None)
         steps_done += n_opt
         steps_done_micro += n_micro
         val, val_logits, val_labels = evaluate(
@@ -1277,19 +1613,43 @@ def main() -> int:
         selected, best_doc_type = _select_epoch(
             val, epoch, selected, best_doc_type, subclass_heads,
             select_on_subclass=args.select_on_subclass)
-        events.append({"epoch": epoch, "loss": round(loss, 4),
-                       "loss_endpoint": round(loss_endpoint, 4),
-                       "lr": round(scheduler.get_last_lr()[0], 8),
-                       "epoch_wall_s": round(time.time() - epoch_t0, 1),
-                       **val})
-        print(f"epoch {epoch}/{args.epochs} loss {loss:.4f} "
-              f"(endpoint {loss_endpoint:.4f}) "
-              f"val_loss {val['val_loss']:.4f} "
-              f"doc_type_acc {val['doc_type_window_acc']} "
-              f"doc_acc {val['doc_type_doc_acc']} "
-              f"macro_f1 {val['doc_type_macro_f1_observed']} "
-              f"ece {val['doc_type_ece']} "
-              f"ece_cal {val['doc_type_ece_calibrated']}", flush=True)
+        selected_this_epoch = selected.get("epoch") == epoch
+        epoch_wall_s = round(time.time() - epoch_t0, 1)
+        eta_rem = progress.eta_s()
+        event = {"epoch": epoch, "loss": round(loss, 4),
+                 "loss_endpoint": round(loss_endpoint, 4),
+                 "lr": round(scheduler.get_last_lr()[0], 8),
+                 "epoch_wall_s": epoch_wall_s,
+                 "micro_steps": n_micro, "opt_steps": n_opt,
+                 "steps_per_sec": round(
+                     n_micro / max(1e-6, epoch_wall_s), 4),
+                 "samples_per_sec": round(
+                     (n_micro * args.batch_size) / max(1e-6, epoch_wall_s), 2),
+                 "eta_remaining_s": None if eta_rem is None else round(eta_rem, 1),
+                 "eta_remaining": _fmt_duration(eta_rem),
+                 "selected_this_epoch": selected_this_epoch,
+                 "gate_met": bool(selected.get("epoch", 0) > 0),
+                 "selection_epoch": selected.get("epoch", 0),
+                 **val}
+        events.append(event)
+        sc_bits = " ".join(
+            f"{h}_f1={val.get(f'{h}_macro_f1_observed')}"
+            for h in subclass_heads)
+        print(
+            f"epoch {epoch}/{args.epochs} loss {loss:.4f} "
+            f"(endpoint {loss_endpoint:.4f}) "
+            f"val_loss {val['val_loss']:.4f} "
+            f"doc_type_acc {val['doc_type_window_acc']} "
+            f"doc_acc {val['doc_type_doc_acc']} "
+            f"macro_f1 {val['doc_type_macro_f1_observed']} "
+            f"ece {val['doc_type_ece']} "
+            f"ece_cal {val['doc_type_ece_calibrated']} "
+            f"subclass_obj {val['subclass_objective']} "
+            f"[{sc_bits}] "
+            f"selected={'yes' if selected_this_epoch else 'no'} "
+            f"(best_e={selected.get('epoch', 0)}) "
+            f"wall {epoch_wall_s}s ETA {_fmt_duration(eta_rem)}",
+            flush=True)
         # per-epoch checkpoint: save + archive + volume commit so a kill or
         # timeout never loses more than the in-flight epoch (2026-09-19: a
         # cancelled run lost everything because the only save happened at
@@ -1302,15 +1662,40 @@ def main() -> int:
                                         temps, time.time() - t0, epoch),
                         optimizer=optimizer, scheduler=scheduler,
                         epoch=epoch, steps_done=steps_done,
-                        steps_done_micro=steps_done_micro)
+                        steps_done_micro=steps_done_micro,
+                        step_in_epoch=0, epoch_complete=True)
         _write_ood_probe(args.output, val_logits)
         # smoke (--max-steps) never archives: the run is a cadence probe, not
         # a checkpoint family — keep runs/ for real epochs only.
+        archive_path = ""
         if not args.max_steps:
             epoch_archive = runs_dir / f"{run_id}-e{epoch}"
+            if epoch_archive.exists():
+                shutil.rmtree(epoch_archive)
             shutil.copytree(args.output, epoch_archive)
+            archive_path = str(epoch_archive)
             print(f"[trainer] epoch {epoch} checkpoint archived: "
                   f"{epoch_archive}", flush=True)
+        event["checkpoint"] = str(args.output)
+        event["archive"] = archive_path
+        print(f"[trainer] checkpoint written: {args.output}"
+              + (f" archive={archive_path}" if archive_path else ""),
+              flush=True)
+        _write_epoch_metrics(epoch_jsonl, epoch_tsv, {
+            "ts": datetime.now(UTC).isoformat(),
+            "event": "epoch",
+            "run_id": run_id,
+            **event,
+            "prev_selected_epoch": prev_selected_epoch,
+            "per_head_macro_f1_observed": {
+                h: val.get(f"{h}_macro_f1_observed") for h in
+                ["doc_type", *subclass_heads]
+            },
+            "per_head_ece_calibrated": {
+                h: val.get(f"{h}_ece_calibrated") for h in
+                ["doc_type", *subclass_heads]
+            },
+        })
         _commit_checkpoint_volume()
         if val["val_loss"] < best_val:
             best_val = val["val_loss"]
@@ -1389,7 +1774,8 @@ def main() -> int:
                     temps, summary,
                     optimizer=optimizer, scheduler=scheduler,
                     epoch=len(events), steps_done=steps_done,
-                    steps_done_micro=steps_done_micro)
+                    steps_done_micro=steps_done_micro,
+                    step_in_epoch=0, epoch_complete=True)
     _write_ood_probe(args.output, val_logits)
 
     # selection enforcement (2026-09-20 audit R1): the pushed artifact must be

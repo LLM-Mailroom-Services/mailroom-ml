@@ -58,6 +58,17 @@ email share 0.57 train / 0.511 val, macro-F1 0.0845 ≈ the collapse floor;
 | M9a-U6 L4 run (operator chose ONE arm, 3 epochs) | modal-specialist + lucius | ⛔ **BLOCKED — budget** | smoke GREEN; 3-epoch arm ≈ $6.0 vs $4.32 guard; **no spend**; a restarted-session agent executes §6 |
 | M9a-U8 board evidence audit | general (board-evidence-auditor protocol — not callable pre-restart) | ✅ done | commit `f6a49a1` + audit: all execution claims VERIFIED (diffs, 233/3/3, issues #113–#116); 4 forward-narrative corrections landed |
 | M9a-U9 docs/board close | atom | ⏳ pending | — |
+| M9a-U10 **Hub release + test metrics** | operator | ⏳ **gate — post-train** | `training/publish_run_to_hub.py` + `governance/M9a-HANDOFF.md` § post-train; repo `Lucius-Morningstar/mailroom-modernbert-classifier`; **blocked until** train/eval/gates for active run `m9a-local-20260927-010430` finish |
+
+**M9a-U10 authoritative checklist (post-train, not optional):**
+
+1. Held-out eval JSON exists (`reports/eval_<run_tag>.json`).
+2. `training/check_m9a_gates.py` — capture PASS/FAIL for #112 (contract ≥0.20, correspondence ≥0.25, doc_type acc ≥0.89, window ECE ≤0.05).
+3. Dry-run: `./training/publish_run_to_hub.sh --dry-run --checkpoint … --eval-json … --release-tag <run_tag>`.
+4. Publish: `HF_TOKEN=… ./training/publish_run_to_hub.sh …` (upload weights + `eval_report_<run_tag>.json` + README metrics + Hub tag).
+5. Record release tag + gate verdict on mailroom-issues **#112** before U9 close.
+
+Local train wrapper: `training/run_m9a_local.sh --publish-to-hub` after `--i-authorize-gpu` (auto when gates pass + token set).
 
 ## Mission: open-issues pass (mailroom-ml #1 / #16–#29)
 

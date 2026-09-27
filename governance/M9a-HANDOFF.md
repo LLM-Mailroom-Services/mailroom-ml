@@ -146,7 +146,8 @@ python deploy/spawn_train.py --epochs 3 --batch-size 4 --grad-accum 8 \
   `deploy/eval_app.py`) against the selected checkpoint and read
   `per_head.contract.macro_f1` / `per_head.correspondence.macro_f1`
   (+ `support`).
-- **Do NOT push to Hub** until the caller decides on publish.
+- **Hub publish** is a separate post-train gate — see **§ post-train** (not
+  implicit from `--push-to-hub` on the trainer alone).
 
 **Modal SDK:** 1.5.5 (verified latest stable 2026-09-21; `pyproject.toml`
 deploy extra pins `modal==1.5.5`).
@@ -180,4 +181,51 @@ deploy extra pins `modal==1.5.5`).
 1. Read `governance/TASKS.md` + this file.
 2. Confirm the agent roster now includes `lucius`/`prompt-engineer`.
 3. **(Operator)** authorize budget + arm pick → launch §6.
-4. On completion: eval → compare against the §1 gate → U8 audit → U9 close.
+4. On completion: eval → compare against the §1 gate → **Hub release (§ post-train)**
+   → U8 audit → U9 close.
+
+---
+
+## post-train — Hub model release (authoritative gate)
+
+**Do not skip.** After local or Modal train finishes, held-out eval runs, and
+`training/check_m9a_gates.py` reports the #112 gates, publish a **new Hub
+version** of the classifier with the test metrics attached. Training alone is
+not mission-complete until this step succeeds (or the operator explicitly
+defers with a written `needs_attention` on the board).
+
+**Model repo (default):** `Lucius-Morningstar/mailroom-modernbert-classifier`
+(`config.CLASSIFIER_MODEL_REPO`). Override with `--repo` on the publish script.
+
+**Operator checklist**
+
+1. Confirm artifacts exist:
+   - checkpoint dir (`.../latest/` or Modal `/checkpoints/latest`): weights,
+     `labels.json`, `temperatures.json`, `train_counts.json`, `summary.json`
+   - `reports/eval_<run_tag>.json` from `training/eval_modernbert.py`
+2. Run gates (report-only):  
+   `uv run python training/check_m9a_gates.py reports/eval_<run_tag>.json <checkpoint>/summary.json`
+3. Dry-run publish plan (no token required):  
+   `./training/publish_run_to_hub.sh --dry-run --checkpoint <ckpt> --eval-json reports/eval_<run_tag>.json --release-tag <run_tag>`
+4. Publish (requires `HF_TOKEN`):  
+   `HF_TOKEN=... ./training/publish_run_to_hub.sh --checkpoint <ckpt> --eval-json reports/eval_<run_tag>.json --release-tag <run_tag>`
+
+**What uploads**
+
+| Artifact | Hub path | Notes |
+| --- | --- | --- |
+| Checkpoint folder | repo root | same set as `train_modernbert.py --push-to-hub`; excludes `optimizer.pt`, `scheduler.pt`, `resume.json` |
+| Held-out test eval | `eval_report_<release_tag>.json` | full `eval_modernbert.py` JSON |
+| Model card metrics | `README.md` | replaces/appends `<!-- mailroom-ml:test-metrics:begin/end -->` with doc_type acc, subclass surfaces, per-head macro-F1/ECE, M9a gate table, trainer selection + exclusion policy |
+| Version pointer | git tag `<release_tag>` | e.g. `m9a-local-20260927-010430`; commit message includes run_id + date |
+
+**Local M9a wrapper:** `training/run_m9a_local.sh --i-authorize-gpu --publish-to-hub`
+runs publish automatically after gates **PASS** when `HF_TOKEN` is set; without
+a token it prints the plan only.
+
+**Modal / trainer-only path:** `train_modernbert.py --push-to-hub REPO` uploads
+weights only — always run `publish_run_to_hub.py` afterward (or use the shell
+wrapper) so test eval + README metrics ship with the release.
+
+**Active local run (2026-09-27):** `m9a-local-20260927-010430` — do not publish
+until train + eval + gates complete.

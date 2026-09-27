@@ -168,11 +168,12 @@ def test_resume_state_roundtrip(tmp_path):
     save_checkpoint(out, model, _FakeSave("tokenizer.txt"),
                     {"doc_type": {"labels": ["a", "b"]}}, {}, [], {},
                     {"run_id": "r1"}, optimizer=opt, scheduler=sched,
-                    epoch=1, steps_done=10)
+                    epoch=1, steps_done=10, epoch_complete=True)
     assert (out / "optimizer.pt").is_file()
     assert (out / "scheduler.pt").is_file()
     assert json.loads((out / "resume.json").read_text()) == {
-        "epoch": 1, "steps_done": 10, "steps_done_micro": 0, "run_id": "r1"}
+        "epoch": 1, "steps_done": 10, "steps_done_micro": 0, "run_id": "r1",
+        "step_in_epoch": 0, "epoch_complete": True}
 
     # fresh model/optimizer/scheduler — resume must restore everything
     model2 = _tiny_model()
@@ -193,6 +194,24 @@ def test_resume_state_roundtrip(tmp_path):
         assert s1[k]["step"] == s2[k]["step"]
         assert torch.equal(s1[k]["exp_avg"], s2[k]["exp_avg"])
         assert torch.equal(s1[k]["exp_avg_sq"], s2[k]["exp_avg_sq"])
+
+
+def test_resume_mid_epoch_continues_same_epoch(tmp_path):
+    """Mid-epoch resume.json (epoch_complete=false) -> same epoch + skip."""
+    out = tmp_path / "ckpt"
+    out.mkdir()
+    torch.save({"doc_type": nn.Linear(4, 2).state_dict()}, out / "heads.pt")
+    (out / "resume.json").write_text(json.dumps({
+        "epoch": 2, "steps_done": 100, "steps_done_micro": 400,
+        "step_in_epoch": 75, "epoch_complete": False, "run_id": "r1",
+    }))
+    model = _tiny_model()
+    opt, sched = _tiny_optim_sched(model)
+    state = _apply_resume(out, model, opt, sched, torch.device("cpu"),
+                          n_train_rows=20, batch_size=4, grad_accum=2)
+    assert state["start_epoch"] == 2
+    assert state["micro_skip"] == 75
+    assert state["steps_done"] == 100
 
 
 def test_resume_without_optimizer_state(tmp_path):

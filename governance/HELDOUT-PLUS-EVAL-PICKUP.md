@@ -4,7 +4,7 @@
 **Parent context:** mailroom-issues **#112** (M9a); extended monitoring pool, **not** the canonical 323-doc #112 gates.  
 **Cloud agent run that prepared this handoff:** `bc-01a0e2b1-55b8-787b-a518-e08c7ce8dfc5`  
 **PR (merge before or dispatch from):** https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39  
-**Dedicated tracker:** mailroom-ml issue (see issue body linked from PR #39)
+**Dedicated tracker:** https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40
 
 ---
 

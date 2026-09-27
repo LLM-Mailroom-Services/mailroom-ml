@@ -130,7 +130,7 @@ $0.80/hr L4. The pool will not crash or fail-open on windowing.
   approval before spending it; the set is built and the crash is fixed, so the
   next run should complete in one attempt.
 
-**Next agent:** read `governance/HELDOUT-PLUS-EVAL-PICKUP.md` and the dedicated GitHub issue (linked from PR #39).
+**Next agent:** read `governance/HELDOUT-PLUS-EVAL-PICKUP.md` and [mailroom-ml #40](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40).
 
 ## Run the one-shot GPU eval (~$0.16)
 

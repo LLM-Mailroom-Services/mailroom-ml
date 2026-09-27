@@ -65,7 +65,7 @@ echo "eval       -> ${EVAL_JSON}"
 
 if [[ ! -f "$SUMMARY" ]]; then
   echo "WAIT: ${SUMMARY} missing — training not finished or wrong --run-tag." >&2
-  echo "Monitor only: ./training/watch_m9a_run.sh --log logs/${RUN_TAG}.log --follow" >&2
+  echo "Monitor only: ./training/watch_m9a_run.sh --log logs/${RUN_TAG}.log --agent" >&2
   exit 4
 fi
 
@@ -76,6 +76,7 @@ for pid in $(pgrep -f 'train_modernbert\.py' 2>/dev/null || true); do
     trainer_on_ckpt=1
     echo "WAIT: train_modernbert still running for this run (PID ${pid})." >&2
     echo "Re-run complete_run after training exits; this script will not stop it." >&2
+    echo "Monitor (42m polls): ./training/watch_m9a_run.sh --log logs/${RUN_TAG}.log --agent" >&2
     exit 5
   fi
 done

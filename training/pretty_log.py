@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""LLM Mailroom pixel-owl live TUI for M9a training monitors (stdout only; never mutates logs)."""
+"""LLM Mailroom retro digital TUI for M9a training monitors (stdout only; never mutates logs)."""
 from __future__ import annotations
 
 import argparse
@@ -33,7 +33,17 @@ TEAL = (14, 116, 144)     # #0e7490
 CYAN = (56, 224, 214)     # #38e0d6
 NAVY = (11, 42, 74)       # #0b2a4a
 GOLD = (245, 196, 69)     # #f5c445
+# Hermes / amber arcade marquee (face + bevel + extrusion — not blue/teal).
+AMBER_FACE = (255, 176, 0)        # #FFB000 face front
+AMBER_HI = (255, 224, 138)        # #FFE08A top/left bevel highlight
+AMBER = (245, 196, 69)            # #F5C445 mid gold (owl / accents)
+AMBER_MID = (232, 163, 23)        # #E8A317
+AMBER_EXTRUDE = (138, 90, 18)     # #8A5A12 dark bronze 3D drop
+AMBER_SHADOW = (196, 132, 29)     # #C4841D warmer bronze fallback
+AMBER_DEEP = (184, 134, 11)       # #B8860B deep shade
+CREAM = (255, 236, 200)           # soft cream for DIGITAL MAILROOM subtitle
 SNOW = (251, 252, 254)    # #fbfcfe
+MUTED = (92, 113, 132)    # #5c7184 site muted labels
 SKY = (124, 155, 255)     # #7c9bff (dark-theme brand accent)
 
 ALT_ENTER = "\033[?1049h"
@@ -72,19 +82,22 @@ def _visible_len(text: str) -> int:
 
 
 def palette(on: bool) -> dict[str, Any]:
-    """Mailroom blue-to-teal brand with snow owl white and gold (truecolor when TTY)."""
+    """Mailroom frame/labels in blue-teal; Hermes amber wordmark; cream body (truecolor when TTY)."""
     return {
         "title": lambda t: _c(_rgb(BLUE), t, on=on),
+        "brand": lambda t: _c(_rgb(CREAM), t, on=on),
         "snow": lambda t: _c(_rgb(SNOW), t, on=on),
-        "cream": lambda t: _c(_rgb(SNOW), t, on=on),
+        "cream": lambda t: _c(_rgb(CREAM), t, on=on),
         "accent": lambda t: _c(_rgb(CYAN), t, on=on),
         "teal": lambda t: _c(_rgb(TEAL), t, on=on),
         "cyan": lambda t: _c(_rgb(CYAN), t, on=on),
         "mint": lambda t: _c(_rgb(SKY), t, on=on),
         "gold": lambda t: _c(_rgb(GOLD), t, on=on),
+        "amber": lambda t: _c(_rgb(AMBER_FACE), t, on=on),
         "stamp": lambda t: _c(_rgb(CYAN), t, on=on),
         "blue": lambda t: _c(_rgb(BLUE), t, on=on),
         "navy": lambda t: _c(_rgb(NAVY), t, on=on),
+        "muted": lambda t: _c(_rgb(MUTED), t, on=on),
         "dim": lambda t: _c("2", t, on=on),
         "warn": lambda t: _c(_rgb(GOLD), t, on=on),
         "frame": lambda t: _c(_rgb(BLUE), t, on=on),
@@ -110,77 +123,128 @@ def mailroom_route_banner() -> str:
     return "INBOX → SORTER → TRAY"
 
 
-# ---------------------------------------------------------------- owl + gremlins
-# ASCII emoticon snowy owl (open eyes) and blink variant (closed eyes).
-# Stays text-only so it renders over ssh, in pipes, and in --plain mode.
+# ---------------------------------------------------------------- wordmark + stamps
+# One symmetrical snowy owl (not a double-head). Hermes amber arcade marquee.
+# Every owl row is exactly 7 cells so the mark stays rectangular.
 OWL_FULL_OPEN: list[str] = [
-    r"  ___  ___  ",
-    r" (o,o)(o,o) ",
-    r" (  V  V  ) ",
-    r"((__v__v__))",
-    r"  (~~ ~~)   ",
-    r" //(  )\\   ",
-    r" ^^   ^^    ",
+    "  ___  ",
+    " (o,o) ",
+    " (  V) ",
+    " /)  ) ",
+    " ^^ ^^ ",
 ]
-
 OWL_FULL_BLINK: list[str] = [
-    r"  ___  ___  ",
-    r" (-,-)(-,-) ",
-    r" (  V  V  ) ",
-    r"((__v__v__))",
-    r"  (~~ ~~)   ",
-    r" //(  )\\   ",
-    r" ^^   ^^    ",
+    "  ___  ",
+    " (-,-) ",
+    " (  V) ",
+    " /)  ) ",
+    " ^^ ^^ ",
 ]
-
 OWL_MINI_OPEN: list[str] = [
-    r"(o,o)",
-    r"( V )",
-    r"(~~ )",
+    " (o,o) ",
+    " (  V) ",
+    " ^^ ^^ ",
 ]
-
 OWL_MINI_BLINK: list[str] = [
-    r"(-,-)",
-    r"( V )",
-    r"(~~ )",
+    " (-,-) ",
+    " (  V) ",
+    " ^^ ^^ ",
 ]
-
-# Backwards-compatible aliases (pixel grids removed in favor of emoticons).
 OWL_FULL = OWL_FULL_OPEN
 OWL_MINI = OWL_MINI_OPEN
 
-# Digital terminal gremlins: tiny mailroom helpers, one per pipeline stage.
-STAGE_GREMLINS: dict[str, str] = {
-    "TRAIN": "(>^.^)>",
-    "VAL": "(o_o)?",
-    "TEST": "(=_=)o",
-    "GATE": "(¬‿¬)!",
-    "HUB": "(^._.^)/",
+# Face-only chunky glyphs (█ = solid). Depth is composited as a +1,+1 extrusion.
+# Compact / stacked: 5-row x 5-col heavy arcade blocks. Every letter uses the
+# SAME 2-column stroke width for vertical stems and horizontal bars so no
+# glyph reads "thinner" than its neighbors.
+_WM_FONT_3: dict[str, list[str]] = {
+    "T": ["█████", "█████", " ███ ", " ███ ", " ███ "],
+    "H": ["██ ██", "██ ██", "█████", "██ ██", "██ ██"],
+    "E": ["█████", "███  ", "████ ", "███  ", "█████"],
+    # Two 2-col stems: open peaks at the top, a thick two-row arch bridging
+    # them, then open legs below -- reads distinctly from H's thin, single
+    # mid-height crossbar.
+    "M": ["██ ██", "█████", "█████", "██ ██", "██ ██"],
+    "A": [" ███ ", "██ ██", "█████", "██ ██", "██ ██"],
+    "I": ["█████", " ███ ", " ███ ", " ███ ", "█████"],
+    "L": ["██   ", "██   ", "██   ", "██   ", "█████"],
+    "R": ["████ ", "██ ██", "█████", "██ █ ", "██  █"],
+    "O": ["█████", "██ ██", "██ ██", "██ ██", "█████"],
+    " ": ["  ", "  ", "  ", "  ", "  "],
 }
 
-FOOTER_GREMLIN = "(^._.^)ﾉ"
+# Wide single-row (80+ cols beside owl): 5-row face, 6 cols for every letter
+# (M matched to the same 6-col width as the rest; two peaks + early bridge,
+# same 2-column stroke width discipline as _WM_FONT_3).
+_WM_FONT_4: dict[str, list[str]] = {
+    "T": ["██████", "██████", " ████ ", " ████ ", " ████ "],
+    "H": ["██  ██", "██  ██", "██████", "██  ██", "██  ██"],
+    "E": ["██████", "████  ", "█████ ", "████  ", "██████"],
+    # Two outer stems + a two-row arch bridge form two peaks. Not an N diagonal.
+    "M": ["██  ██", "██████", "██████", "██  ██", "██  ██"],
+    "A": [" ████ ", "██  ██", "██████", "██  ██", "██  ██"],
+    "I": ["██████", " ████ ", " ████ ", " ████ ", "██████"],
+    "L": ["██    ", "██    ", "██    ", "██    ", "██████"],
+    "R": ["█████ ", "██  ██", "█████ ", "██ ██ ", "██  ██"],
+    "O": ["██████", "██  ██", "██  ██", "██  ██", "██████"],
+    " ": ["  ", "  ", "  ", "  ", "  "],
+}
+
+
+def _assert_uniform_font(font: dict[str, list[str]]) -> None:
+    """Raise if glyphs in a font dict don't all share one row count and one
+    column count. Callers should pass only the "real" letters (excluding the
+    variable-width space glyph) so a regression (like a mismatched-width
+    letter) fails loudly instead of silently shifting kerning."""
+    row_counts = {len(rows) for rows in font.values()}
+    assert len(row_counts) == 1, f"font glyphs have mismatched row counts: {row_counts}"
+    col_counts = {len(row) for rows in font.values() for row in rows}
+    assert len(col_counts) == 1, f"font glyphs have mismatched col counts: {col_counts}"
+
+
+_assert_uniform_font({ch: g for ch, g in _WM_FONT_3.items() if ch != " "})
+_assert_uniform_font({ch: g for ch, g in _WM_FONT_4.items() if ch != " "})
+
+# Cell roles after extrusion composite (not painted as flat mid-tone fills).
+_ROLE_FACE = "F"
+_ROLE_HIGHLIGHT = "H"
+_ROLE_EXTRUDE = "X"
+_ROLE_EMPTY = " "
+
+# Kept for signature compatibility; UI no longer prints faces.
+STAGE_GREMLINS: dict[str, str] = {
+    "TRAIN": "",
+    "VAL": "",
+    "TEST": "",
+    "GATE": "",
+    "HUB": "",
+}
+FOOTER_GREMLIN = ""
 
 
 def stage_gremlin(stage: str) -> str:
-    return STAGE_GREMLINS.get(stage, "(o_o)")
+    return STAGE_GREMLINS.get(stage, "")
 
 
 def render_owl_pixels(grid: list[str], *, on: bool, blink: bool = False) -> list[str]:
-    """Backwards-compatible hook: colorize given ASCII lines (no pixel cells)."""
-    p = palette(on)
+    """Colorize one snowy owl: snow body, amber eyes/beak."""
+    del blink  # grid already open/blink; signature kept
     out: list[str] = []
+    eye_chars = set("oO-")
+    beak_chars = set("Vv")  # feet ^^ stay snow; only beak is amber
     for line in grid:
         if not on:
             out.append(line)
             continue
-        styled = line
-        for eye in ("o,o", "O,O", "o,O", "-,-"):
-            styled = styled.replace(eye, p["gold"](eye))
-        for beak in ("V", "v"):
-            styled = styled.replace(beak, p["gold"](beak))
-        styled = styled.replace("~~", p["teal"]("~~"))
-        styled = styled.replace("^", p["blue"]("^"))
-        out.append(styled)
+        parts: list[str] = []
+        for ch in line:
+            if ch in eye_chars or ch in beak_chars or ch == ",":
+                parts.append(_c(_rgb(AMBER_FACE), ch, on=True))
+            elif ch == " ":
+                parts.append(ch)
+            else:
+                parts.append(_c(_rgb(SNOW), ch, on=True))
+        out.append("".join(parts))
     return out
 
 
@@ -194,7 +258,44 @@ def render_owl(*, mini: bool = False, on: bool, blink: bool = False) -> list[str
 
 def owl_width(*, mini: bool = False) -> int:
     grid = OWL_MINI if mini else OWL_FULL
-    return max(len(r) for r in grid)
+    return max((len(r) for r in grid), default=0)
+
+
+def owl_emoticon(*, blink: bool = False, on: bool = False) -> str:
+    """One consistent small monitor face: open (o,o) or blink (-,-)."""
+    face = "(-,-)" if blink else "(o,o)"
+    if not on:
+        return face
+    parts: list[str] = []
+    eye_chars = set("oO-")
+    for ch in face:
+        if ch in eye_chars or ch == ",":
+            parts.append(_c(_rgb(AMBER_FACE), ch, on=True))
+        else:
+            parts.append(_c(_rgb(SNOW), ch, on=True))
+    return "".join(parts)
+
+
+def _loading_status_line(
+    micro_done: int | None,
+    micro_planned: int | None,
+    *,
+    blink: bool = False,
+    on: bool = False,
+) -> str:
+    """Short tray status under the micro bar — one owl, no parade."""
+    face = owl_emoticon(blink=blink, on=on)
+    in_progress = (
+        micro_done is not None
+        and micro_planned is not None
+        and int(micro_planned) > 0
+        and int(micro_done) < int(micro_planned)
+    )
+    msg = "sorting…" if in_progress else "waiting on the next tray"
+    if on:
+        p = palette(on)
+        return face + " " + p["dim"](msg)
+    return f"{face} {msg}"
 
 
 # ---------------------------------------------------------------- sizing
@@ -298,6 +399,223 @@ def _centered_row(owl_line: str, *, width: int, on: bool) -> str:
     return f"{DV} {body} {DV}"
 
 
+def _normalize_font(font: dict[str, list[str]]) -> dict[str, list[str]]:
+    """Pad every glyph row so a letter is a strict rectangle."""
+    out: dict[str, list[str]] = {}
+    for ch, rows in font.items():
+        width = max(len(r) for r in rows)
+        out[ch] = [r.ljust(width) for r in rows]
+    return out
+
+
+def _face_bitmap(text: str, font: dict[str, list[str]]) -> list[str]:
+    """Join face-only glyphs into equal-width rows (█ = solid, space = empty)."""
+    font = _normalize_font(font)
+    height = len(next(iter(font.values())))
+    fallback = font.get(" ", [" "] * height)
+    rows: list[list[str]] = [[] for _ in range(height)]
+    prev_letter = False
+    for ch in text:
+        glyph = font.get(ch, fallback)
+        if len(glyph) != height:
+            gw = max(len(r) for r in glyph)
+            glyph = [r.ljust(gw) for r in glyph]
+            glyph = (glyph + [" " * gw] * height)[:height]
+        if prev_letter and ch != " ":
+            for i in range(height):
+                rows[i].append(" ")
+        for i in range(height):
+            rows[i].append(glyph[i])
+        prev_letter = ch != " "
+    joined = ["".join(parts) for parts in rows]
+    width = max((len(r) for r in joined), default=0)
+    return [r.ljust(width) for r in joined]
+
+
+def _extrude_roles(face_rows: list[str]) -> list[str]:
+    """Arcade cabinet extrusion: bronze drop at +1,+1, face on top, top-edge bevel."""
+    if not face_rows:
+        return []
+    fh = len(face_rows)
+    fw = len(face_rows[0])
+    ch, cw = fh + 1, fw + 1
+    roles = [[_ROLE_EMPTY] * cw for _ in range(ch)]
+
+    def solid(r: int, c: int) -> bool:
+        return 0 <= r < fh and 0 <= c < fw and face_rows[r][c] not in (" ", "")
+
+    # Shadow layer: full letter shape shifted down-right (dark bronze depth).
+    for r in range(fh):
+        for c in range(fw):
+            if solid(r, c):
+                roles[r + 1][c + 1] = _ROLE_EXTRUDE
+
+    # Face layer overwrites; top/left stroke edges get the light bevel.
+    for r in range(fh):
+        for c in range(fw):
+            if not solid(r, c):
+                continue
+            if not solid(r - 1, c) or not solid(r, c - 1):
+                roles[r][c] = _ROLE_HIGHLIGHT
+            else:
+                roles[r][c] = _ROLE_FACE
+    return ["".join(row) for row in roles]
+
+
+def _paint_extrude_cell(role: str, *, on: bool) -> str:
+    """Paint one extruded marquee cell. Plain keeps ▓ depth without color."""
+    if role == _ROLE_EMPTY or role == " ":
+        return " "
+    if not on:
+        # Depth without color: solid face, darker shade for the drop.
+        if role == _ROLE_EXTRUDE:
+            return "▓"
+        return "█"
+    if role == _ROLE_EXTRUDE:
+        # Dark bronze drop — must not equal face amber (#FFB000).
+        return _c(_rgb(AMBER_EXTRUDE), "█", on=True)
+    if role == _ROLE_HIGHLIGHT:
+        # Top bevel: light gold ▀ over amber face (truecolor fg/bg).
+        return f"\033[{_rgb(AMBER_HI)};{_rgb_bg(AMBER_FACE)}m▀\033[0m"
+    return _c(_rgb(AMBER_FACE), "█", on=True)
+
+
+def _compose_wordmark(text: str, font: dict[str, list[str]], *, on: bool) -> list[str]:
+    """Arcade marquee: face + highlight bevel over +1,+1 bronze extrusion."""
+    face = _face_bitmap(text, font)
+    roles = _extrude_roles(face)
+    painted = [
+        "".join(_paint_extrude_cell(ch, on=on) for ch in row)
+        for row in roles
+    ]
+    width = max((_visible_len(r) for r in painted), default=0)
+    return [_pad_visible(r, width) for r in painted]
+
+
+def _stack_centered(blocks: list[list[str]]) -> list[str]:
+    width = max((_visible_len(line) for block in blocks for line in block), default=0)
+    out: list[str] = []
+    for block in blocks:
+        for line in block:
+            w = _visible_len(line)
+            left = max(0, (width - w) // 2)
+            out.append(_pad_visible(" " * left + line, width))
+    return out
+
+
+def _wordmark_variants(*, on: bool) -> tuple[list[str], list[str], list[str]]:
+    """Return (shaded wide row, solid row, THE/MAILROOM stack)."""
+    wide = _compose_wordmark("THE MAILROOM", _WM_FONT_4, on=on)
+    row = _compose_wordmark("THE MAILROOM", _WM_FONT_3, on=on)
+    stacked = _stack_centered(
+        [
+            _compose_wordmark("THE", _WM_FONT_3, on=on),
+            _compose_wordmark("MAILROOM", _WM_FONT_3, on=on),
+        ]
+    )
+    return wide, row, stacked
+
+
+def _pick_mark(budget: int, *, on: bool, prefer_stack: bool) -> list[str]:
+    wide, row, stacked = _wordmark_variants(on=on)
+    if prefer_stack:
+        if all(_visible_len(x) <= budget for x in stacked):
+            return stacked
+        if all(_visible_len(x) <= budget for x in row):
+            return row
+        return stacked
+    if all(_visible_len(x) <= budget for x in wide):
+        return wide
+    if all(_visible_len(x) <= budget for x in row):
+        return row
+    if all(_visible_len(x) <= budget for x in stacked):
+        return stacked
+    return row
+
+
+def _join_owl_wordmark(
+    owl_lines: list[str],
+    mark_lines: list[str],
+    *,
+    budget: int,
+    stacked: bool,
+) -> list[str]:
+    """Owl left of wordmark when room; owl above wordmark on narrow."""
+    if stacked:
+        return _stack_centered([owl_lines, mark_lines])
+    gap = 2
+    owl_w = max((_visible_len(x) for x in owl_lines), default=0)
+    mark_w = max((_visible_len(x) for x in mark_lines), default=0)
+    if owl_w + gap + mark_w > budget:
+        return _stack_centered([owl_lines, mark_lines])
+    height = max(len(owl_lines), len(mark_lines))
+    owl_pad_top = max(0, (height - len(owl_lines)) // 2)
+    mark_pad_top = max(0, (height - len(mark_lines)) // 2)
+    out: list[str] = []
+    for i in range(height):
+        oi = i - owl_pad_top
+        mi = i - mark_pad_top
+        left = owl_lines[oi] if 0 <= oi < len(owl_lines) else " " * owl_w
+        right = mark_lines[mi] if 0 <= mi < len(mark_lines) else " " * mark_w
+        left = _pad_visible(left, owl_w)
+        right = _pad_visible(right, mark_w)
+        out.append(left + " " * gap + right)
+    width = max((_visible_len(r) for r in out), default=0)
+    return [_pad_visible(r, width) for r in out]
+
+
+def _wordmark_lines(*, inner: int, on: bool, compact: bool, blink: bool = False) -> list[str]:
+    """Header hero: one owl + amber THE MAILROOM (owl above under ~70 cols)."""
+    budget = max(inner - 2, 20)
+    # Narrow / compact: mini owl above stacked THE / MAILROOM.
+    if compact or budget < 70:
+        owl = render_owl(mini=True, on=on, blink=blink)
+        mark = _pick_mark(budget, on=on, prefer_stack=True)
+        return _join_owl_wordmark(owl, mark, budget=budget, stacked=True)
+    # Wide: full owl to the left of the largest mark that fits beside it.
+    owl = render_owl(mini=False, on=on, blink=blink)
+    gap = 2
+    mark_budget = max(budget - owl_width(mini=False) - gap, 20)
+    mark = _pick_mark(mark_budget, on=on, prefer_stack=False)
+    joined = _join_owl_wordmark(owl, mark, budget=budget, stacked=False)
+    if all(_visible_len(x) <= budget for x in joined):
+        return joined
+    # Fallback if side-by-side still overflows.
+    mark = _pick_mark(budget, on=on, prefer_stack=True)
+    return _join_owl_wordmark(owl, mark, budget=budget, stacked=True)
+
+
+def _header_subtitle_lines(
+    *,
+    run_tag: str | None,
+    inner: int,
+    on: bool,
+) -> list[str]:
+    p = palette(on)
+    tag = ""
+    if run_tag:
+        tag = run_tag if len(run_tag) <= 28 else run_tag[:27] + "…"
+    brand = "DIGITAL MAILROOM"
+    path = "ModernBERT fast-path"
+    route = mailroom_route_banner()
+    budget = inner - 2
+    if tag and _visible_len(f"{brand}  ·  {path}  ·  {tag}") <= budget:
+        if on:
+            line = p["brand"](brand) + p["dim"]("  ·  ") + p["snow"](path) + p["dim"]("  ·  ") + p["gold"](tag)
+        else:
+            line = f"{brand}  ·  {path}  ·  {tag}"
+        return [line, route if not on else p["teal"](route)]
+    if on:
+        top = p["brand"](brand) + p["dim"]("  ·  ") + p["snow"](path if _visible_len(f"{brand}  ·  {path}") <= budget else "ModernBERT")
+        extra = [p["gold"](tag)] if tag else []
+        return [top, *extra, p["teal"](route)]
+    top = f"{brand}  ·  {path}"
+    if _visible_len(top) > budget:
+        top = brand
+    extra = [tag] if tag else []
+    return [top, *extra, route]
+
+
 def render_header_banner(
     *,
     run_tag: str | None,
@@ -309,43 +627,17 @@ def render_header_banner(
     p = palette(on)
     w = max(width, 20)
     inner = w - 2
-    owl_lines = render_owl(mini=compact, on=on, blink=blink)
-
-    line1_plain = "◈ LLM MAILROOM ◈  ModernBERT fast-path"
-    if run_tag:
-        tag = run_tag if len(run_tag) <= 24 else run_tag[:23] + "…"
-        line1_plain = f"◈ LLM MAILROOM ◈  {tag}"
-    line2_plain = f"✉ {mailroom_route_banner()} · {mailroom_tagline()}"
-    if _visible_len(line2_plain) > inner - 2:
-        line2_plain = f"✉ {mailroom_tagline()}"
+    mark = _wordmark_lines(inner=inner, on=on, compact=compact, blink=blink)
+    subs = _header_subtitle_lines(run_tag=run_tag, inner=inner, on=on)
 
     top = DTL + DH * inner + DTR
     bot = DBL + DH * inner + DBR
     rows: list[str] = [p["frame"](top) if on else top]
-    for ol in owl_lines:
+    for ol in mark:
         rows.append(_centered_row(ol, width=w, on=on))
-    if on:
-        row1 = _panel_row(
-            p["title"]("◈ LLM MAILROOM ◈")
-            + p["snow"]("  ModernBERT fast-path  ")
-            + (p["gold"](f"{run_tag}  ") if run_tag else ""),
-            on=False,
-            sides=True,
-            width=w,
-        )
-        row2 = _panel_row(
-            p["gold"]("✉ ")
-            + p["dim"](mailroom_route_banner())
-            + p["dim"](" · ")
-            + p["accent"](mailroom_tagline()),
-            on=False,
-            sides=True,
-            width=w,
-        )
-    else:
-        row1 = DV + " " + _pad_visible(line1_plain, inner - 2) + " " + DV
-        row2 = DV + " " + _pad_visible(line2_plain, inner - 2) + " " + DV
-    rows.extend([row1, row2, p["frame"](bot) if on else bot])
+    for sub in subs:
+        rows.append(_panel_row(sub, on=False, sides=True, width=w))
+    rows.append(p["frame"](bot) if on else bot)
     return rows
 
 
@@ -355,49 +647,47 @@ def render_status_bar(
     stage: str,
     on: bool,
     width: int = PANEL_W,
+    blink: bool = False,
 ) -> str:
     p = palette(on)
+    face = owl_emoticon(blink=blink, on=False)
     left = f"watch @ {timestamp}"
-    right = f"✉ {stage_gremlin(stage)} stage ▸{stage}◂"
+    right = f"{face}  stage ▸{stage}◂"
     gap = width - 4 - len(left) - len(right)
     if gap < 1:
         gap = 1
     plain = left + " " * gap + right
     if not on:
         return _panel_row(plain, on=on, width=width)
-    styled = (
-        p["dim"]("✉ stage ")
-        + p["stamp"](f"▸{stage}◂")
-        + p["dim"](f" {stage_gremlin(stage)}")
-    )
-    gap2 = width - 4 - _visible_len(left) - _visible_len(styled)
+    face_c = owl_emoticon(blink=blink, on=True)
+    styled_right = face_c + "  " + p["dim"]("stage ") + p["stamp"](f"▸{stage}◂")
+    gap2 = width - 4 - _visible_len(left) - _visible_len(styled_right)
     if gap2 < 1:
         gap2 = 1
-    styled = p["dim"](left) + " " * gap2 + styled
+    styled = p["dim"](left) + " " * gap2 + styled_right
     return _panel_row(styled, on=False, sides=True, width=width)
 
 
 def _box(title: str, lines: list[str], *, width: int = _INNER_BOX_W, on: bool) -> str:
     p = palette(on)
     inner_w = max(width - 2, 20)
-    title_plain = title.strip()
-    top_inner = f" {title_plain} "
+    title_stripped = title.strip()
+    title_plain = _ANSI_RE.sub("", title_stripped)
     if len(title_plain) > inner_w - 2:
         title_plain = title_plain[: inner_w - 3] + "…"
-        top_inner = f" {title_plain} "
-    pad = inner_w - len(top_inner)
-    if on:
-        top = TL + p["title"](title_plain) + H * max(0, pad) + TR
+        title_stripped = title_plain
+    title_vis = _visible_len(title_stripped)
+    pad = inner_w - title_vis - 2
+    if on and "\033[" not in title_stripped:
+        mid = " " + p["title"](title_stripped) + " "
     else:
-        top = TL + top_inner + H * pad + TR
+        mid = " " + title_stripped + " "
+    top = TL + mid + H * max(0, pad) + TR
     body: list[str] = []
     for line in lines:
-        plain = _ANSI_RE.sub("", line) if on else line
-        if len(plain) > inner_w:
-            plain = plain[: inner_w - 1] + "…"
-            if on:
-                line = plain
-        body.append(V + " " + (line if on else plain.ljust(inner_w - 1)) + V)
+        trunc = _truncate_visible(line, inner_w - 1)
+        padded = _pad_visible(trunc, inner_w - 1)
+        body.append(V + " " + padded + V)
     bottom = BL + H * inner_w + BR
     return "\n".join([top, *body, bottom])
 
@@ -457,12 +747,10 @@ def fmt_loss_delta(cur: Any, prev: Any) -> str:
 
 
 def step_spark(step: int) -> str:
-    """Kawaii ASCII on milestone steps only."""
+    """Quiet milestone mark — no faces."""
     if step <= 0:
         return ""
-    if step == 1 or step % 500 == 0:
-        return " ♡"
-    if step % 100 == 0:
+    if step == 1 or step % 500 == 0 or step % 100 == 0:
         return " ·"
     return ""
 
@@ -503,7 +791,7 @@ def render_step_event(
     prev_row: dict | None = None,
     tick: int = 0,
     blink: bool = False,
-    show_owl: bool = True,
+    show_owl: bool = False,
 ) -> str:
     on = use_color() if on is None else on
     p = palette(on)
@@ -523,7 +811,8 @@ def render_step_event(
         int(epoch) if epoch is not None else None,
         int(epochs) if epochs is not None else None,
     )
-    title = f"✉ step {step}{spark} → SORTER · doc_type slot"
+    face = owl_emoticon(blink=blink, on=on)
+    title = f"{face} step {step}{spark} → SORTER · doc_type slot"
     if not ep_label:
         ep_label = "routing windows → plurality vote"
 
@@ -531,6 +820,7 @@ def render_step_event(
     content_w = inner_w - 1
     bar_w = 12 if width < 52 else (30 if width > 70 else 22)
     bar = progress_bar(micro_done, micro_planned, width=bar_w, tick=tick, on=bool(on))
+    load_ln = _loading_status_line(micro_done, micro_planned, blink=blink, on=bool(on))
     delta = fmt_loss_delta(loss, (prev_row or {}).get("loss"))
     loss_val = fmt_loss(float(loss) if loss is not None else None) + delta
 
@@ -547,9 +837,15 @@ def render_step_event(
         if show_owl:
             owl_lines = _mini_owl_block(on=False, blink=blink)
             top = _combine_owl_metrics(owl_lines, right_lines, inner_w=inner_w, on=False)
-            lines_plain = [*top, bar] if bar else top
+            lines_plain = [*top]
+            if bar:
+                lines_plain.append(bar)
+            lines_plain.append(load_ln)
             return _box(title, lines_plain, on=on, width=width)
-        lines_plain = [*right_lines, bar] if bar else right_lines
+        lines_plain = [*right_lines]
+        if bar:
+            lines_plain.append(bar)
+        lines_plain.append(load_ln)
         return _box(title, lines_plain, on=on, width=width)
 
     if show_owl:
@@ -564,6 +860,7 @@ def render_step_event(
         top = _combine_owl_metrics(owl_lines, styled_right, inner_w=inner_w, on=True)
         if bar:
             top.append(p["gold"](bar))
+        top.append(load_ln)
         return _box(title, top, on=on, width=width)
 
     lines_col = [
@@ -575,6 +872,7 @@ def render_step_event(
         lines_col.append(p["dim"](right_lines[3]))
     if bar:
         lines_col.append(p["gold"](bar))
+    lines_col.append(load_ln)
     return _box(title, lines_col, on=on, width=width)
 
 
@@ -584,7 +882,7 @@ def render_epoch_event(
     on: bool | None = None,
     width: int = _INNER_BOX_W,
     blink: bool = False,
-    show_owl: bool = True,
+    show_owl: bool = False,
 ) -> str:
     on = use_color() if on is None else on
     p = palette(on)
@@ -610,7 +908,7 @@ def render_epoch_event(
         int(epoch) if str(epoch).isdigit() else None,
         int(epochs) if epochs is not None else None,
     )
-    title = f"✉ epoch {epoch} → TRAY · subclass labels on parcels"
+    title = f"{owl_emoticon(blink=blink, on=on)} epoch {epoch} → TRAY · subclass labels on parcels"
     inner_w = max(width - 2, 20)
     content_w = inner_w - 1
 
@@ -877,21 +1175,25 @@ def render_hardware_panel(
     on: bool,
     width: int = _INNER_BOX_W,
     compact: bool = False,
+    blink: bool = False,
 ) -> str:
     p = palette(on)
+    face = owl_emoticon(blink=blink, on=on)
     if compact:
         if not resources or not resources.get("available"):
-            line = "HW gpu: unavailable · trainer: idle"
+            line = f"{owl_emoticon(blink=blink, on=False)} HW gpu: unavailable · trainer: idle"
+            if on:
+                return _panel_row(face + " " + p["dim"]("HW gpu: unavailable · trainer: idle"), on=False, sides=True, width=width)
             return _panel_row(line, on=on, width=width)
         gpu = f"gpu {resources.get('gpu_util', '—')}% {_fmt_mem(resources.get('gpu_mem_used'))}/{_fmt_mem(resources.get('gpu_mem_total'))}"
         cpu = f"cpu {resources.get('cpu_pct', '—')}%"
         ram = "ram —"
         if resources.get("host_mem_used") and resources.get("host_mem_total"):
             ram = f"ram {_fmt_mem(resources['host_mem_used'])}/{_fmt_mem(resources['host_mem_total'])}"
-        line = f"HW {gpu} · {cpu} · {ram}"
+        plain = f"{owl_emoticon(blink=blink, on=False)} HW {gpu} · {cpu} · {ram}"
         if on:
-            return _panel_row(p["cyan"](line), on=False, sides=True, width=width)
-        return _panel_row(line, on=on, width=width)
+            return _panel_row(face + " " + p["cyan"](f"HW {gpu} · {cpu} · {ram}"), on=False, sides=True, width=width)
+        return _panel_row(plain, on=on, width=width)
     lines: list[str] = []
     if not resources or not resources.get("available"):
         lines = ["gpu: unavailable", "trainer: idle"]
@@ -912,10 +1214,11 @@ def render_hardware_panel(
             )
         else:
             lines.append(f"load {resources.get('load1', '—')}")
+    hw_title = f"{face} HARDWARE"
     if on:
         styled = [p["cyan"](lines[0])] + [p["dim"](x) for x in lines[1:]]
-        return _box("HARDWARE", styled, on=on, width=width)
-    return _box("HARDWARE", lines, on=on, width=width)
+        return _box(hw_title, styled, on=on, width=width)
+    return _box(hw_title, lines, on=on, width=width)
 
 
 def _side_by_side(left: str, right: str, *, gap: int = 2) -> str:
@@ -968,7 +1271,7 @@ def render_watch_snapshot(
     chunks.append("")
 
     stage = _active_stage(jsonl_row, epoch_jsonl_row)
-    chunks.append(render_status_bar(timestamp=timestamp, stage=stage, on=on, width=panel_w))
+    chunks.append(render_status_bar(timestamp=timestamp, stage=stage, on=on, width=panel_w, blink=blink))
 
     meta: list[str] = []
     if lock_line:
@@ -976,7 +1279,7 @@ def render_watch_snapshot(
     else:
         meta.append("lock: (none)")
     if trainer_lines:
-        meta.append("trainer: running ✉")
+        meta.append("trainer: running")
         meta.extend(f"  {t}" for t in trainer_lines)
     else:
         meta.append("trainer: (not running)")
@@ -1031,7 +1334,7 @@ def render_watch_snapshot(
                 metric_text = render_step_event(
                     jsonl_row, on=on, width=metric_w, prev_row=prev_step_row, tick=tick, blink=blink
                 )
-        hw_text = render_hardware_panel(resources, on=on, width=hw_width, compact=False)
+        hw_text = render_hardware_panel(resources, on=on, width=hw_width, compact=False, blink=blink)
         if metric_text:
             chunks.append(_side_by_side(metric_text, hw_text))
         else:
@@ -1044,15 +1347,17 @@ def render_watch_snapshot(
         if epoch_text:
             chunks.append(epoch_text)
         if hw_compact:
-            chunks.append(render_hardware_panel(resources, on=on, width=panel_w, compact=True))
+            chunks.append(render_hardware_panel(resources, on=on, width=panel_w, compact=True, blink=blink))
         else:
-            chunks.append(render_hardware_panel(resources, on=on, width=box_w, compact=False))
+            chunks.append(render_hardware_panel(resources, on=on, width=box_w, compact=False, blink=blink))
 
-    footer = f"{FOOTER_GREMLIN} {stage_gremlin(stage)} {mailroom_route_banner()} · {mailroom_pipeline_hint(stage)}"
+    face = owl_emoticon(blink=blink, on=on)
+    footer_plain = f"{owl_emoticon(blink=blink, on=False)} {mailroom_route_banner()}  ·  {mailroom_pipeline_hint(stage)}"
     if on:
-        chunks.append(_panel_row(p["dim"](footer), on=False, sides=True, width=panel_w))
+        footer = face + " " + p["dim"](f"{mailroom_route_banner()}  ·  {mailroom_pipeline_hint(stage)}")
+        chunks.append(_panel_row(footer, on=False, sides=True, width=panel_w))
     else:
-        chunks.append(_panel_row(footer, on=on, sides=True, width=panel_w))
+        chunks.append(_panel_row(footer_plain, on=on, sides=True, width=panel_w))
 
     return "\n".join(chunks) + "\n"
 
@@ -1248,7 +1553,7 @@ def follow_live(
 
 
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="LLM Mailroom pixel-owl live TUI for M9a logs (read-only).")
+    ap = argparse.ArgumentParser(description="LLM Mailroom retro digital TUI for M9a logs (read-only).")
     ap.add_argument("--jsonl", type=Path, help="train_steps.jsonl path")
     ap.add_argument("--epoch-jsonl", type=Path, help="epoch_metrics.jsonl path")
     ap.add_argument("--log", type=Path, help="Plain trainer .log (fallback parse)")
@@ -1304,11 +1609,11 @@ def main(argv: list[str] | None = None) -> int:
     if watch_mode or row or log_tail or epoch_row:
         ts = args.timestamp or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         resources: dict[str, Any] | None = None
-        if not args.plain:
-            try:
-                resources = sample_resources(args.lock_line or None, list(args.trainer_line))
-            except Exception:
-                resources = None
+        try:
+            # Read-only sampler; safe in --plain (still no ANSI/alt-screen).
+            resources = sample_resources(args.lock_line or None, list(args.trainer_line))
+        except Exception:
+            resources = None
         text = render_watch_snapshot(
             timestamp=ts,
             lock_line=args.lock_line or None,

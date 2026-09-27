@@ -5,8 +5,9 @@
 #   ./training/watch_m9a_run.sh
 #   ./training/watch_m9a_run.sh --once
 #   ./training/watch_m9a_run.sh --log logs/m9a-local-....log --jsonl data/.../train_steps.jsonl
-#   ./training/watch_m9a_run.sh --follow   # mailroom pixel-owl live TUI (alt-screen on TTY)
-#   ./training/watch_m9a_run.sh --follow --pretty   # mailroom pixel-owl live TUI (default on TTY)
+#   ./training/watch_m9a_run.sh --follow   # refresh every 30s until Ctrl-C
+#   ./training/watch_m9a_run.sh --agent    # sparse follow every 42m (agents / long ETA)
+#   ./training/watch_m9a_run.sh --follow --pretty   # LLM Mailroom ASCII TUI (default on TTY)
 #   ./training/watch_m9a_run.sh --plain   # force plain text
 #
 # Safe for agents/subagents: use this instead of re-launching run_m9a_local.sh when
@@ -23,6 +24,9 @@ EPOCH_JSONL=""
 ONCE=0
 FOLLOW=0
 INTERVAL=30
+INTERVAL_SET=0
+# Long-run agent/automation polls (42 minutes) — avoid burning tokens on multi-hour training.
+AGENT_INTERVAL=2520
 PRETTY=""
 PLAIN=0
 
@@ -39,7 +43,8 @@ while [[ $# -gt 0 ]]; do
     --jsonl) JSONL="${2:-}"; shift ;;
     --once) ONCE=1 ;;
     --follow) FOLLOW=1 ;;
-    --interval=*) INTERVAL="${1#*=}" ;;
+    --agent) FOLLOW=1; INTERVAL="$AGENT_INTERVAL" ;;
+    --interval=*) INTERVAL="${1#*=}"; INTERVAL_SET=1 ;;
     --pretty) PRETTY=1 ;;
     --plain) PLAIN=1 ;;
     -h|--help) usage 0 ;;
@@ -88,15 +93,24 @@ print_status() {
 
   lock_line=""
   run_tag=""
+  # Explicit --log wins for title/metrics; lock is still shown for the canonical launcher.
+  if [[ -n "$LOG" ]]; then
+    run_tag="$(basename "$LOG" .log)"
+  fi
   if [[ -f "$LOCK" ]]; then
     lock_line="$(cat "$LOCK")"
-    read -r _ run_tag _ <<< "$lock_line" || true
+    if [[ -z "$LOG" ]]; then
+      read -r _ run_tag _ <<< "$lock_line" || true
+    fi
   fi
 
   trainer_lines=""
   for pid in $(pgrep -f 'train_modernbert\.py' 2>/dev/null || true); do
     args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
     if [[ "$args" == *python*training/train_modernbert.py* ]]; then
+      if [[ -n "$run_tag" && "$args" != *"runs/${run_tag}/"* ]]; then
+        continue
+      fi
       trainer_lines+="${pid} ${args}"$'\n'
     fi
   done
@@ -173,6 +187,23 @@ fi
 if (( FOLLOW == 0 )); then
   echo "Tip: --follow for periodic refresh; this script never launches training."
   exit 0
+fi
+
+# Pretty follow redraws one frame in the alternate screen. The 30s poll
+# appends a new panel each time, so older art stays in scrollback and looks
+# like the display never updated.
+if (( PRETTY == 1 )) && [[ -x "$PY" ]]; then
+  live_iv="$INTERVAL"
+  (( INTERVAL_SET == 0 )) && live_iv=2
+  live_args=( -m training.pretty_log --follow --interval "$live_iv" )
+  (( PLAIN == 1 )) && live_args+=( --plain )
+  [[ -n "$LOG" ]] && live_args+=( --log "$LOG" )
+  [[ -n "$JSONL" ]] && live_args+=( --jsonl "$JSONL" )
+  [[ -n "$EPOCH_JSONL" ]] && live_args+=( --epoch-jsonl "$EPOCH_JSONL" )
+  [[ -f "$LOCK" ]] && live_args+=( --lock-path "$LOCK" )
+  if ( cd "$ROOT" && "$PY" "${live_args[@]}" ); then
+    exit 0
+  fi
 fi
 
 while true; do

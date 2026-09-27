@@ -49,6 +49,7 @@ from mailroom_ml.dataset import (
 from mailroom_ml.labels import normalize_subclass
 from mailroom_ml.normalize import deterministic_normalize
 from mailroom_ml.preprocessing import build_title
+from mailroom_ml.windows import estimate_tokens
 
 ENRON_REPO = "Lucius-Morningstar/enron-correspondence-dedup"
 
@@ -152,6 +153,7 @@ def main(argv: list[str] | None = None) -> int:
                 "doc_type": dt,
                 "subclass": sc,
                 "corpus_split": "test",
+                "token_estimate": estimate_tokens(text),
                 "split": "test",
             }
         )

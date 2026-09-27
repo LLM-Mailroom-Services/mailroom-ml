@@ -62,6 +62,21 @@ Builder: `training/build_heldout_plus.py` (deterministic, seed 42).
 Full audit: `data/heldout_plus_v1/audit.json` (local build artifact, gitignored;
 `data/` never commits — re-run the builder to reproduce byte-identically).
 
+## Plus-set quality mix (2026-09-27, local CPU)
+
+| property | value |
+| --- | --- |
+| body chars min / median / max | 4 / 699 / 211,263 |
+| token estimate min / median / max | 1 / 174 / 52,816 |
+| nonempty subjects | 964 / 1,000 (932 unique) |
+| folded-duplicate subject groups | 11 groups / 46 rows (top: bare `RE:`/`Re:` subjects as published — source trait, not a cleaning defect) |
+| subclass mix | email 981 · notice 7 · memo 6 · letter 5 · press_release 1 |
+
+Median 174 tokens keeps the extension firmly in the single-window regime
+(pre-flight: 1,269/1,323 single-window overall); the long tail exercises the
+plurality-merge path. The builder now also emits `token_estimate`, so plus
+rows match the `build_documents` column contract exactly.
+
 ## Eval wiring
 
 - `training/eval_modernbert.py --subset heldout-plus` loads canonical test +

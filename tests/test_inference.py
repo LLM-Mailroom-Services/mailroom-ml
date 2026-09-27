@@ -211,6 +211,27 @@ def test_runner_up_never_equals_winner_when_second_best_exists():
     assert res["margin"] > 0.0
 
 
+def test_runner_up_unknown_with_trainable_map():
+    """Regression (2026-09-27): the runner-up argmax runs over the FULL
+    calibrated width, so inference-only ``unknown`` (id 5) is a legitimate
+    runner-up.  Looking it up in the trainable-only map raised
+    ``KeyError: '5'`` and crashed the 1,000-doc corpus-scale Modal eval."""
+    import copy
+
+    from mailroom_ml.labels import normalize_label_maps
+
+    maps = normalize_label_maps(copy.deepcopy(HEADS))
+    assert "unknown" not in maps["doc_type"]["trainable_labels"]
+    dt = [0.0, 0.0, 0.0, 10.0, 0.0, 9.0]  # correspondence wins, unknown second
+    b = _stub_bundle(lambda ids, mask: _logits_like(
+        "x", {"doc_type": dt, "correspondence": [0.0, 0.0, 9.0, 0.0]}, 1),
+        maps=maps)
+    res = classify_windows(b, ["one window"])
+    assert res["doc_type"] == "correspondence"
+    assert res["runner_up"] == "unknown"
+    assert res["margin"] > 0.0
+
+
 def test_unknown_abstention_never_scores_subclass():
     """All windows vote the inference-only unknown -> route llm, no subclass."""
     dt = [-5.0, 0.0, 0.0, 0.0, 0.0, 10.0]  # unknown index 5

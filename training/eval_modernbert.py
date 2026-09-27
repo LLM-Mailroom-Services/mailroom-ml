@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -47,6 +48,7 @@ from mailroom_ml.calibration import (  # noqa: E402
     write_routing_thresholds,
 )
 from mailroom_ml.config import (  # noqa: E402
+    DATA_DIR,
     GATE_REQUIRED_AGREEMENT,
     HEAD_ECE_EXCLUSION_THRESHOLD,
     MAX_TOKENS,
@@ -54,6 +56,8 @@ from mailroom_ml.config import (  # noqa: E402
     ROUTE_DOC_CONFIDENCE,
     ROUTE_MARGIN,
     SELECTIVE_RISK_MIN_N,
+    FINETUNE_REPO,
+    FINETUNE_REVISION,
     STAGE_DIR,
 )
 from mailroom_ml.inference import (  # noqa: E402
@@ -77,7 +81,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="staged tree with data/documents/test "
                          "(default data/modernbert_training/stage)")
     ap.add_argument("--subset", default="test",
-                    choices=["test"], help="eval split (held-out test only)")
+                    choices=["test", "train", "all", "heldout-plus"],
+                    help="document pool: held-out test only, train+val "
+                         "(no test), full finetune corpus (all splits), or "
+                         "canonical test + heldout-plus v1 extension "
+                         "(training/build_heldout_plus.py)")
     ap.add_argument("--sample", type=int, default=50,
                     help="per-doc_type stratified sample size (0 = all)")
     ap.add_argument("--seed", type=int, default=RANDOM_STATE)
@@ -115,21 +123,103 @@ def stratified_sample(filenames, stratify: list[str], n: int, seed: int):
     return [fn for fn in filenames if fn in picked]
 
 
-def _load_test_docs(stage: Path):
-    """Held-out test documents from the staged tree (or corpus fallback)."""
-    for d in (stage / "parquet" / "documents" / "test",   # legacy EDA layout
-              stage / "data" / "documents" / "test"):     # build_dataset layout
-        if d.is_dir() and list(d.glob("*.parquet")):
-            import pandas as pd
+def _ensure_corpus_snapshot() -> None:
+    """Fetch the pinned finetune corpus when ``data/parquet`` is absent (Modal)."""
+    marker = DATA_DIR / "parquet" / "ground_truth" / "train"
+    if marker.is_dir() and list(marker.glob("*.parquet")):
+        return
+    if not os.environ.get("HF_TOKEN"):
+        raise RuntimeError(
+            "HF_TOKEN required to download the finetune corpus for --subset "
+            "train|all (set HF_TOKEN locally or pass a Modal Secret).")
+    from huggingface_hub import snapshot_download  # noqa: PLC0415
 
-            return pd.concat(
-                [pd.read_parquet(f) for f in sorted(d.glob("*.parquet"))],
-                ignore_index=True)
-    # fallback: canonical corpus snapshot (load_corpus_rows verifies the pin)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"[eval_modernbert] pulling {FINETUNE_REPO} @ {FINETUNE_REVISION} "
+          f"-> {DATA_DIR}", flush=True)
+    snapshot_download(
+        repo_id=FINETUNE_REPO,
+        repo_type="dataset",
+        revision=FINETUNE_REVISION,
+        local_dir=str(DATA_DIR),
+    )
+
+
+def _load_parquet_split(stage: Path, *parts: str):
+    import pandas as pd
+
+    d = stage.joinpath(*parts)
+    if d.is_dir() and list(d.glob("*.parquet")):
+        return pd.concat(
+            [pd.read_parquet(f) for f in sorted(d.glob("*.parquet"))],
+            ignore_index=True)
+    return None
+
+
+HELDOUT_PLUS_DIRNAME = "heldout_plus_v1"
+
+
+def _heldout_plus_frame():
+    """heldout-plus v1 extension rows (canonical test stays untouched)."""
+    import pandas as pd
+
+    candidates = [
+        Path("/root/data") / HELDOUT_PLUS_DIRNAME / "documents.parquet",
+        DATA_DIR / HELDOUT_PLUS_DIRNAME / "documents.parquet",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return pd.read_parquet(p), p
+    raise FileNotFoundError(
+        "heldout-plus v1 absent: expected documents.parquet under "
+        f"{candidates[1]} (build it with "
+        "`uv run python training/build_heldout_plus.py --help`)"
+    )
+
+
+def _load_eval_docs(stage: Path, subset: str):
+    """Load the eval document pool (test / train / all / heldout-plus)."""
+    if subset == "test":
+        for parts in (
+            ("parquet", "documents", "test"),
+            ("data", "documents", "test"),
+        ):
+            frame = _load_parquet_split(stage, *parts)
+            if frame is not None:
+                return frame
+        _ensure_corpus_snapshot()
+        from mailroom_ml.dataset import build_documents, load_corpus_rows
+
+        docs = build_documents(load_corpus_rows())
+        return docs[docs["split"] == "test"].reset_index(drop=True)
+
+    _ensure_corpus_snapshot()
     from mailroom_ml.dataset import build_documents, load_corpus_rows
 
     docs = build_documents(load_corpus_rows())
-    return docs[docs["split"] == "test"]
+    if subset == "train":
+        return docs[docs["split"].isin(["train", "validation"])].reset_index(
+            drop=True)
+    if subset == "heldout-plus":
+        import pandas as pd
+
+        canon = docs[docs["split"] == "test"].reset_index(drop=True)
+        plus, src = _heldout_plus_frame()
+        overlap = set(canon["filename"].astype(str)) & set(
+            plus["filename"].astype(str))
+        if overlap:
+            raise ValueError(
+                f"heldout-plus overlaps canonical test on {len(overlap)} "
+                f"filenames (e.g. {sorted(overlap)[:3]}); rebuild the "
+                "extension before evaluating")
+        # Align plus columns to the canonical frame (extra sidecars ride
+        # along only when present in both).
+        shared = [c for c in canon.columns if c in plus.columns]
+        combined = pd.concat([canon[shared], plus[shared]],
+                             ignore_index=True)
+        combined.attrs["heldout_plus_source"] = str(src)
+        return combined.reset_index(drop=True)
+    return docs.reset_index(drop=True)
 
 
 def evaluate_documents(bundle, docs, *, sample: int, seed: int,
@@ -152,9 +242,20 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     """
     filenames = docs["filename"].astype(str).tolist()
     strata = docs["doc_type"].astype(str).tolist()
+    split_counts: dict[str, int] | None = None
+    if "split" in docs.columns:
+        split_counts = {
+            str(k): int(v)
+            for k, v in docs["split"].astype(str).value_counts().items()
+        }
     if sample > 0:
         keep = stratified_sample(filenames, strata, sample, seed)
         docs = docs[docs["filename"].astype(str).isin(keep)].reset_index(drop=True)
+        if "split" in docs.columns:
+            split_counts = {
+                str(k): int(v)
+                for k, v in docs["split"].astype(str).value_counts().items()
+            }
 
     # #112 M9a-U4: the per-head test macro-F1 surface.  The subclass head
     # names are the doc_type labels minus the inference-only ``unknown`` (the
@@ -332,6 +433,8 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
                             "met": acc_sc >= 0.75, "report_only": True},
         },
     }
+    if split_counts is not None:
+        report["eval_split_counts"] = split_counts
     if selective_risk and win_confs:
         report["selective_risk"] = _sweep_or_refuse(bundle, win_confs,
                                                     win_correct)
@@ -534,11 +637,13 @@ def main(argv: list[str] | None = None) -> int:
         bundle = load_bundle(args.checkpoint)
     except (BundleUnavailable, BundleLoadError) as exc:
         raise SystemExit(str(exc)) from exc
-    docs = _load_test_docs(args.stage)
+    docs = _load_eval_docs(args.stage, args.subset)
     want_sweep = args.selective_risk or args.write_routing_thresholds
     report = evaluate_documents(
         bundle, docs, sample=args.sample, seed=args.seed,
         max_length=args.max_length, selective_risk=want_sweep)
+    report["eval_subset"] = args.subset
+    report["finetune_revision"] = FINETUNE_REVISION
     if args.write_routing_thresholds is not None:
         sweep = report.get("selective_risk") or {
             "refused": True, "reason": "selective_risk not in report"}

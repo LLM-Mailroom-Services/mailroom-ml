@@ -545,6 +545,11 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
     unknown = bundle.maps["doc_type"]["label2id"].get(ABSTAIN_UNKNOWN_CLASS)
     dt_head = bundle.maps["doc_type"]
     doc_map = _id2label_for_logits(dt_head, _trainable_logit_width(dt_head))
+    # Full id space (incl. inference-only unknown): the runner-up argmax runs
+    # over the full calibrated width, so index 5 ("unknown") is a legitimate
+    # runner-up — it must never be looked up in the trainable-only doc_map
+    # (KeyError '5' crashed the 1,000-doc corpus-scale eval, 2026-09-27).
+    full_doc_map = dt_head.get("id2label") or doc_map
 
     # calibrated probabilities per head across all windows, batched once
     probs_by_head = {name: _calibrated_probs(
@@ -576,7 +581,7 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
         known_votes = win_dt
     if not known_votes:
         dt_id = unknown if unknown is not None else int(win_dt[0])
-        dt_label = doc_map[str(dt_id)]
+        dt_label = full_doc_map[str(dt_id)]
         return {
             "doc_type": dt_label, "subclass": None, "route": "llm",
             "reason": "all_windows_abstained",
@@ -604,7 +609,7 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
         if int(idx) != dt_id:
             runner_id = int(idx)
             break
-    runner_label = doc_map[str(runner_id)] if runner_id is not None else None
+    runner_label = full_doc_map[str(runner_id)] if runner_id is not None else None
     margin = float(mean_p - (mean_by_class[runner_id] if runner_id is not None else 0.0))
 
     # subclass plurality over windows voting the winning class (abstentions skip)

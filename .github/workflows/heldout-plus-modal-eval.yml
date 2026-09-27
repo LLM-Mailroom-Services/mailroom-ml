@@ -1,0 +1,57 @@
+# One-shot held-out-plus eval on exios66 Modal (L4). Manual only — ~$0.16 GPU.
+name: heldout-plus-modal-eval
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_tag:
+        description: M9a run tag (Arm B primary)
+        required: true
+        default: m9a-local-20260927-014429
+      module:
+        description: Checkpoint path under modernbert-checkpoints volume
+        required: true
+        default: latest
+      skip_deploy:
+        description: Skip modal deploy (image already has current plus bake)
+        required: true
+        type: boolean
+        default: false
+
+jobs:
+  modal-heldout-plus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Sync deploy extras
+        run: uv sync --extra dev --extra deploy
+
+      - name: Run heldout-plus eval (one deploy + one L4 job)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
+          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
+          RUN_TAG: ${{ inputs.run_tag }}
+          MODULE: ${{ inputs.module }}
+          SKIP_DEPLOY: ${{ inputs.skip_deploy && '1' || '0' }}
+        run: ./training/run_heldout_plus_modal_eval.sh
+
+      - name: Upload eval artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: heldout-plus-eval-${{ inputs.run_tag }}
+          path: |
+            reports/eval_*-heldout-plus.json
+            reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-*.md
+            reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-*.md
+            reports/TEST-EVAL/eval_*-heldout-plus.json
+            reports/TEST-EVAL/MANIFEST.json

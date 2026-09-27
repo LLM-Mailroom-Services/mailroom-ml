@@ -17,6 +17,7 @@ of CPU-hours.
 """
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -136,14 +137,27 @@ def run_eval(module: str = "latest", sample: int = 50, seed: int = 42,
     if result.returncode != 0:
         print(result.stderr[-4000:])
         raise RuntimeError(f"eval_modernbert.py exited {result.returncode}")
-    return {"returncode": result.returncode, "module": module,
-            "sample": sample, "seed": seed}
+    out: dict = {"returncode": result.returncode, "module": module,
+                 "sample": sample, "seed": seed}
+    if as_json and result.stdout.strip():
+        out["report"] = json.loads(result.stdout)
+    return out
 
 
 @app.local_entrypoint()
 def main(module: str = "latest", sample: int = 50, seed: int = 42,
-         selective_risk: bool = True, as_json: bool = False) -> None:
+         selective_risk: bool = True, as_json: bool = False,
+         out: str = "") -> None:
     print(f"mailroom-ml-eval: module={module} sample={sample} seed={seed} "
           f"selective_risk={selective_risk}")
-    run_eval.remote(module=module, sample=sample, seed=seed,
-                    selective_risk=selective_risk, as_json=as_json)
+    meta = run_eval.remote(module=module, sample=sample, seed=seed,
+                          selective_risk=selective_risk, as_json=as_json)
+    if as_json and meta.get("report"):
+        payload = json.dumps(meta["report"], sort_keys=True, indent=2)
+        if out:
+            dest = Path(out)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(payload + "\n", encoding="utf-8")
+            print(f"[mailroom-ml-eval] wrote {dest}", flush=True)
+        else:
+            print(payload)

@@ -1,5 +1,7 @@
 # Held-out-plus eval — next-agent pickup (1,323-doc Modal L4)
 
+> **Full original plan + progress log:** [`HELDOUT-PLUS-PLAN-AND-PROGRESS.md`](./HELDOUT-PLUS-PLAN-AND-PROGRESS.md) (canonical; mirrored in [#40](https://github.com/LLM-Mailroom-Services/mailroom-ml/issues/40) and [#39](https://github.com/LLM-Mailroom-Services/mailroom-ml/pull/39)).
+
 **Status:** BLOCKED on credentials / manual GHA dispatch (2026-09-27 UTC).  
 **Parent context:** mailroom-issues **#112** (M9a); extended monitoring pool, **not** the canonical 323-doc #112 gates.  
 **Cloud agent run that prepared this handoff:** `bc-01a0e2b1-55b8-787b-a518-e08c7ce8dfc5`  

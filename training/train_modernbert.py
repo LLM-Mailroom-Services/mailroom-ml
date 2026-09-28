@@ -220,6 +220,14 @@ class LossConfig:
       Inverse-frequency weights average about 1.0 over the train rows
       (exactly 1.0 per document before the cap), so "count" keeps the
       expected loss scale. doc_type keeps the weighted mean.
+    - ``subclass_logit_adjust``: logit-adjusted CE for the subclass heads
+      (Menon et al. 2021): add ``tau * log(prior)`` to each head's logits
+      inside the loss only, so rare classes need a larger margin to win in
+      training and the raw logits used at inference are balanced. Priors
+      come from the stored inverse-frequency weights (prior ∝ 1/w). Uses no
+      per-row weights, so it cannot over-amplify a handful of rare rows the
+      way a capped weight can. 0.0 (default) = off; pair 1.0 with
+      ``weight_mode="none"``.
     """
     lambda_dt: float = 0.65
     label_smoothing: float = 0.0
@@ -227,6 +235,7 @@ class LossConfig:
     weight_mode: str = "inverse"
     weight_cap: float = 10.0
     subclass_loss_norm: str = "count"
+    subclass_logit_adjust: float = 0.0
 
     def transform_weights(self, weights: dict[str, float],
                           labels: list[str],
@@ -243,6 +252,22 @@ class LossConfig:
         # the same device as the logits (CPU-built weights crashed the first
         # GPU smoke, 2026-09-20).
         return torch.tensor(out, dtype=torch.float32, device=device)
+
+
+def log_prior(weights: dict[str, float], labels: list[str],
+              device: torch.device | None = None) -> torch.Tensor:
+    """Per-label log train prior from inverse-frequency weights.
+
+    ``class_weights`` stores ``N / (K * n_k)``, so ``n_k ∝ 1 / w_k``. A label
+    with no stored weight has no train support; it gets the smallest prior
+    seen, so the adjustment never favours it.
+    """
+    inv = [1.0 / weights[lab] for lab in labels if weights.get(lab)]
+    floor = min(inv) if inv else 1.0
+    raw = torch.tensor([1.0 / weights[lab] if weights.get(lab) else floor
+                        for lab in labels], dtype=torch.float32,
+                       device=device)
+    return torch.log(raw / raw.sum())
 
 
 def _trainer_heads(maps: dict) -> dict:
@@ -297,9 +322,14 @@ def head_loss(model, batch, heads, device,
             weight = cfg.transform_weights(heads[cls]["weights"],
                                            heads[cls]["labels"],
                                            device=logits[cls].device)
+            sc_logits = logits[cls][sel]
+            if cfg.subclass_logit_adjust:
+                sc_logits = sc_logits + cfg.subclass_logit_adjust * log_prior(
+                    heads[cls]["weights"], heads[cls]["labels"],
+                    device=sc_logits.device)
             if cfg.subclass_loss_norm == "weighted-mean":
                 sc_ces.append(F.cross_entropy(
-                    logits[cls][sel], target, weight=weight,
+                    sc_logits, target, weight=weight,
                     label_smoothing=cfg.subclass_label_smoothing,
                     ignore_index=CE_IGNORE_INDEX))
                 continue
@@ -307,7 +337,7 @@ def head_loss(model, batch, heads, device,
             if n_valid == 0:  # routing-only rows only: nothing to learn
                 continue
             sc_ces.append(F.cross_entropy(
-                logits[cls][sel], target, weight=weight,
+                sc_logits, target, weight=weight,
                 label_smoothing=cfg.subclass_label_smoothing,
                 ignore_index=CE_IGNORE_INDEX, reduction="sum") / n_valid)
     if sc_ces:
@@ -1238,6 +1268,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "per-head micro-batches) or weighted-mean (the "
                          "pre-2026-09-28 behavior, where weights largely "
                          "cancel)")
+    ap.add_argument("--subclass-logit-adjust", type=float, default=0.0,
+                    help="logit-adjusted CE on subclass heads: add tau * "
+                         "log(train prior) to their logits in the loss only "
+                         "(0 = off; 1.0 with --weight-mode none is the "
+                         "standard setting)")
     ap.add_argument("--mlp-heads", action="store_true",
                     help="use the ModernBERT classification recipe heads "
                          "(hidden SiLU MLP + dropout) instead of linear")
@@ -1488,7 +1523,8 @@ def main() -> int:
                           subclass_label_smoothing=args.subclass_label_smoothing,
                           weight_mode=args.weight_mode,
                           weight_cap=args.weight_cap,
-                          subclass_loss_norm=args.subclass_loss_norm)
+                          subclass_loss_norm=args.subclass_loss_norm,
+                          subclass_logit_adjust=args.subclass_logit_adjust)
 
     best_val = float("inf")
     stale = 0

@@ -55,6 +55,7 @@ from training.train_modernbert import (  # noqa: E402
     fit_temperature,
     head_loss,
     load_dataset,
+    log_prior,
     macro_f1,
     make_batches,
     save_checkpoint,
@@ -1209,3 +1210,35 @@ def test_subclass_loss_norm_cli_default_is_count():
     assert build_parser().parse_args(
         ["--subclass-loss-norm", "weighted-mean"]
     ).subclass_loss_norm == "weighted-mean"
+
+
+def test_log_prior_inverts_inverse_frequency_weights():
+    # class_weights over counts {a: 30, b: 10}: w = N / (K * n)
+    weights = {"a": 40 / (2 * 30), "b": 40 / (2 * 10)}
+    lp = log_prior(weights, ["a", "b", "unseen"])
+    p = lp.exp()
+    assert p[0] / p[1] == pytest.approx(3.0)
+    assert p[2] == pytest.approx(p[1])  # no support -> smallest prior
+    assert p.sum() == pytest.approx(1.0)
+
+
+def test_subclass_logit_adjust_penalizes_rare_class_margin():
+    """With tau > 0 a rare-class target costs more than a common one at equal
+    raw logits; tau = 0 leaves the loss unchanged."""
+    device = torch.device("cpu")
+    weights = {"service": 0.5, "license": 5.0}  # service common, license rare
+    losses = {}
+    for target in (0, 1):
+        heads, batch, lgs = _one_head_setup([target], weights)
+        lgs["contract"] = torch.zeros(1, 2)
+        for tau in (0.0, 1.0):
+            cfg = LossConfig(lambda_dt=0.0, weight_mode="none",
+                             subclass_logit_adjust=tau)
+            losses[target, tau] = head_loss(_StubHeads(lgs), batch, heads,
+                                            device, cfg)[0].item()
+    assert losses[0, 0.0] == pytest.approx(losses[1, 0.0])
+    assert losses[1, 1.0] > losses[1, 0.0] > losses[0, 1.0]
+
+
+def test_subclass_logit_adjust_cli_default_off():
+    assert build_parser().parse_args([]).subclass_logit_adjust == 0.0

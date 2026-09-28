@@ -128,6 +128,10 @@ def test_selective_risk_sweep_deterministic_and_picks_lowest_safe():
     lower = [r for r in a["rows"] if r["threshold"] < a["recommended_threshold"]]
     for r in lower:
         assert r["selective_risk"] > FAST_PATH_ERROR_BUDGET
+    # headline figures describe the pick, not the strictest (0.99) row
+    assert a["coverage"] == picked[0]["coverage"]
+    assert a["selective_risk"] == picked[0]["selective_risk"]
+    assert a["coverage"] > a["rows"][-1]["coverage"]
 
 
 def test_selective_risk_sweep_budget_unmet():
@@ -138,6 +142,7 @@ def test_selective_risk_sweep_budget_unmet():
     res = selective_risk_sweep(conf, correct)
     assert res["budget_met"] is False
     assert res["recommended_threshold"] is None
+    assert res["coverage"] == res["rows"][-1]["coverage"]  # no pick: strictest
 
 
 def test_selective_risk_sweep_returns_report_shape():

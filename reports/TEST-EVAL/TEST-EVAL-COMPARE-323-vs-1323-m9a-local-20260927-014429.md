@@ -1,5 +1,7 @@
 # TEST-EVAL — 323 vs 1,323 (`m9a-local-20260927-014429`)
 
+> **Correction (2026-09-28): this held-out-plus result is invalid.** On the 323 canonical documents it contains, the run gets 17 doc types right where the same checkpoint's canonical eval gets 307 on the identical files, and the slice table below assigns all 1,323 documents to the canonical slice. It scored the Modal volume's `latest/` checkpoint (artifact_sha `10cfcd60…`), not Arm B (`faf97878…`); see `reports/HOLDOUT-PLUS-V1-REPORT.md`.
+
 Paired bootstrap uses **323 overlapping filenames** only (canonical test block).
 
 # compare_runs: canonical323 vs heldout1323

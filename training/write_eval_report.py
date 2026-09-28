@@ -214,15 +214,52 @@ def cmd_test(args: argparse.Namespace) -> int:
     return 0
 
 
+def check_heldout_plus_checkpoint(report: dict, baseline: dict) -> None:
+    """Refuse a held-out-plus report scored on a different checkpoint.
+
+    The 2026-09-27 run labelled ``m9a-local-20260927-014429`` evaluated the
+    Modal volume's ``latest/`` (artifact_sha 10cfcd60…), not that local
+    checkpoint (faf97878…): it predicted merger_agreement for 1,322 of 1,323
+    docs and was published under the wrong run tag.
+    """
+    want = baseline.get("artifact_sha")
+    got = report.get("artifact_sha")
+    if want and got and want != got:
+        raise SystemExit(
+            f"held-out-plus eval used checkpoint artifact_sha {got[:12]}… but "
+            f"the baseline run has {want[:12]}…: it scored a different model "
+            f"({report.get('checkpoint')}). Re-run against the baseline's "
+            "checkpoint (e.g. MODULE=runs/<run-id>) before writing reports.")
+
+
+def plus_filenames_from_baseline(report: dict, baseline: dict) -> set[str]:
+    """Plus-slice filenames = eval docs not in the canonical baseline.
+
+    Used when the plus pool parquet is absent locally; without it every
+    document fell into the canonical slice.
+    """
+    canon = {str(r.get("filename")) for r in baseline.get("per_doc") or []}
+    if not canon:
+        raise SystemExit(
+            "cannot split held-out-plus slices: plus pool documents.parquet "
+            "not found and no --baseline-json per_doc to subtract")
+    return {str(r.get("filename")) for r in report.get("per_doc") or []
+            if str(r.get("filename")) not in canon}
+
+
 def cmd_heldout_plus(args: argparse.Namespace) -> int:
     eval_path = args.eval_json.resolve()
     report = _load_json(eval_path)
     run_tag = args.run_tag
+    baseline = _load_json(args.baseline_json) if args.baseline_json else {}
+    check_heldout_plus_checkpoint(report, baseline)
     plus_fn: set[str] = set()
     if args.plus_dir and (args.plus_dir / "documents.parquet").is_file():
         import pandas as pd  # noqa: PLC0415
 
         plus_fn = set(pd.read_parquet(args.plus_dir / "documents.parquet")["filename"].astype(str))
+    if not plus_fn:
+        plus_fn = plus_filenames_from_baseline(report, baseline)
 
     TEST_EVAL.mkdir(parents=True, exist_ok=True)
     eval_name = eval_path.name
@@ -244,7 +281,6 @@ def cmd_heldout_plus(args: argparse.Namespace) -> int:
     out_md.write_text(md, encoding="utf-8")
     print(f"wrote {out_md}", flush=True)
 
-    baseline = _load_json(args.baseline_json) if args.baseline_json else {}
     if baseline:
         from compare_runs import compare_reports  # noqa: E402
 

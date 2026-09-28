@@ -285,14 +285,20 @@ def selective_risk_sweep(
 
     recommended: float | None = None
     n_at_pick: int | None = None
+    picked: dict[str, Any] | None = None
     for r in rows:  # ascending thresholds — first within budget is the pick
         if r["n"] >= min_n and r["selective_risk"] <= error_budget \
                 and r["band_ece"] <= ECE_BUDGET:
             recommended = r["threshold"]
             n_at_pick = r["n"]
+            picked = r
             break
 
-    best = rows[-1] if rows else {}
+    # Headline figures describe the recommended threshold; with no pick they
+    # fall back to the strictest row. (Before 2026-09-28 they always read the
+    # strictest row, so "coverage at pick" in earlier reports is the 0.99
+    # row's coverage, not the pick's.)
+    best = picked or (rows[-1] if rows else {})
     max_n = max((r["n"] for r in rows), default=0)
     return {
         "rows": rows,

@@ -20,6 +20,21 @@ uv run python training/write_eval_report.py compare --a ... --b ... \
   --out reports/TEST-EVAL/TEST-EVAL-COMPARE-....md
 ```
 
+Charts (SVG gallery with a `README.md` that embeds them; same views as the
+sandbox reports hub: per-type recall across runs, confusion matrix, subclass
+collapse signal, true vs predicted subclasses per head, selective risk, per-head
+ECE, accuracy by window count, and a surrogate ALE of document length):
+
+```bash
+uv run python training/write_eval_report.py charts \
+  --eval-json reports/eval_run3_20260921.json --label "Run 3" \
+  --eval-json reports/eval_<tag>.json --label "<arm>" \
+  --out reports/charts/<tag>
+```
+
+Current galleries: [Arm B](charts/m9a-local-20260927-014429/README.md) ·
+[Arm A](charts/m9a-local-gpu1-armA-1ep-20260927-025236/README.md).
+
 Post-train: `./training/complete_run.sh --run-tag <tag>` runs eval, gates, and
 markdown generation when eval JSON is present.
 

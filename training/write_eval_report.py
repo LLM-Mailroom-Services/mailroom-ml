@@ -5,6 +5,8 @@ Usage:
   uv run python training/write_eval_report.py test --run-tag TAG --eval-json PATH
   uv run python training/write_eval_report.py heldout-plus --run-tag TAG --eval-json PATH
   uv run python training/write_eval_report.py compare --a A.json --b B.json --out PATH.md
+  uv run python training/write_eval_report.py charts --eval-json OLD.json --eval-json NEW.json \
+      --label "Run 3" --label "Arm B" --out reports/charts/<tag>
 """
 from __future__ import annotations
 
@@ -300,6 +302,18 @@ def cmd_compare(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_charts(args: argparse.Namespace) -> int:
+    from mailroom_ml.viz.eval_charts import write as write_charts
+
+    paths = [str(p) for p in args.eval_json]
+    labels = args.label or [p.stem.removeprefix("eval_") for p in args.eval_json]
+    if len(labels) != len(paths):
+        raise SystemExit("--label must be given once per --eval-json")
+    for p in write_charts(paths, labels, args.out):
+        print(f"wrote {p}", flush=True)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     sub = ap.add_subparsers(dest="command", required=True)
@@ -334,6 +348,13 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("--resamples", type=int, default=2000)
     c.add_argument("--seed", type=int, default=42)
     c.set_defaults(func=cmd_compare)
+
+    g = sub.add_parser("charts", help="per-document-type SVG charts + README gallery")
+    g.add_argument("--eval-json", type=Path, action="append", required=True,
+                   help="repeat per run, oldest first; the last is charted in detail")
+    g.add_argument("--label", action="append", default=[])
+    g.add_argument("--out", type=Path, required=True)
+    g.set_defaults(func=cmd_charts)
     return ap
 
 

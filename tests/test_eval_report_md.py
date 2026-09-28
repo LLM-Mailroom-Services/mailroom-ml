@@ -4,9 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mailroom_ml.eval_report_md import ReportContext, render_test_eval_report
 from mailroom_ml.m9a_gates import gates_all_met, m9a_gate_rows
-
+from mailroom_ml.eval_report_md import ReportContext, render_test_eval_report
 
 FIXTURE = Path(__file__).parent / "fixtures" / "eval_report_minimal.json"
 

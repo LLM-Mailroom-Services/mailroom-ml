@@ -28,7 +28,11 @@ from mailroom_ml.eval_report_md import (  # noqa: E402
     render_test_eval_report,
     render_training_report,
 )
-from mailroom_ml.m9a_gates import gate_status, gates_all_met, m9a_gate_rows  # noqa: E402
+from mailroom_ml.m9a_gates import (  # noqa: E402
+    gate_status,
+    gates_all_met,
+    m9a_gate_rows,
+)
 
 TEST_EVAL = ROOT / "reports" / "TEST-EVAL"
 MANIFEST = TEST_EVAL / "MANIFEST.json"
@@ -164,7 +168,6 @@ def cmd_test(args: argparse.Namespace) -> int:
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         for r in manifest.get("runs") or []:
             if r.get("arm") == "A" and r.get("eval_json"):
-                ej = ROOT / str(r["eval_json"]).replace("reports/TEST-EVAL/", "reports/TEST-EVAL/")
                 canon = ROOT / str(r.get("eval_json_canonical", ""))
                 path = canon if canon.is_file() else (ROOT / r["eval_json"])
                 if path.is_file():
@@ -241,7 +244,7 @@ def cmd_heldout_plus(args: argparse.Namespace) -> int:
 
     baseline = _load_json(args.baseline_json) if args.baseline_json else {}
     if baseline:
-        from compare_runs import compare_reports, load_eval_json  # noqa: E402
+        from compare_runs import compare_reports  # noqa: E402
 
         cmp_payload = compare_reports(baseline, report, cohort="")
         body = render_compare_report(

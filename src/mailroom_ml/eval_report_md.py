@@ -445,7 +445,7 @@ def _artifacts_table(ctx: ReportContext, eval_path: str, test_eval_copy: str) ->
         f"| `{test_eval_copy}` | TEST-EVAL copy |",
         f"| `reports/M9a-REPORT-{ctx.run_tag}.md` | training-focused report |",
         f"| `reports/TEST-EVAL/TEST-EVAL-REPORT-{ctx.run_tag}.md` | held-out test harness report |",
-        f"| `reports/TEST-EVAL/MANIFEST.json` | run index + gate snapshot |",
+        "| `reports/TEST-EVAL/MANIFEST.json` | run index + gate snapshot |",
         "",
     ]
 
@@ -466,7 +466,6 @@ def render_test_eval_report(
     dt_ok, n = _dt_counts(report)
     sc_ok, sc_n = _sc_counts(report)
     arm_label = f"Arm {ctx.arm} " if ctx.arm else ""
-    title_arm = f" — {arm_label}primary" if ctx.arm else ""
     lines = [
         f"# TEST-EVAL — {arm_label}(`{run_tag}`)".replace("  ", " "),
         "",
@@ -496,7 +495,7 @@ def render_test_eval_report(
         "| Command surface | `training/eval_modernbert.py` |",
         f"| `--subset` | `{report.get('eval_subset', 'test')}` |",
         f"| Documents | **{report.get('n_docs', n)}** (`--sample 0`) |",
-        f"| `--max-length` | 8192 |",
+        "| `--max-length` | 8192 |",
         f"| `--seed` | {report.get('seed', 42)} |",
         f"| Windows evaluated | {wc.get('n_windows')} (`window_calibration.n_windows`) |",
         "",
@@ -664,7 +663,7 @@ def render_heldout_plus_report(
         "## Reproduce",
         "",
         "```bash",
-        f"uv run python training/eval_modernbert.py --subset heldout-plus \\",
+        "uv run python training/eval_modernbert.py --subset heldout-plus \\",
         f"  --checkpoint {ctx.checkpoint or '…'} --sample 0 --json \\",
         f"  > reports/eval_{run_tag}-heldout-plus.json",
         f"uv run python training/write_eval_report.py heldout-plus --run-tag {run_tag} \\",

@@ -208,12 +208,25 @@ class LossConfig:
     - ``weight_cap``: clamp class weights to [1/cap, cap] after the mode
       transform (default 10× — a rare class never out-weights a common one
       by more than an order of magnitude).
+    - ``subclass_loss_norm``: how each subclass head's weighted CE is
+      reduced (#112 follow-up, 2026-09-28). "count" (default) divides the
+      weighted sum by the head's row count in the micro-batch.
+      "weighted-mean" is ``F.cross_entropy``'s default, which divides by the
+      sum of the rows' class weights: with batch 4 a head usually sees 1-2
+      of its own rows per micro-batch, so the class weights cancel (exactly,
+      for one row) and ``--weight-mode`` / ``--weight-cap`` barely reach the
+      subclass heads. That is why run-2 inverse, run-3 sqrt-inverse and
+      M9a Arm B (inverse, cap 20) all left the contract head collapsed.
+      Inverse-frequency weights average about 1.0 over the train rows
+      (exactly 1.0 per document before the cap), so "count" keeps the
+      expected loss scale. doc_type keeps the weighted mean.
     """
     lambda_dt: float = 0.65
     label_smoothing: float = 0.0
     subclass_label_smoothing: float = 0.0
     weight_mode: str = "inverse"
     weight_cap: float = 10.0
+    subclass_loss_norm: str = "count"
 
     def transform_weights(self, weights: dict[str, float],
                           labels: list[str],
@@ -280,13 +293,23 @@ def head_loss(model, batch, heads, device,
             continue
         sel = batch["doc_type"] == heads["doc_type"]["label2id"][cls]
         if sel.any():
+            target = batch["subclass"][sel]
+            weight = cfg.transform_weights(heads[cls]["weights"],
+                                           heads[cls]["labels"],
+                                           device=logits[cls].device)
+            if cfg.subclass_loss_norm == "weighted-mean":
+                sc_ces.append(F.cross_entropy(
+                    logits[cls][sel], target, weight=weight,
+                    label_smoothing=cfg.subclass_label_smoothing,
+                    ignore_index=CE_IGNORE_INDEX))
+                continue
+            n_valid = int((target != CE_IGNORE_INDEX).sum())
+            if n_valid == 0:  # routing-only rows only: nothing to learn
+                continue
             sc_ces.append(F.cross_entropy(
-                logits[cls][sel], batch["subclass"][sel],
-                weight=cfg.transform_weights(heads[cls]["weights"],
-                                             heads[cls]["labels"],
-                                             device=logits[cls].device),
+                logits[cls][sel], target, weight=weight,
                 label_smoothing=cfg.subclass_label_smoothing,
-                ignore_index=CE_IGNORE_INDEX))
+                ignore_index=CE_IGNORE_INDEX, reduction="sum") / n_valid)
     if sc_ces:
         loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
             sc_ces).mean()
@@ -1207,6 +1230,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--weight-cap", type=float, default=10.0,
                     help="clamp class weights to [1/cap, cap] after the "
                          "mode transform")
+    ap.add_argument("--subclass-loss-norm", choices=["count",
+                                                     "weighted-mean"],
+                    default="count",
+                    help="subclass CE reduction: count (weighted sum / "
+                         "head rows, so class weights take effect on small "
+                         "per-head micro-batches) or weighted-mean (the "
+                         "pre-2026-09-28 behavior, where weights largely "
+                         "cancel)")
     ap.add_argument("--mlp-heads", action="store_true",
                     help="use the ModernBERT classification recipe heads "
                          "(hidden SiLU MLP + dropout) instead of linear")
@@ -1456,7 +1487,8 @@ def main() -> int:
                           label_smoothing=args.label_smoothing,
                           subclass_label_smoothing=args.subclass_label_smoothing,
                           weight_mode=args.weight_mode,
-                          weight_cap=args.weight_cap)
+                          weight_cap=args.weight_cap,
+                          subclass_loss_norm=args.subclass_loss_norm)
 
     best_val = float("inf")
     stale = 0

@@ -64,6 +64,7 @@ def _training_config_lines(summary: dict | None, arm: str) -> list[str]:
         ("max_length", cfg.get("max_length")),
         ("label_smoothing", cfg.get("label_smoothing", cfg.get("subclass_label_smoothing"))),
         ("weight_mode / cap", f"{cfg.get('weight_mode', '?')} / {cfg.get('weight_cap', '?')}"),
+        ("subclass_loss_norm", cfg.get("subclass_loss_norm", "weighted-mean")),
         ("warmup_frac", cfg.get("warmup_frac")),
         ("mlp_heads", cfg.get("mlp_heads")),
         ("freeze_backbone_epochs", cfg.get("freeze_backbone_epochs")),

@@ -1,6 +1,6 @@
 # TEST-EVAL — held-out-plus (`m9a-local-20260927-014429`)
 
-> **Correction (2026-09-28): this held-out-plus result is invalid.** On the 323 canonical documents it contains, the run gets 17 doc types right where the same checkpoint's canonical eval gets 307 on the identical files, and the slice table below assigns all 1,323 documents to the canonical slice. Treat it as a harness defect until re-run; see `reports/HOLDOUT-PLUS-V1-REPORT.md`.
+> **Correction (2026-09-28): this held-out-plus result is invalid.** On the 323 canonical documents it contains, the run gets 17 doc types right where the same checkpoint's canonical eval gets 307 on the identical files, and the slice table below assigns all 1,323 documents to the canonical slice. It scored the Modal volume's `latest/` checkpoint (artifact_sha `10cfcd60…`), not Arm B (`faf97878…`); see `reports/HOLDOUT-PLUS-V1-REPORT.md`.
 
 **Eval role:** extended monitoring pool (1,323 docs); **#112 gates remain on canonical 323 only** (`--subset test`).
 **Run tag:** `m9a-local-20260927-014429`

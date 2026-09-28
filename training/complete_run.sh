@@ -133,6 +133,21 @@ echo "=== M9a #112 gates + subclass/doc_type calibration report ==="
 GATE_RC=0
 "$PY" training/check_m9a_gates.py "$EVAL_JSON" "$SUMMARY" || GATE_RC=$?
 
+echo "=== TEST-EVAL markdown (artifact-driven) ==="
+WRITE_ARGS=(
+  "$PY" training/write_eval_report.py test
+  --run-tag "$RUN_TAG"
+  --eval-json "$EVAL_JSON"
+  --summary-json "$SUMMARY"
+  --write-training-report
+)
+if [[ "$RUN_TAG" == *armA* ]] || [[ "$RUN_TAG" == *gpu1-armA* ]]; then
+  WRITE_ARGS+=(--arm A)
+else
+  WRITE_ARGS+=(--arm B)
+fi
+"${WRITE_ARGS[@]}"
+
 if (( PUBLISH == 0 )); then
   echo "=== publish ==="
   echo "  (pass --publish to upload after gates PASS; --dry-run for plan only)"

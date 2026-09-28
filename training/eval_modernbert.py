@@ -110,6 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "PATH may be a file or a directory")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="emit the report as JSON")
+    ap.add_argument("--write-markdown", type=Path, default=None,
+                    help="write TEST-EVAL markdown via training/write_eval_report.py "
+                         "(requires --run-tag)")
+    ap.add_argument("--run-tag", default="",
+                    help="run tag for --write-markdown output paths")
     return ap
 
 
@@ -781,6 +786,31 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, sort_keys=True, indent=2))
     else:
         print(format_report(report))
+    if args.write_markdown is not None:
+        if not args.run_tag:
+            raise SystemExit("--write-markdown requires --run-tag")
+        import subprocess
+        import tempfile
+
+        root = Path(__file__).resolve().parent.parent
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False, dir=root / "reports"
+        ) as tmp:
+            json.dump(report, tmp, sort_keys=True, indent=2)
+            tmp_path = Path(tmp.name)
+        kind = "heldout-plus" if args.subset == "heldout-plus" else "test"
+        cmd = [
+            sys.executable,
+            str(root / "training" / "write_eval_report.py"),
+            kind,
+            "--run-tag",
+            args.run_tag,
+            "--eval-json",
+            str(tmp_path),
+        ]
+        if kind == "test":
+            cmd.extend(["--write-training-report"])
+        subprocess.run(cmd, cwd=root, check=True)
     return 0
 
 

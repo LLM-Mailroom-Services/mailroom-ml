@@ -1,0 +1,78 @@
+{
+  "artifact_sha": "abc123",
+  "checkpoint": "artifacts/pytorch/model",
+  "cohorts": {
+    "multi-window": {
+      "doc_type_accuracy": 0.8,
+      "mean_agreement": 0.9,
+      "n_docs": 10,
+      "window_ece": 0.03
+    },
+    "single-window": {
+      "doc_type_accuracy": 0.85,
+      "mean_agreement": 1.0,
+      "n_docs": 90,
+      "window_ece": 0.04
+    }
+  },
+  "doc_type_accuracy": 0.90,
+  "eval_subset": "test",
+  "fast_path_rate": 0.25,
+  "head_ece": {
+    "contract": 0.04,
+    "correspondence": 0.06,
+    "doc_type": 0.02
+  },
+  "n_docs": 100,
+  "per_doc": [
+    {
+      "dt_correct": true,
+      "filename": "a.txt",
+      "gt_doc_type": "contract",
+      "pred_doc_type": "contract",
+      "sc_correct": false,
+      "n_windows": 1,
+      "fast_path": false
+    },
+    {
+      "dt_correct": false,
+      "filename": "b.txt",
+      "gt_doc_type": "correspondence",
+      "pred_doc_type": "contract",
+      "sc_correct": false,
+      "n_windows": 2,
+      "fast_path": false
+    }
+  ],
+  "per_head": {
+    "contract": {
+      "macro_f1": 0.21,
+      "support": {"a": 5}
+    },
+    "correspondence": {
+      "macro_f1": 0.26,
+      "support": {"email": 10}
+    }
+  },
+  "recorded_gates": {
+    "P0_doc_type": {
+      "actual": 0.90,
+      "met": false,
+      "report_only": true,
+      "threshold": 0.95
+    }
+  },
+  "seed": 42,
+  "selective_risk": {
+    "budget_met": true,
+    "coverage": 0.4,
+    "error_budget": 0.02,
+    "recommended_threshold": 0.88
+  },
+  "subclass_accuracy_conditional": 0.55,
+  "window_calibration": {
+    "band_ece": 0.05,
+    "ece": 0.04,
+    "n_windows": 120
+  }
+}

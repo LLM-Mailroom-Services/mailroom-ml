@@ -6,11 +6,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+from mailroom_ml.m9a_gates import gates_all_met
 from training.publish_run_to_hub import (
     METRICS_BEGIN,
     METRICS_END,
     build_metrics_markdown,
-    gates_all_met,
     patch_readme_metrics,
 )
 

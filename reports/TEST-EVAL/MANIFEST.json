@@ -18,19 +18,17 @@
   },
   "heldout_plus_eval": {
     "artifact_sha": "10cfcd60a91f5160e3870e1d0a666cc6436eee3062939962456ad65c77910caa",
-    "compare_323": "reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-m9a-local-20260927-014429.md",
+    "checkpoint": "/checkpoints/latest",
     "comparable_metrics_schema": "mailroom-ml/comparable-metrics/v1",
+    "compare_323": "reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-m9a-local-20260927-014429.md",
     "eval_json": "reports/TEST-EVAL/eval_m9a-local-20260927-014429-heldout-plus.json",
     "eval_json_canonical": "reports/eval_m9a-local-20260927-014429-heldout-plus.json",
     "eval_subset": "heldout-plus",
     "n_docs": 1323,
-    "checkpoint": "/checkpoints/latest",
-    "checkpoint_caveat": "Wrong volume pointer for Arm B: doc_type_accuracy ~1.3% in stored JSON. Re-run with MODULE=runs/m9a-local-20260927-014429 (or promote that run to latest) before LLM sorter pairing or gate claims.",
     "note": "Extended pool; not used for #112 gate replacement.",
     "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9a-local-20260927-014429.md",
     "role": "heldout-plus-extended",
-    "run_tag": "m9a-local-20260927-014429",
-    "telemetry_dir": "reports/TEST-EVAL/telemetry/eval_m9a-local-20260927-014429-heldout-plus"
+    "run_tag": "m9a-local-20260927-014429"
   },
   "related": {
     "heldout_plus_v1": "reports/HOLDOUT-PLUS-V1-REPORT.md",
@@ -104,7 +102,85 @@
       "training_report": "reports/M9a-REPORT-m9a-local-gpu1-armA-1ep-20260927-025236.md"
     },
     {
+      "arm": "B",
+      "artifact_sha": "faf97878b05a3426a787e8cea55f8b835e1010978cc7844e2a7c43dce09d78bc",
+      "eval_json": "reports/TEST-EVAL/eval_m9a-local-20260927-014429.json",
+      "eval_json_canonical": "reports/eval_m9a-local-20260927-014429.json",
+      "gates_112": {
+        "contract_macro_f1": {
+          "actual": 0.0195,
+          "how": "ge",
+          "met": false,
+          "threshold": 0.2
+        },
+        "correspondence_macro_f1": {
+          "actual": 0.1289,
+          "how": "ge",
+          "met": false,
+          "threshold": 0.25
+        },
+        "doc_type_accuracy": {
+          "actual": 0.9505,
+          "how": "ge",
+          "met": true,
+          "threshold": 0.89
+        },
+        "window_ece_calibrated": {
+          "actual": 0.0259,
+          "how": "le",
+          "met": true,
+          "threshold": 0.05
+        }
+      },
+      "gates_all_met": false,
+      "generated_at": "2026-09-28T01:16:38Z",
+      "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-m9a-local-20260927-014429.md",
+      "role": "m9a-held-out-test",
+      "run_tag": "m9a-local-20260927-014429",
+      "training_report": "reports/M9a-REPORT-m9a-local-20260927-014429.md"
+    },
+    {
+      "arm": "A",
+      "artifact_sha": "5ecea781599be293dcc80f32ac4b57b478d6787aed2c7bbf2cc2a01858b60aae",
+      "eval_json": "reports/TEST-EVAL/eval_m9a-local-gpu1-armA-1ep-20260927-025236.json",
+      "eval_json_canonical": "reports/eval_m9a-local-gpu1-armA-1ep-20260927-025236.json",
+      "gates_112": {
+        "contract_macro_f1": {
+          "actual": 0.0039,
+          "how": "ge",
+          "met": false,
+          "threshold": 0.2
+        },
+        "correspondence_macro_f1": {
+          "actual": 0.0944,
+          "how": "ge",
+          "met": false,
+          "threshold": 0.25
+        },
+        "doc_type_accuracy": {
+          "actual": 0.8638,
+          "how": "ge",
+          "met": false,
+          "threshold": 0.89
+        },
+        "window_ece_calibrated": {
+          "actual": 0.0397,
+          "how": "le",
+          "met": true,
+          "threshold": 0.05
+        }
+      },
+      "gates_all_met": false,
+      "generated_at": "2026-09-28T01:16:42Z",
+      "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-m9a-local-gpu1-armA-1ep-20260927-025236.md",
+      "role": "m9a-held-out-test",
+      "run_tag": "m9a-local-gpu1-armA-1ep-20260927-025236",
+      "training_report": "reports/M9a-REPORT-m9a-local-gpu1-armA-1ep-20260927-025236.md"
+    },
+    {
       "artifact_sha": "10cfcd60a91f5160e3870e1d0a666cc6436eee3062939962456ad65c77910caa",
+      "checkpoint": "/checkpoints/latest",
+      "comparable_metrics_schema": "mailroom-ml/comparable-metrics/v1",
       "compare_323": "reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-m9a-local-20260927-014429.md",
       "eval_json": "reports/TEST-EVAL/eval_m9a-local-20260927-014429-heldout-plus.json",
       "eval_json_canonical": "reports/eval_m9a-local-20260927-014429-heldout-plus.json",

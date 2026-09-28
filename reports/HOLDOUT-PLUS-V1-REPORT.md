@@ -1,5 +1,7 @@
 # Held-out-plus v1 — expanded ModernBERT test set (1,323 docs)
 
+> **Correction (2026-09-28): the held-out-plus eval result is invalid.** `reports/eval_m9a-local-20260927-014429-heldout-plus.json` reports doc_type accuracy 0.0128 on 1,323 docs. On the 323 canonical test documents it contains, it gets 17 right, where the same checkpoint's canonical eval (`reports/eval_m9a-local-20260927-014429.json`) gets 307 right on the identical files. The slice table in `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9a-local-20260927-014429.md` also puts all 1,323 documents in the canonical slice. Treat the run as a harness defect until it is re-run; do not cite its metrics. The test set build described below is unaffected.
+
 Built **2026-09-27**, CPU-only, no GPU spend. Canonical 323-doc held-out test
 plus **1,000 fresh correspondence documents** from the Enron deduplicated
 feeder corpus, cleaned through the exact training path and gated by the same

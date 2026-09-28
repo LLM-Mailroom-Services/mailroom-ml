@@ -1261,3 +1261,31 @@ def test_param_groups_split_subclass_heads_only():
 
 def test_subclass_head_lr_cli_default_unset():
     assert build_parser().parse_args([]).subclass_head_lr is None
+
+
+def test_resume_across_param_group_layouts(tmp_path):
+    """A single-group (pre --subclass-head-lr) bundle resumed with a split
+    optimizer keeps both group LRs and steps the scheduler into position
+    instead of raising on the group-count mismatch."""
+    out = tmp_path / "ckpt"
+    model = SimpleNamespace(
+        backbone=_FakeSave("backbone.txt"),
+        heads=nn.ModuleDict({"doc_type": nn.Linear(4, 2),
+                             "contract": nn.Linear(4, 3)}),
+    )
+    opt, sched = _tiny_optim_sched(model, lr=2e-5)
+    save_checkpoint(out, model, _FakeSave("tokenizer.txt"),
+                    {"doc_type": {"labels": ["a", "b"]}}, {}, [], {},
+                    {"run_id": "r1"}, optimizer=opt, scheduler=sched,
+                    epoch=1, steps_done=3, epoch_complete=True)
+
+    opt2 = torch.optim.AdamW(
+        [{"params": list(model.heads["doc_type"].parameters()), "lr": 2e-5},
+         {"params": list(model.heads["contract"].parameters()), "lr": 1e-3}])
+    sched2 = torch.optim.lr_scheduler.LambdaLR(opt2, lambda s: 1.0)
+    state = _apply_resume(out, model, opt2, sched2, torch.device("cpu"),
+                          n_train_rows=20, batch_size=4, grad_accum=2)
+    assert state["start_epoch"] == 2
+    assert state["steps_done"] == 3
+    assert sched2.last_epoch == 3
+    assert [g["lr"] for g in opt2.param_groups] == [2e-5, 1e-3]

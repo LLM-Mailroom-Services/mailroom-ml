@@ -1019,9 +1019,23 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
             math.ceil(n_train_rows / batch_size) / grad_accum)
         steps_done_micro = epoch_done * math.ceil(n_train_rows / batch_size)
     opt_path = resume_dir / "optimizer.pt"
-    if opt_path.exists():
-        optimizer.load_state_dict(torch.load(opt_path, map_location=device))
     sched_path = resume_dir / "scheduler.pt"
+    opt_state = (torch.load(opt_path, map_location=device)
+                 if opt_path.exists() else None)
+    if opt_state is not None and len(opt_state["param_groups"]) != len(
+            optimizer.param_groups):
+        # The bundle was saved with a different param-group layout (e.g. a
+        # pre-``--subclass-head-lr`` single-group run resumed with the flag,
+        # or the reverse). Loading would raise, and the saved LambdaLR
+        # base_lrs would drop a group's LR. Keep the fresh optimizer and
+        # step the scheduler into position, as for a legacy bundle.
+        print(f"resume: optimizer has {len(optimizer.param_groups)} param "
+              f"group(s), checkpoint has {len(opt_state['param_groups'])}; "
+              "starting fresh optimizer/scheduler state")
+        opt_state = None
+        sched_path = resume_dir / "_no_scheduler_state"
+    if opt_state is not None:
+        optimizer.load_state_dict(opt_state)
     if sched_path.exists():
         scheduler.load_state_dict(torch.load(sched_path, map_location=device))
     else:

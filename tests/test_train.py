@@ -33,6 +33,7 @@ from mailroom_ml.config import (  # noqa: E402
 from mailroom_ml.dataset import build_documents  # noqa: E402
 from mailroom_ml.labels import label_maps  # noqa: E402
 from training.train_modernbert import (  # noqa: E402
+    CE_IGNORE_INDEX,
     DOC_TYPE_GATE_TOL,
     ECE_BUDGET,
     HierarchicalClassifier,
@@ -54,8 +55,10 @@ from training.train_modernbert import (  # noqa: E402
     fit_temperature,
     head_loss,
     load_dataset,
+    log_prior,
     macro_f1,
     make_batches,
+    param_groups,
     save_checkpoint,
     train_epoch,
 )
@@ -1137,3 +1140,152 @@ def test_resume_restores_best_doc_type_gate_floor(tmp_path):
     state2 = _apply_resume(legacy, model2, opt2, sched2, torch.device("cpu"),
                            n_train_rows=20, batch_size=4, grad_accum=2)
     assert state2["best_doc_type"] == float("-inf")
+
+
+# -- subclass loss normalization (#112 follow-up, 2026-09-28) ----------------
+
+def _one_head_setup(subclass, weights):
+    heads = {
+        "doc_type": {"label2id": {"contract": 0}, "labels": ["contract"],
+                     "weights": {"contract": 1.0}},
+        "contract": {"label2id": {"service": 0, "license": 1},
+                     "labels": ["service", "license"], "weights": weights},
+    }
+    n = len(subclass)
+    batch = {
+        "input_ids": torch.zeros(n, 8, dtype=torch.long),
+        "attention_mask": torch.ones(n, 8, dtype=torch.long),
+        "doc_type": torch.zeros(n, dtype=torch.long),
+        "subclass": torch.tensor(subclass),
+        "filename": [f"{i}.txt" for i in range(n)],
+    }
+    lgs = {"doc_type": torch.zeros(n, 1),
+           "contract": torch.tensor([[1.0, 0.0]] * n)}
+    return heads, batch, lgs
+
+
+def test_weighted_mean_cancels_class_weights_on_one_row():
+    """The collapse mechanism: F.cross_entropy's default reduction divides by
+    the rows' weight sum, so on a single head row the class weight cancels
+    exactly. "count" keeps it."""
+    device = torch.device("cpu")
+    rare = {"service": 1.0, "license": 20.0}
+    flat = {"service": 1.0, "license": 1.0}
+    out = {}
+    for norm in ("weighted-mean", "count"):
+        for name, w in (("rare", rare), ("flat", flat)):
+            heads, batch, lgs = _one_head_setup([1], w)
+            cfg = LossConfig(lambda_dt=0.0, weight_mode="inverse",
+                             weight_cap=20.0, subclass_loss_norm=norm)
+            out[norm, name] = head_loss(_StubHeads(lgs), batch, heads,
+                                        device, cfg)[0].item()
+    assert out["weighted-mean", "rare"] == pytest.approx(
+        out["weighted-mean", "flat"])
+    assert out["count", "rare"] == pytest.approx(20.0 * out["count", "flat"])
+
+
+def test_count_norm_matches_mean_with_uniform_weights():
+    device = torch.device("cpu")
+    heads, batch, lgs = _one_head_setup([0, 1, 1],
+                                        {"service": 1.0, "license": 1.0})
+    got = {norm: head_loss(_StubHeads(lgs), batch, heads, device,
+                           LossConfig(lambda_dt=0.0,
+                                      subclass_loss_norm=norm))[0].item()
+           for norm in ("weighted-mean", "count")}
+    assert got["count"] == pytest.approx(got["weighted-mean"])
+
+
+def test_count_norm_skips_head_with_only_ignored_rows():
+    """Routing-only rows (CE_IGNORE_INDEX) never produce a NaN head loss."""
+    device = torch.device("cpu")
+    heads, batch, lgs = _one_head_setup([0, 0],
+                                        {"service": 1.0, "license": 1.0})
+    batch["subclass"] = torch.tensor([CE_IGNORE_INDEX, CE_IGNORE_INDEX])
+    loss, _ = head_loss(_StubHeads(lgs), batch, heads, device,
+                        LossConfig(lambda_dt=0.5, subclass_loss_norm="count"))
+    assert torch.isfinite(loss)
+
+
+def test_subclass_loss_norm_cli_default_is_count():
+    assert build_parser().parse_args([]).subclass_loss_norm == "count"
+    assert build_parser().parse_args(
+        ["--subclass-loss-norm", "weighted-mean"]
+    ).subclass_loss_norm == "weighted-mean"
+
+
+def test_log_prior_inverts_inverse_frequency_weights():
+    # class_weights over counts {a: 30, b: 10}: w = N / (K * n)
+    weights = {"a": 40 / (2 * 30), "b": 40 / (2 * 10)}
+    lp = log_prior(weights, ["a", "b", "unseen"])
+    p = lp.exp()
+    assert p[0] / p[1] == pytest.approx(3.0)
+    assert p[2] == pytest.approx(p[1])  # no support -> smallest prior
+    assert p.sum() == pytest.approx(1.0)
+
+
+def test_subclass_logit_adjust_penalizes_rare_class_margin():
+    """With tau > 0 a rare-class target costs more than a common one at equal
+    raw logits; tau = 0 leaves the loss unchanged."""
+    device = torch.device("cpu")
+    weights = {"service": 0.5, "license": 5.0}  # service common, license rare
+    losses = {}
+    for target in (0, 1):
+        heads, batch, lgs = _one_head_setup([target], weights)
+        lgs["contract"] = torch.zeros(1, 2)
+        for tau in (0.0, 1.0):
+            cfg = LossConfig(lambda_dt=0.0, weight_mode="none",
+                             subclass_logit_adjust=tau)
+            losses[target, tau] = head_loss(_StubHeads(lgs), batch, heads,
+                                            device, cfg)[0].item()
+    assert losses[0, 0.0] == pytest.approx(losses[1, 0.0])
+    assert losses[1, 1.0] > losses[1, 0.0] > losses[0, 1.0]
+
+
+def test_subclass_logit_adjust_cli_default_off():
+    assert build_parser().parse_args([]).subclass_logit_adjust == 0.0
+
+
+def test_param_groups_split_subclass_heads_only():
+    model = nn.Module()
+    model.backbone = nn.Linear(4, 4)
+    model.heads = nn.ModuleDict({"doc_type": nn.Linear(4, 2),
+                                 "contract": nn.Linear(4, 3)})
+    assert len(param_groups(model, 2e-5)) == 1
+    groups = param_groups(model, 2e-5, 1e-3)
+    assert [g["lr"] for g in groups] == [2e-5, 1e-3]
+    sub_ids = {id(p) for p in groups[1]["params"]}
+    assert sub_ids == {id(p) for p in model.heads["contract"].parameters()}
+    total = sum(len(g["params"]) for g in groups)
+    assert total == len(list(model.parameters()))
+
+
+def test_subclass_head_lr_cli_default_unset():
+    assert build_parser().parse_args([]).subclass_head_lr is None
+
+
+def test_resume_across_param_group_layouts(tmp_path):
+    """A single-group (pre --subclass-head-lr) bundle resumed with a split
+    optimizer keeps both group LRs and steps the scheduler into position
+    instead of raising on the group-count mismatch."""
+    out = tmp_path / "ckpt"
+    model = SimpleNamespace(
+        backbone=_FakeSave("backbone.txt"),
+        heads=nn.ModuleDict({"doc_type": nn.Linear(4, 2),
+                             "contract": nn.Linear(4, 3)}),
+    )
+    opt, sched = _tiny_optim_sched(model, lr=2e-5)
+    save_checkpoint(out, model, _FakeSave("tokenizer.txt"),
+                    {"doc_type": {"labels": ["a", "b"]}}, {}, [], {},
+                    {"run_id": "r1"}, optimizer=opt, scheduler=sched,
+                    epoch=1, steps_done=3, epoch_complete=True)
+
+    opt2 = torch.optim.AdamW(
+        [{"params": list(model.heads["doc_type"].parameters()), "lr": 2e-5},
+         {"params": list(model.heads["contract"].parameters()), "lr": 1e-3}])
+    sched2 = torch.optim.lr_scheduler.LambdaLR(opt2, lambda s: 1.0)
+    state = _apply_resume(out, model, opt2, sched2, torch.device("cpu"),
+                          n_train_rows=20, batch_size=4, grad_accum=2)
+    assert state["start_epoch"] == 2
+    assert state["steps_done"] == 3
+    assert sched2.last_epoch == 3
+    assert [g["lr"] for g in opt2.param_groups] == [2e-5, 1e-3]

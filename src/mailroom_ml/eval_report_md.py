@@ -60,10 +60,13 @@ def _training_config_lines(summary: dict | None, arm: str) -> list[str]:
         ("batch × grad_accum", f"{cfg.get('batch_size', cfg.get('batch', '?'))} × "
          f"{cfg.get('grad_accum', cfg.get('gradient_accumulation_steps', '?'))}"),
         ("lr", cfg.get("lr", cfg.get("learning_rate"))),
+        ("subclass_head_lr", cfg.get("subclass_head_lr") or "= lr"),
         ("seed", cfg.get("seed")),
         ("max_length", cfg.get("max_length")),
         ("label_smoothing", cfg.get("label_smoothing", cfg.get("subclass_label_smoothing"))),
         ("weight_mode / cap", f"{cfg.get('weight_mode', '?')} / {cfg.get('weight_cap', '?')}"),
+        ("subclass_loss_norm", cfg.get("subclass_loss_norm", "weighted-mean")),
+        ("subclass_logit_adjust", cfg.get("subclass_logit_adjust", 0.0)),
         ("warmup_frac", cfg.get("warmup_frac")),
         ("mlp_heads", cfg.get("mlp_heads")),
         ("freeze_backbone_epochs", cfg.get("freeze_backbone_epochs")),

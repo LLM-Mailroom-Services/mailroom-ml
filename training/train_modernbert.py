@@ -208,12 +208,34 @@ class LossConfig:
     - ``weight_cap``: clamp class weights to [1/cap, cap] after the mode
       transform (default 10× — a rare class never out-weights a common one
       by more than an order of magnitude).
+    - ``subclass_loss_norm``: how each subclass head's weighted CE is
+      reduced (#112 follow-up, 2026-09-28). "count" (default) divides the
+      weighted sum by the head's row count in the micro-batch.
+      "weighted-mean" is ``F.cross_entropy``'s default, which divides by the
+      sum of the rows' class weights: with batch 4 a head usually sees 1-2
+      of its own rows per micro-batch, so the class weights cancel (exactly,
+      for one row) and ``--weight-mode`` / ``--weight-cap`` barely reach the
+      subclass heads. That is why run-2 inverse, run-3 sqrt-inverse and
+      M9a Arm B (inverse, cap 20) all left the contract head collapsed.
+      Inverse-frequency weights average about 1.0 over the train rows
+      (exactly 1.0 per document before the cap), so "count" keeps the
+      expected loss scale. doc_type keeps the weighted mean.
+    - ``subclass_logit_adjust``: logit-adjusted CE for the subclass heads
+      (Menon et al. 2021): add ``tau * log(prior)`` to each head's logits
+      inside the loss only, so rare classes need a larger margin to win in
+      training and the raw logits used at inference are balanced. Priors
+      come from the stored inverse-frequency weights (prior ∝ 1/w). Uses no
+      per-row weights, so it cannot over-amplify a handful of rare rows the
+      way a capped weight can. 0.0 (default) = off; pair 1.0 with
+      ``weight_mode="none"``.
     """
     lambda_dt: float = 0.65
     label_smoothing: float = 0.0
     subclass_label_smoothing: float = 0.0
     weight_mode: str = "inverse"
     weight_cap: float = 10.0
+    subclass_loss_norm: str = "count"
+    subclass_logit_adjust: float = 0.0
 
     def transform_weights(self, weights: dict[str, float],
                           labels: list[str],
@@ -230,6 +252,43 @@ class LossConfig:
         # the same device as the logits (CPU-built weights crashed the first
         # GPU smoke, 2026-09-20).
         return torch.tensor(out, dtype=torch.float32, device=device)
+
+
+def log_prior(weights: dict[str, float], labels: list[str],
+              device: torch.device | None = None) -> torch.Tensor:
+    """Per-label log train prior from inverse-frequency weights.
+
+    ``class_weights`` stores ``N / (K * n_k)``, so ``n_k ∝ 1 / w_k``. A label
+    with no stored weight has no train support; it gets the smallest prior
+    seen, so the adjustment never favours it.
+    """
+    inv = [1.0 / weights[lab] for lab in labels if weights.get(lab)]
+    floor = min(inv) if inv else 1.0
+    raw = torch.tensor([1.0 / weights[lab] if weights.get(lab) else floor
+                        for lab in labels], dtype=torch.float32,
+                       device=device)
+    return torch.log(raw / raw.sum())
+
+
+def param_groups(model, lr: float,
+                 subclass_head_lr: float | None = None) -> list[dict]:
+    """AdamW param groups: one group, or subclass heads on their own LR.
+
+    The heads start from random init but shared the encoder's fine-tuning
+    LR (2e-5). In M9a the imbalanced subclass heads gave a near-constant
+    answer per head (Arm A: ``supply`` for 27/41 contracts, ``indenture``
+    for 38/38 corporate records), i.e. they barely left init.
+    ``subclass_head_lr`` (e.g. 1e-3) trains them faster; the backbone and
+    the doc_type head keep ``lr``. The warmup/decay schedule scales both.
+    """
+    if not subclass_head_lr:
+        return [{"params": list(model.parameters()), "lr": lr}]
+    sub = [p for name, head in model.heads.items() if name != "doc_type"
+           for p in head.parameters()]
+    sub_ids = {id(p) for p in sub}
+    rest = [p for p in model.parameters() if id(p) not in sub_ids]
+    return [{"params": rest, "lr": lr},
+            {"params": sub, "lr": subclass_head_lr}]
 
 
 def _trainer_heads(maps: dict) -> dict:
@@ -280,13 +339,28 @@ def head_loss(model, batch, heads, device,
             continue
         sel = batch["doc_type"] == heads["doc_type"]["label2id"][cls]
         if sel.any():
+            target = batch["subclass"][sel]
+            weight = cfg.transform_weights(heads[cls]["weights"],
+                                           heads[cls]["labels"],
+                                           device=logits[cls].device)
+            sc_logits = logits[cls][sel]
+            if cfg.subclass_logit_adjust:
+                sc_logits = sc_logits + cfg.subclass_logit_adjust * log_prior(
+                    heads[cls]["weights"], heads[cls]["labels"],
+                    device=sc_logits.device)
+            if cfg.subclass_loss_norm == "weighted-mean":
+                sc_ces.append(F.cross_entropy(
+                    sc_logits, target, weight=weight,
+                    label_smoothing=cfg.subclass_label_smoothing,
+                    ignore_index=CE_IGNORE_INDEX))
+                continue
+            n_valid = int((target != CE_IGNORE_INDEX).sum())
+            if n_valid == 0:  # routing-only rows only: nothing to learn
+                continue
             sc_ces.append(F.cross_entropy(
-                logits[cls][sel], batch["subclass"][sel],
-                weight=cfg.transform_weights(heads[cls]["weights"],
-                                             heads[cls]["labels"],
-                                             device=logits[cls].device),
+                sc_logits, target, weight=weight,
                 label_smoothing=cfg.subclass_label_smoothing,
-                ignore_index=CE_IGNORE_INDEX))
+                ignore_index=CE_IGNORE_INDEX, reduction="sum") / n_valid)
     if sc_ces:
         loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
             sc_ces).mean()
@@ -945,9 +1019,23 @@ def _apply_resume(resume_dir: Path, model, optimizer, scheduler, device,
             math.ceil(n_train_rows / batch_size) / grad_accum)
         steps_done_micro = epoch_done * math.ceil(n_train_rows / batch_size)
     opt_path = resume_dir / "optimizer.pt"
-    if opt_path.exists():
-        optimizer.load_state_dict(torch.load(opt_path, map_location=device))
     sched_path = resume_dir / "scheduler.pt"
+    opt_state = (torch.load(opt_path, map_location=device)
+                 if opt_path.exists() else None)
+    if opt_state is not None and len(opt_state["param_groups"]) != len(
+            optimizer.param_groups):
+        # The bundle was saved with a different param-group layout (e.g. a
+        # pre-``--subclass-head-lr`` single-group run resumed with the flag,
+        # or the reverse). Loading would raise, and the saved LambdaLR
+        # base_lrs would drop a group's LR. Keep the fresh optimizer and
+        # step the scheduler into position, as for a legacy bundle.
+        print(f"resume: optimizer has {len(optimizer.param_groups)} param "
+              f"group(s), checkpoint has {len(opt_state['param_groups'])}; "
+              "starting fresh optimizer/scheduler state")
+        opt_state = None
+        sched_path = resume_dir / "_no_scheduler_state"
+    if opt_state is not None:
+        optimizer.load_state_dict(opt_state)
     if sched_path.exists():
         scheduler.load_state_dict(torch.load(sched_path, map_location=device))
     else:
@@ -1207,6 +1295,23 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--weight-cap", type=float, default=10.0,
                     help="clamp class weights to [1/cap, cap] after the "
                          "mode transform")
+    ap.add_argument("--subclass-loss-norm", choices=["count",
+                                                     "weighted-mean"],
+                    default="count",
+                    help="subclass CE reduction: count (weighted sum / "
+                         "head rows, so class weights take effect on small "
+                         "per-head micro-batches) or weighted-mean (the "
+                         "pre-2026-09-28 behavior, where weights largely "
+                         "cancel)")
+    ap.add_argument("--subclass-head-lr", type=float, default=None,
+                    help="separate AdamW LR for the subclass heads (e.g. "
+                         "1e-3); unset = share --lr with the backbone. The "
+                         "doc_type head keeps --lr")
+    ap.add_argument("--subclass-logit-adjust", type=float, default=0.0,
+                    help="logit-adjusted CE on subclass heads: add tau * "
+                         "log(train prior) to their logits in the loss only "
+                         "(0 = off; 1.0 with --weight-mode none is the "
+                         "standard setting)")
     ap.add_argument("--mlp-heads", action="store_true",
                     help="use the ModernBERT classification recipe heads "
                          "(hidden SiLU MLP + dropout) instead of linear")
@@ -1435,9 +1540,10 @@ def main() -> int:
                                           args.grad_accum, args.epochs,
                                           args.warmup_frac)
     betas = tuple(float(b) for b in args.betas.split(","))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
-                                  betas=betas, eps=args.eps,
-                                  weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        param_groups(model, args.lr, args.subclass_head_lr),
+        lr=args.lr, betas=betas, eps=args.eps,
+        weight_decay=args.weight_decay)
 
     def lr_lambda(step: int) -> float:
         if step < warmup:
@@ -1456,7 +1562,9 @@ def main() -> int:
                           label_smoothing=args.label_smoothing,
                           subclass_label_smoothing=args.subclass_label_smoothing,
                           weight_mode=args.weight_mode,
-                          weight_cap=args.weight_cap)
+                          weight_cap=args.weight_cap,
+                          subclass_loss_norm=args.subclass_loss_norm,
+                          subclass_logit_adjust=args.subclass_logit_adjust)
 
     best_val = float("inf")
     stale = 0

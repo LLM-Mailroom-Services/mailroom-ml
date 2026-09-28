@@ -13,6 +13,7 @@
 #   ./training/complete_run.sh --run-tag <RUN_TAG> [--publish]  # after train: eval + #112 gates + Hub
 #   ./training/run_m9a_local.sh --i-authorize-gpu --publish-to-hub  # + Hub release if gates pass
 #   CUDA_VISIBLE_DEVICES=0 ./training/run_m9a_local.sh --i-authorize-gpu
+#   ./training/run_m9a_local.sh --i-authorize-gpu --arm=m9b  # head-LR + logit-adjust arm (#43)
 #
 # Canonical paths:
 #   - Interactive full pipeline: foreground --i-authorize-gpu (blocks until train+eval done).
@@ -56,6 +57,7 @@ PY="${ROOT}/.venv/bin/python"
 AUTHORIZE=0
 PUBLISH=0
 BACKGROUND=0
+ARM="b"
 RESUME_OUT=""
 EPOCHS=4
 LOG_EVERY=25
@@ -127,6 +129,7 @@ for arg in "$@"; do
     --log-every=*) LOG_EVERY="${arg#*=}" ;;
     --resume=*) RESUME_OUT="${arg#*=}" ;;
     --cudnn-benchmark) CUDNN_BENCHMARK=1 ;;
+    --arm=*) ARM="${arg#*=}" ;;
     --help|-h)
       sed -n '2,40p' "$0"
       exit 0
@@ -203,14 +206,22 @@ CMD=(
   --weight-decay 0.01
   --warmup-frac 0.06
   --early-stop-patience 2
-  --weight-mode inverse
-  --weight-cap 20
   --loss-lambda-dt 0.65
   --log-every "$LOG_EVERY"
   --checkpoint-every "$CHECKPOINT_EVERY"
   --prefetch-batches 2
   # --select-on-subclass is default on (lexicographic subclass objective)
 )
+case "$ARM" in
+  # Arm B (M9a pre-registered): inverse class weights, cap 20.
+  b) CMD+=(--weight-mode inverse --weight-cap 20) ;;
+  # M9b (#43): subclass heads at their own LR + logit-adjusted CE, no
+  # per-row weights. The heads shared the encoder's 2e-5 LR and collapsed
+  # to a constant answer per head in Arm A/B.
+  m9b) CMD+=(--weight-mode none --subclass-head-lr 1e-3
+             --subclass-logit-adjust 1.0) ;;
+  *) echo "unknown --arm=$ARM (expected b or m9b)" >&2; exit 2 ;;
+esac
 if (( CUDNN_BENCHMARK == 1 )); then
   CMD+=(--cudnn-benchmark)
 fi

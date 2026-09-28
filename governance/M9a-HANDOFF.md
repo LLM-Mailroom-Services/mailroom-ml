@@ -152,6 +152,26 @@ python deploy/spawn_train.py --epochs 3 --batch-size 4 --grad-accum 8 \
 **Modal SDK:** 1.5.5 (verified latest stable 2026-09-21; `pyproject.toml`
 deploy extra pins `modal==1.5.5`).
 
+## 6b. M9b retrain arm (2026-09-28, mailroom-ml#43)
+
+Arm B ran (`m9a-local-20260927-014429`) and failed the contract and
+correspondence gates: the imbalanced subclass heads gave a near-constant
+answer per head (Arm A: `supply` 27/41 contracts, `indenture` 38/38
+corporate records, `email` 75/75 correspondence, `other` 17/17 merger).
+Two causes found in the trainer: the fresh heads shared the encoder's
+2e-5 LR, and weighted-mean CE cancelled class weights on 1-row micro-batches.
+
+**M9b arm:** Arm B flags with `--weight-mode none --subclass-head-lr 1e-3
+--subclass-logit-adjust 1.0` (doc_type head and backbone unchanged at 2e-5).
+
+- Local: `./training/run_m9a_local.sh --i-authorize-gpu --arm=m9b`
+- Modal: the §6 spawn with the weight flags replaced by
+  `--trainer-extra=--weight-mode=none --trainer-extra=--subclass-head-lr=1e-3
+  --trainer-extra=--subclass-logit-adjust=1.0` (redeploy first).
+- Held-out-plus eval of a local run: the Modal eval volume's `latest/` is
+  not the local checkpoint; `write_eval_report.py` now refuses the
+  mismatch (mailroom-ml#44).
+
 ## 7. Ops seams / open items
 
 - **Agent roster — corrected (U8 finding).** The earlier "live next session"

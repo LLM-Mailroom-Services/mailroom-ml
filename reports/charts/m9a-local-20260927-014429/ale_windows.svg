@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="340" viewBox="0 0 760 340" font-family="system-ui,-apple-system,&#x27;Segoe UI&#x27;,Roboto,sans-serif" role="img">
+<title>ALE: document length on P(doc type correct) · Arm B (Sep 27)</title>
+<rect width="760" height="340" fill="#ffffff"/>
+<text x="16" y="24" font-size="15" font-weight="600" fill="#0b0b0b">ALE: document length on P(doc type correct) · Arm B (Sep 27)</text>
+<text x="16" y="42" font-size="11.5" fill="#6f6e69">Logistic surrogate on log2(windows) + OOD flag, n = 323, cross-validated AUC 0.418. Flat = length does not explain errors</text>
+<line x1="58" x2="742" y1="220.47" y2="220.47" stroke="#c3c2b7"/>
+<text x="52" y="224.47" font-size="11" fill="#6f6e69" text-anchor="end">+0 pt</text>
+<line x1="58" x2="742" y1="147.19" y2="147.19" stroke="#e1e0d9"/>
+<text x="52" y="151.19" font-size="11" fill="#6f6e69" text-anchor="end">+5 pt</text>
+<text x="58" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">1</text>
+<text x="242.84" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">2</text>
+<text x="427.69" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">4</text>
+<text x="612.53" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">8</text>
+<text x="400" y="328" font-size="11" fill="#3d3d3a" text-anchor="middle">windows (log scale)</text>
+<text x="14" y="182" font-size="11" fill="#3d3d3a" text-anchor="middle" transform="rotate(-90 14 182)">Δ P(correct)</text>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="187.39" x2="187.39" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="242.84" x2="242.84" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="612.53" x2="612.53" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<polygon points="58,186.03 242.84,205.08 350.98,182.22 427.69,152.03 535.82,107.18 576.93,98.68 612.53,94.43 643.94,92.38 672.04,91.35 697.45,90.91 720.67,90.62 742,90.62 742,185 720.67,185.15 697.45,185.3 672.04,185.44 643.94,185.88 612.53,186.03 576.93,187.35 535.82,189.25 427.69,202.15 350.98,231.76 242.84,273.38 58,243.77" fill="#2a78d6" fill-opacity="0.16"/>
+<polyline points="58,218.86 242.84,232.93 350.98,203.91 427.69,179.73 535.82,157.6 576.93,153.35 612.53,151.15 643.94,149.83 672.04,149.1 697.45,148.66 720.67,148.36 742,148.22" fill="none" stroke="#2a78d6" stroke-width="2.2" stroke-linejoin="round"/>
+<circle cx="58" cy="218.86" r="2.6" fill="#2a78d6"/>
+<circle cx="242.84" cy="232.93" r="2.6" fill="#2a78d6"/>
+<circle cx="350.98" cy="203.91" r="2.6" fill="#2a78d6"/>
+<circle cx="427.69" cy="179.73" r="2.6" fill="#2a78d6"/>
+<circle cx="535.82" cy="157.6" r="2.6" fill="#2a78d6"/>
+<circle cx="576.93" cy="153.35" r="2.6" fill="#2a78d6"/>
+<circle cx="612.53" cy="151.15" r="2.6" fill="#2a78d6"/>
+<circle cx="643.94" cy="149.83" r="2.6" fill="#2a78d6"/>
+<circle cx="672.04" cy="149.1" r="2.6" fill="#2a78d6"/>
+<circle cx="697.45" cy="148.66" r="2.6" fill="#2a78d6"/>
+<circle cx="720.67" cy="148.36" r="2.6" fill="#2a78d6"/>
+<circle cx="742" cy="148.22" r="2.6" fill="#2a78d6"/>
+<line x1="58" x2="72" y1="58" y2="58" stroke="#2a78d6" stroke-width="2.5"/>
+<text x="76" y="62" font-size="11" fill="#3d3d3a" text-anchor="start">ALE (90% bootstrap band)</text>
+</svg>

@@ -1,0 +1,55 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="352" viewBox="0 0 760 352" font-family="system-ui,-apple-system,&#x27;Segoe UI&#x27;,Roboto,sans-serif" role="img">
+<title>Correspondence subclasses: true vs predicted · Arm A (Sep 27)</title>
+<rect width="760" height="352" fill="#ffffff"/>
+<text x="16" y="24" font-size="15" font-weight="600" fill="#0b0b0b">Correspondence subclasses: true vs predicted · Arm A (Sep 27)</text>
+<text x="16" y="42" font-size="11.5" fill="#6f6e69">37/75 right · top prediction &#x27;email&#x27; takes 75/75</text>
+<line x1="190" x2="190" y1="72" y2="322" stroke="#e1e0d9"/>
+<text x="190" y="338" font-size="11" fill="#6f6e69" text-anchor="middle">0</text>
+<line x1="321.5" x2="321.5" y1="72" y2="322" stroke="#e1e0d9"/>
+<text x="321.5" y="338" font-size="11" fill="#6f6e69" text-anchor="middle">20</text>
+<line x1="453" x2="453" y1="72" y2="322" stroke="#e1e0d9"/>
+<text x="453" y="338" font-size="11" fill="#6f6e69" text-anchor="middle">40</text>
+<line x1="584.5" x2="584.5" y1="72" y2="322" stroke="#e1e0d9"/>
+<text x="584.5" y="338" font-size="11" fill="#6f6e69" text-anchor="middle">60</text>
+<line x1="716" x2="716" y1="72" y2="322" stroke="#e1e0d9"/>
+<text x="716" y="338" font-size="11" fill="#6f6e69" text-anchor="middle">80</text>
+<rect x="16" y="53" width="10" height="10" rx="2" fill="#b9b8b0"/>
+<text x="34" y="62" font-size="11" fill="#3d3d3a" text-anchor="start">true</text>
+<rect x="78.4" y="53" width="10" height="10" rx="2" fill="#2a78d6"/>
+<text x="96.4" y="62" font-size="11" fill="#3d3d3a" text-anchor="start">predicted</text>
+<text x="182" y="95" font-size="11" fill="#3d3d3a" text-anchor="end">email</text>
+<rect x="190" y="81" width="243.27" height="10" fill="#b9b8b0" rx="2"/>
+<text x="437.27" y="90" font-size="10" fill="#3d3d3a" text-anchor="start">37</text>
+<rect x="190" y="93" width="493.12" height="10" fill="#2a78d6" rx="2"/>
+<text x="687.12" y="102" font-size="10" fill="#3d3d3a" text-anchor="start">75</text>
+<text x="182" y="129" font-size="11" fill="#3d3d3a" text-anchor="end">letter</text>
+<rect x="190" y="115" width="72.32" height="10" fill="#b9b8b0" rx="2"/>
+<text x="266.32" y="124" font-size="10" fill="#3d3d3a" text-anchor="start">11</text>
+<rect x="190" y="127" width="0" height="10" fill="#2a78d6" rx="2"/>
+<text x="194" y="136" font-size="10" fill="#3d3d3a" text-anchor="start">0</text>
+<text x="182" y="163" font-size="11" fill="#3d3d3a" text-anchor="end">memo</text>
+<rect x="190" y="149" width="52.6" height="10" fill="#b9b8b0" rx="2"/>
+<text x="246.6" y="158" font-size="10" fill="#3d3d3a" text-anchor="start">8</text>
+<rect x="190" y="161" width="0" height="10" fill="#2a78d6" rx="2"/>
+<text x="194" y="170" font-size="10" fill="#3d3d3a" text-anchor="start">0</text>
+<text x="182" y="197" font-size="11" fill="#3d3d3a" text-anchor="end">press release</text>
+<rect x="190" y="183" width="46.03" height="10" fill="#b9b8b0" rx="2"/>
+<text x="240.03" y="192" font-size="10" fill="#3d3d3a" text-anchor="start">7</text>
+<rect x="190" y="195" width="0" height="10" fill="#2a78d6" rx="2"/>
+<text x="194" y="204" font-size="10" fill="#3d3d3a" text-anchor="start">0</text>
+<text x="182" y="231" font-size="11" fill="#3d3d3a" text-anchor="end">demand</text>
+<rect x="190" y="217" width="32.88" height="10" fill="#b9b8b0" rx="2"/>
+<text x="226.88" y="226" font-size="10" fill="#3d3d3a" text-anchor="start">5</text>
+<rect x="190" y="229" width="0" height="10" fill="#2a78d6" rx="2"/>
+<text x="194" y="238" font-size="10" fill="#3d3d3a" text-anchor="start">0</text>
+<text x="182" y="265" font-size="11" fill="#3d3d3a" text-anchor="end">meeting request</text>
+<rect x="190" y="251" width="32.88" height="10" fill="#b9b8b0" rx="2"/>
+<text x="226.88" y="260" font-size="10" fill="#3d3d3a" text-anchor="start">5</text>
+<rect x="190" y="263" width="0" height="10" fill="#2a78d6" rx="2"/>
+<text x="194" y="272" font-size="10" fill="#3d3d3a" text-anchor="start">0</text>
+<text x="182" y="299" font-size="11" fill="#3d3d3a" text-anchor="end">notice</text>
+<rect x="190" y="285" width="13.15" height="10" fill="#b9b8b0" rx="2"/>
+<text x="207.15" y="294" font-size="10" fill="#3d3d3a" text-anchor="start">2</text>
+<rect x="190" y="297" width="0" height="10" fill="#2a78d6" rx="2"/>
+<text x="194" y="306" font-size="10" fill="#3d3d3a" text-anchor="start">0</text>
+</svg>

@@ -60,6 +60,7 @@ def _training_config_lines(summary: dict | None, arm: str) -> list[str]:
         ("batch × grad_accum", f"{cfg.get('batch_size', cfg.get('batch', '?'))} × "
          f"{cfg.get('grad_accum', cfg.get('gradient_accumulation_steps', '?'))}"),
         ("lr", cfg.get("lr", cfg.get("learning_rate"))),
+        ("subclass_head_lr", cfg.get("subclass_head_lr") or "= lr"),
         ("seed", cfg.get("seed")),
         ("max_length", cfg.get("max_length")),
         ("label_smoothing", cfg.get("label_smoothing", cfg.get("subclass_label_smoothing"))),

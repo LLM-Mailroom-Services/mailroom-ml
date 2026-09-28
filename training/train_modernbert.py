@@ -270,6 +270,27 @@ def log_prior(weights: dict[str, float], labels: list[str],
     return torch.log(raw / raw.sum())
 
 
+def param_groups(model, lr: float,
+                 subclass_head_lr: float | None = None) -> list[dict]:
+    """AdamW param groups: one group, or subclass heads on their own LR.
+
+    The heads start from random init but shared the encoder's fine-tuning
+    LR (2e-5). In M9a the imbalanced subclass heads gave a near-constant
+    answer per head (Arm A: ``supply`` for 27/41 contracts, ``indenture``
+    for 38/38 corporate records), i.e. they barely left init.
+    ``subclass_head_lr`` (e.g. 1e-3) trains them faster; the backbone and
+    the doc_type head keep ``lr``. The warmup/decay schedule scales both.
+    """
+    if not subclass_head_lr:
+        return [{"params": list(model.parameters()), "lr": lr}]
+    sub = [p for name, head in model.heads.items() if name != "doc_type"
+           for p in head.parameters()]
+    sub_ids = {id(p) for p in sub}
+    rest = [p for p in model.parameters() if id(p) not in sub_ids]
+    return [{"params": rest, "lr": lr},
+            {"params": sub, "lr": subclass_head_lr}]
+
+
 def _trainer_heads(maps: dict) -> dict:
     """Runtime head view: trainable label ids + routing-only set."""
     out: dict = {}
@@ -1268,6 +1289,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "per-head micro-batches) or weighted-mean (the "
                          "pre-2026-09-28 behavior, where weights largely "
                          "cancel)")
+    ap.add_argument("--subclass-head-lr", type=float, default=None,
+                    help="separate AdamW LR for the subclass heads (e.g. "
+                         "1e-3); unset = share --lr with the backbone. The "
+                         "doc_type head keeps --lr")
     ap.add_argument("--subclass-logit-adjust", type=float, default=0.0,
                     help="logit-adjusted CE on subclass heads: add tau * "
                          "log(train prior) to their logits in the loss only "
@@ -1501,9 +1526,10 @@ def main() -> int:
                                           args.grad_accum, args.epochs,
                                           args.warmup_frac)
     betas = tuple(float(b) for b in args.betas.split(","))
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
-                                  betas=betas, eps=args.eps,
-                                  weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(
+        param_groups(model, args.lr, args.subclass_head_lr),
+        lr=args.lr, betas=betas, eps=args.eps,
+        weight_decay=args.weight_decay)
 
     def lr_lambda(step: int) -> float:
         if step < warmup:

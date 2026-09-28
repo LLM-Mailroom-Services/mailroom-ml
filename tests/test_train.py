@@ -58,6 +58,7 @@ from training.train_modernbert import (  # noqa: E402
     log_prior,
     macro_f1,
     make_batches,
+    param_groups,
     save_checkpoint,
     train_epoch,
 )
@@ -1242,3 +1243,21 @@ def test_subclass_logit_adjust_penalizes_rare_class_margin():
 
 def test_subclass_logit_adjust_cli_default_off():
     assert build_parser().parse_args([]).subclass_logit_adjust == 0.0
+
+
+def test_param_groups_split_subclass_heads_only():
+    model = nn.Module()
+    model.backbone = nn.Linear(4, 4)
+    model.heads = nn.ModuleDict({"doc_type": nn.Linear(4, 2),
+                                 "contract": nn.Linear(4, 3)})
+    assert len(param_groups(model, 2e-5)) == 1
+    groups = param_groups(model, 2e-5, 1e-3)
+    assert [g["lr"] for g in groups] == [2e-5, 1e-3]
+    sub_ids = {id(p) for p in groups[1]["params"]}
+    assert sub_ids == {id(p) for p in model.heads["contract"].parameters()}
+    total = sum(len(g["params"]) for g in groups)
+    assert total == len(list(model.parameters()))
+
+
+def test_subclass_head_lr_cli_default_unset():
+    assert build_parser().parse_args([]).subclass_head_lr is None

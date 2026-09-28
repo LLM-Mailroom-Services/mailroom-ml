@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from mailroom_ml.config import CLASSIFIER_MODEL_REPO
+from mailroom_ml.m9a_gates import gate_status, gates_all_met, m9a_gate_rows
 
 IGNORE_UPLOAD = ["optimizer.pt", "scheduler.pt", "resume.json"]
 METRICS_BEGIN = "<!-- mailroom-ml:test-metrics:begin -->"
@@ -35,40 +36,6 @@ def _f(x):
         return float(x)
     except (TypeError, ValueError):
         return None
-
-
-def m9a_gate_rows(report: dict) -> list[tuple[str, float | None, float, str]]:
-    """Same thresholds as ``training/check_m9a_gates.py``."""
-    per_head = report.get("per_head") or {}
-    contract = _f((per_head.get("contract") or {}).get("macro_f1"))
-    corr = _f((per_head.get("correspondence") or {}).get("macro_f1"))
-    dt_acc = _f(report.get("doc_type_accuracy"))
-    ece = _f((report.get("window_calibration") or {}).get("ece"))
-    return [
-        ("contract test macro-F1", contract, 0.20, "ge"),
-        ("correspondence test macro-F1", corr, 0.25, "ge"),
-        ("doc_type test accuracy", dt_acc, 0.89, "ge"),
-        ("window ECE (doc_type calibrated)", ece, 0.05, "le"),
-    ]
-
-
-def gates_all_met(report: dict) -> bool:
-    for _name, actual, thr, how in m9a_gate_rows(report):
-        if actual is None:
-            return False
-        if how == "ge" and actual < thr:
-            return False
-        if how == "le" and actual > thr:
-            return False
-    return True
-
-
-def _gate_status(actual: float | None, thr: float, how: str) -> str:
-    if actual is None:
-        return "MISSING"
-    if how == "ge":
-        return "MET" if actual >= thr else "NOT MET"
-    return "MET" if actual <= thr else "NOT MET"
 
 
 def build_metrics_markdown(
@@ -93,7 +60,7 @@ def build_metrics_markdown(
         op = "≥" if how == "ge" else "≤"
         lines.append(
             f"| {name} | {actual} | {op} {thr} | "
-            f"{_gate_status(actual, thr, how)} |"
+            f"{gate_status(actual, thr, how)} |"
         )
     lines.extend([
         "",

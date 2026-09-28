@@ -18,17 +18,14 @@ import json
 import sys
 from pathlib import Path
 
-CONTRACT_F1 = 0.20
-CORR_F1 = 0.25
-DOC_TYPE_ACC = 0.89
-WINDOW_ECE = 0.05
+from mailroom_ml.m9a_gates import gate_status, gates_all_met, m9a_gate_rows
 
-
-def _f(x):
-    try:
-        return float(x)
-    except (TypeError, ValueError):
-        return None
+_KEY = {
+    "contract test macro-F1": "contract_macro_f1",
+    "correspondence test macro-F1": "correspondence_macro_f1",
+    "doc_type test accuracy": "doc_type_accuracy",
+    "window ECE (doc_type calibrated)": "window_ece_calibrated",
+}
 
 
 def main(argv: list[str]) -> int:
@@ -40,38 +37,17 @@ def main(argv: list[str]) -> int:
     if len(argv) >= 2 and Path(argv[1]).is_file():
         summary = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
 
-    per_head = report.get("per_head") or {}
-    contract = _f((per_head.get("contract") or {}).get("macro_f1"))
-    corr = _f((per_head.get("correspondence") or {}).get("macro_f1"))
-    dt_acc = _f(report.get("doc_type_accuracy"))
-    ece = _f((report.get("window_calibration") or {}).get("ece"))
-    sc_acc = _f(report.get("subclass_accuracy_conditional"))
-
-    checks = [
-        ("contract_macro_f1", contract, CONTRACT_F1, "ge"),
-        ("correspondence_macro_f1", corr, CORR_F1, "ge"),
-        ("doc_type_accuracy", dt_acc, DOC_TYPE_ACC, "ge"),
-        ("window_ece_calibrated", ece, WINDOW_ECE, "le"),
-    ]
     print("=== M9a #112 gates ===")
-    all_ok = True
-    for name, actual, thr, how in checks:
-        if actual is None:
-            ok = False
-            verdict = "MISSING"
-        elif how == "ge":
-            ok = actual >= thr
-            verdict = "MET" if ok else "NOT MET"
-        else:
-            ok = actual <= thr
-            verdict = "MET" if ok else "NOT MET"
-        all_ok = all_ok and ok
-        print(f"  {name}: actual={actual} threshold={thr} ({how}) -> {verdict}")
+    for name, actual, thr, how in m9a_gate_rows(report):
+        st = gate_status(actual, thr, how)
+        key = _KEY.get(name, name)
+        print(f"  {key}: actual={actual} threshold={thr} ({how}) -> {st}")
 
     print("=== calibration / subclass surfaces ===")
-    print(f"  subclass_accuracy_conditional: {sc_acc}")
+    print(f"  subclass_accuracy_conditional: {report.get('subclass_accuracy_conditional')}")
     wc = report.get("window_calibration") or {}
     print(f"  window_calibration: ece={wc.get('ece')} band_ece={wc.get('band_ece')}")
+    per_head = report.get("per_head") or {}
     for head, info in sorted(per_head.items()):
         if not isinstance(info, dict):
             continue
@@ -96,8 +72,8 @@ def main(argv: list[str]) -> int:
                 print(f"    {h}: {meta}")
 
     print("=== overall ===")
-    print("PASS" if all_ok else "FAIL")
-    return 0 if all_ok else 1
+    print("PASS" if gates_all_met(report) else "FAIL")
+    return 0 if gates_all_met(report) else 1
 
 
 if __name__ == "__main__":

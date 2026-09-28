@@ -4,6 +4,9 @@ This directory consolidates **authoritative held-out test evaluations** for the
 M9a local training session. Metrics here come from `training/eval_modernbert.py`
 (the GPU/CPU eval harness), not from inline trainer `test_metrics` alone.
 
+Markdown reports are **regenerated from eval JSON** via
+`training/write_eval_report.py` (see [`reports/README.md`](../README.md)).
+
 ## Index
 
 | Document | Description |

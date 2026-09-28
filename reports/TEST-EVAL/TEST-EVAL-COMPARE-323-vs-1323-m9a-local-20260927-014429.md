@@ -4,6 +4,9 @@ Paired bootstrap uses **323 overlapping filenames** only (canonical test block).
 
 # compare_runs: canonical323 vs heldout1323
 
+**A:** `reports/eval_m9a-local-20260927-014429.json`  
+**B:** `/workspace/reports/eval_m9a-local-20260927-014429-heldout-plus.json`  
+
 n_docs canonical323=323  heldout1323=1323  paired=323  pairing=document_id
 bootstrap resamples=2000 seed=42
 
@@ -24,3 +27,13 @@ per-head macro-F1 (observed):
 | insurance_claim | 0.9889 | — | — |
 | merger_agreement | 0.2381 | 0.1571 | 0.0810 |
 
+## Reproduce
+
+```bash
+uv run python training/compare_runs.py --a reports/eval_m9a-local-20260927-014429.json --b /workspace/reports/eval_m9a-local-20260927-014429-heldout-plus.json
+```
+
+## Artifacts
+
+| `reports/eval_m9a-local-20260927-014429.json` | eval A |
+| `/workspace/reports/eval_m9a-local-20260927-014429-heldout-plus.json` | eval B |

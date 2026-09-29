@@ -1,57 +1,60 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="340" viewBox="0 0 760 340" font-family="system-ui,-apple-system,&#x27;Segoe UI&#x27;,Roboto,sans-serif" role="img">
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="354" viewBox="0 0 760 354" font-family="system-ui,-apple-system,&#x27;Segoe UI&#x27;,Roboto,sans-serif" role="img">
 <title>ALE: document length on P(doc type correct) · Arm A (Sep 27)</title>
-<rect width="760" height="340" fill="#ffffff"/>
+<rect width="760" height="354" fill="#ffffff"/>
 <text x="16" y="24" font-size="15" font-weight="600" fill="#0b0b0b">ALE: document length on P(doc type correct) · Arm A (Sep 27)</text>
-<text x="16" y="42" font-size="11.5" fill="#6f6e69">Logistic surrogate on log2(windows) + OOD flag, n = 323, cross-validated AUC 0.447. Flat = length does not explain errors</text>
-<line x1="58" x2="742" y1="282.78" y2="282.78" stroke="#e1e0d9"/>
-<text x="52" y="286.78" font-size="11" fill="#6f6e69" text-anchor="end">-20 pt</text>
-<line x1="58" x2="742" y1="237.79" y2="237.79" stroke="#e1e0d9"/>
-<text x="52" y="241.79" font-size="11" fill="#6f6e69" text-anchor="end">-10 pt</text>
-<line x1="58" x2="742" y1="192.8" y2="192.8" stroke="#c3c2b7"/>
-<text x="52" y="196.8" font-size="11" fill="#6f6e69" text-anchor="end">+0 pt</text>
-<line x1="58" x2="742" y1="147.81" y2="147.81" stroke="#e1e0d9"/>
-<text x="52" y="151.81" font-size="11" fill="#6f6e69" text-anchor="end">+10 pt</text>
-<line x1="58" x2="742" y1="102.81" y2="102.81" stroke="#e1e0d9"/>
-<text x="52" y="106.81" font-size="11" fill="#6f6e69" text-anchor="end">+20 pt</text>
-<text x="58" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">1</text>
-<text x="242.84" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">2</text>
-<text x="427.69" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">4</text>
-<text x="612.53" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">8</text>
-<text x="400" y="328" font-size="11" fill="#3d3d3a" text-anchor="middle">windows (log scale)</text>
-<text x="14" y="182" font-size="11" fill="#3d3d3a" text-anchor="middle" transform="rotate(-90 14 182)">Δ P(correct)</text>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="58" x2="58" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="187.39" x2="187.39" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="242.84" x2="242.84" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<line x1="612.53" x2="612.53" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
-<polygon points="58,140.83 242.84,196.71 350.98,187.26 427.69,176.47 535.82,145.87 576.93,133.68 612.53,121.85 643.94,106.46 672.04,98.49 697.45,93.73 720.67,91.61 742,90.62 742,173.72 720.67,177.55 697.45,181.64 672.04,186 643.94,190.64 612.53,198.29 576.93,211.47 535.82,227.22 427.69,266.32 350.98,273.38 242.84,246.83 58,194.64" fill="#2a78d6" fill-opacity="0.16"/>
-<polyline points="58,169.94 242.84,220.11 350.98,226.32 427.69,215.56 535.82,184.2 576.93,170.03 612.53,158.02 643.94,148.17 672.04,140.16 697.45,133.77 720.67,128.68 742,124.63" fill="none" stroke="#2a78d6" stroke-width="2.2" stroke-linejoin="round"/>
-<circle cx="58" cy="169.94" r="2.6" fill="#2a78d6"/>
-<circle cx="242.84" cy="220.11" r="2.6" fill="#2a78d6"/>
-<circle cx="350.98" cy="226.32" r="2.6" fill="#2a78d6"/>
-<circle cx="427.69" cy="215.56" r="2.6" fill="#2a78d6"/>
-<circle cx="535.82" cy="184.2" r="2.6" fill="#2a78d6"/>
-<circle cx="576.93" cy="170.03" r="2.6" fill="#2a78d6"/>
-<circle cx="612.53" cy="158.02" r="2.6" fill="#2a78d6"/>
-<circle cx="643.94" cy="148.17" r="2.6" fill="#2a78d6"/>
-<circle cx="672.04" cy="140.16" r="2.6" fill="#2a78d6"/>
-<circle cx="697.45" cy="133.77" r="2.6" fill="#2a78d6"/>
-<circle cx="720.67" cy="128.68" r="2.6" fill="#2a78d6"/>
+<text x="16" y="42" font-size="11.5" fill="#6f6e69">Logistic surrogate on log2(windows) + OOD flag, n = 323, cross-validated AUC 0.447. Flat = length does not explain</text>
+<text x="16" y="56" font-size="11.5" fill="#6f6e69">errors</text>
+<g transform="translate(0 14)">
+<line x1="65" x2="742" y1="282.78" y2="282.78" stroke="#e1e0d9"/>
+<text x="59" y="286.78" font-size="11" fill="#6f6e69" text-anchor="end">-20 pt</text>
+<line x1="65" x2="742" y1="237.79" y2="237.79" stroke="#e1e0d9"/>
+<text x="59" y="241.79" font-size="11" fill="#6f6e69" text-anchor="end">-10 pt</text>
+<line x1="65" x2="742" y1="192.8" y2="192.8" stroke="#c3c2b7"/>
+<text x="59" y="196.8" font-size="11" fill="#6f6e69" text-anchor="end">+0 pt</text>
+<line x1="65" x2="742" y1="147.81" y2="147.81" stroke="#e1e0d9"/>
+<text x="59" y="151.81" font-size="11" fill="#6f6e69" text-anchor="end">+10 pt</text>
+<line x1="65" x2="742" y1="102.81" y2="102.81" stroke="#e1e0d9"/>
+<text x="59" y="106.81" font-size="11" fill="#6f6e69" text-anchor="end">+20 pt</text>
+<text x="65" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">1</text>
+<text x="247.95" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">2</text>
+<text x="430.91" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">4</text>
+<text x="613.86" y="304" font-size="11" fill="#6f6e69" text-anchor="middle">8</text>
+<text x="403.5" y="328" font-size="11" fill="#3d3d3a" text-anchor="middle">windows (log scale)</text>
+<text x="13.05" y="182" font-size="11" fill="#3d3d3a" text-anchor="middle" transform="rotate(-90 13.05 182)">Δ P(correct)</text>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="65" x2="65" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="193.07" x2="193.07" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="247.95" x2="247.95" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<line x1="613.86" x2="613.86" y1="288" y2="282" stroke="#3d3d3a" stroke-opacity="0.5"/>
+<polygon points="65,140.83 247.95,196.71 354.98,187.26 430.91,176.47 537.93,145.87 578.62,133.68 613.86,121.85 644.94,106.46 672.75,98.49 697.91,93.73 720.89,91.61 742,90.62 742,173.72 720.89,177.55 697.91,181.64 672.75,186 644.94,190.64 613.86,198.29 578.62,211.47 537.93,227.22 430.91,266.32 354.98,273.38 247.95,246.83 65,194.64" fill="#2a78d6" fill-opacity="0.16"/>
+<polyline points="65,169.94 247.95,220.11 354.98,226.32 430.91,215.56 537.93,184.2 578.62,170.03 613.86,158.02 644.94,148.17 672.75,140.16 697.91,133.77 720.89,128.68 742,124.63" fill="none" stroke="#2a78d6" stroke-width="2.2" stroke-linejoin="round"/>
+<circle cx="65" cy="169.94" r="2.6" fill="#2a78d6"/>
+<circle cx="247.95" cy="220.11" r="2.6" fill="#2a78d6"/>
+<circle cx="354.98" cy="226.32" r="2.6" fill="#2a78d6"/>
+<circle cx="430.91" cy="215.56" r="2.6" fill="#2a78d6"/>
+<circle cx="537.93" cy="184.2" r="2.6" fill="#2a78d6"/>
+<circle cx="578.62" cy="170.03" r="2.6" fill="#2a78d6"/>
+<circle cx="613.86" cy="158.02" r="2.6" fill="#2a78d6"/>
+<circle cx="644.94" cy="148.17" r="2.6" fill="#2a78d6"/>
+<circle cx="672.75" cy="140.16" r="2.6" fill="#2a78d6"/>
+<circle cx="697.91" cy="133.77" r="2.6" fill="#2a78d6"/>
+<circle cx="720.89" cy="128.68" r="2.6" fill="#2a78d6"/>
 <circle cx="742" cy="124.63" r="2.6" fill="#2a78d6"/>
-<line x1="58" x2="72" y1="58" y2="58" stroke="#2a78d6" stroke-width="2.5"/>
-<text x="76" y="62" font-size="11" fill="#3d3d3a" text-anchor="start">ALE (90% bootstrap band)</text>
+<line x1="65" x2="79" y1="58" y2="58" stroke="#2a78d6" stroke-width="2.5"/>
+<text x="83" y="62" font-size="11" fill="#3d3d3a" text-anchor="start">ALE (90% bootstrap band)</text>
+</g>
 </svg>

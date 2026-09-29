@@ -25,6 +25,25 @@ def _n(v: float) -> str:
     return "0" if s == "-0" else s
 
 
+# Advance widths (em) calibrated against DejaVu Sans, the widest common
+# system-ui fallback: text is laid out from these, so erring wide only adds air.
+def _tw(text, size: float = 11) -> float:
+    """Estimated rendered width of ``text`` at ``size`` px."""
+    em = 0.0
+    for ch in str(text):
+        if ch in "il.,:;|!'`·()[]{} ":
+            em += 0.34
+        elif ch in "MWmw@%":
+            em += 0.92
+        elif ch.isupper() or ch in "_—–×Δ":
+            em += 0.72
+        elif ch.isdigit():
+            em += 0.64
+        else:
+            em += 0.61
+    return em * size
+
+
 class _Svg:
     def __init__(self, w: int, h: int, title: str, subtitle: str = ""):
         self.w, self.h = w, h
@@ -41,14 +60,20 @@ class _Svg:
                  font_weight=weight, transform=f"rotate({rotate} {_n(x)} {_n(y)})" if rotate else None)
 
     def render(self) -> str:
-        head = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{self.h}" '
-                f'viewBox="0 0 {self.w} {self.h}" font-family="{escape(FONT)}" role="img">',
+        # A subtitle wider than the figure wraps onto a second line and pushes
+        # the body down (it used to run off the right edge).
+        sub = _wrap_px(self.subtitle, self.w - 32, 11.5) if self.subtitle else []
+        dy = 14 * max(len(sub) - 1, 0)
+        h = self.h + dy
+        head = [(f'<svg xmlns="http://www.w3.org/2000/svg" width="{self.w}" height="{h}" '
+                 f'viewBox="0 0 {self.w} {h}" font-family="{escape(FONT)}" role="img">'),
                 f"<title>{escape(self.title)}</title>",
-                f'<rect width="{self.w}" height="{self.h}" fill="{BG}"/>',
+                f'<rect width="{self.w}" height="{h}" fill="{BG}"/>',
                 f'<text x="16" y="24" font-size="15" font-weight="600" fill="{INK}">{escape(self.title)}</text>']
-        if self.subtitle:
-            head.append(f'<text x="16" y="42" font-size="11.5" fill="{MUTED}">{escape(self.subtitle)}</text>')
-        return "\n".join(head + self.parts + ["</svg>"]) + "\n"
+        for i, line in enumerate(sub):
+            head.append(f'<text x="16" y="{42 + 14 * i}" font-size="11.5" fill="{MUTED}">{escape(line)}</text>')
+        body = self.parts if not dy else [f'<g transform="translate(0 {dy})">', *self.parts, "</g>"]
+        return "\n".join(head + body + ["</svg>"]) + "\n"
 
 
 def nice_ticks(top: float, n: int = 5) -> list[float]:
@@ -61,14 +86,35 @@ def nice_ticks(top: float, n: int = 5) -> list[float]:
     return [round(i * step, 10) for i in range(k + 1)]
 
 
-def _legend(s: _Svg, items: list[tuple[str, str]], x: float, y: float, line: bool = False) -> None:
-    for name, color in items:
-        if line:
-            s.add("line", x1=float(x), x2=float(x + 14), y1=float(y - 4), y2=float(y - 4), stroke=color, stroke_width=2.5)
+def _legend_layout(items, x: float, max_x: float) -> list[tuple[float, int]]:
+    """(x, row) per legend item, wrapping onto a new row before ``max_x``."""
+    out, cx, row = [], x, 0
+    for name, _ in items:
+        w = 18 + _tw(name) + 18
+        if cx > x and cx + w - 18 > max_x:
+            cx, row = x, row + 1
+        out.append((cx, row))
+        cx += w
+    return out
+
+
+def _legend_rows(items, x: float, max_x: float) -> int:
+    return 1 + max((r for _, r in _legend_layout(items, x, max_x)), default=0)
+
+
+def _legend(s: _Svg, items: list[tuple[str, str]], x: float, y: float, line: bool = False,
+            max_x: float | None = None, dashed: tuple[str, ...] = ()) -> None:
+    """Measured, wrapping legend. Names in ``dashed`` get a dashed-line key (reference lines)."""
+    for (name, color), (cx, row) in zip(items, _legend_layout(items, x, max_x or s.w - 16), strict=False):
+        yy = y + 16 * row
+        if name in dashed:
+            s.add("line", x1=float(cx), x2=float(cx + 14), y1=float(yy - 4), y2=float(yy - 4), stroke=color,
+                  stroke_width=1.5, stroke_dasharray="4 3")
+        elif line:
+            s.add("line", x1=float(cx), x2=float(cx + 14), y1=float(yy - 4), y2=float(yy - 4), stroke=color, stroke_width=2.5)
         else:
-            s.add("rect", x=float(x), y=float(y - 9), width=10, height=10, rx=2, fill=color)
-        s.text(x + 18, y, name, fill=INK2)
-        x += 18 + 6.6 * len(name) + 18
+            s.add("rect", x=float(cx), y=float(yy - 9), width=10, height=10, rx=2, fill=color)
+        s.text(cx + 18, yy, name, fill=INK2)
 
 
 def grouped_bars(title: str, cats: list[str], series: list[tuple[str, str, list]], *, subtitle: str = "",
@@ -76,7 +122,13 @@ def grouped_bars(title: str, cats: list[str], series: list[tuple[str, str, list]
                  labels: bool = True, width: int = 760, height: int = 360) -> str:
     """Vertical grouped bars; ``series`` is ``[(name, color, values)]`` aligned to ``cats`` (None = no bar)."""
     s = _Svg(width, height, title, subtitle)
-    L, R, T, B = 52, 16, 76, 58
+    items = [(n, c) for n, c, _ in series] + ([(ref[1], INK2)] if ref else [])
+    rows = _legend_rows(items, 52, width - 16)
+    height += 16 * (rows - 1)
+    s.h = height
+    # Legend rows, then 22px of air so a value label on a full-height bar
+    # never meets the legend (it collided at the old fixed T = 76).
+    L, R, T, B = 52, 16, 84 + 16 * (rows - 1), 58
     vals = [v for _, _, vs in series for v in vs if v is not None]
     ticks = nice_ticks(ymax if ymax is not None else max(vals + [ref[0] if ref else 0, 1e-9]))
     top = ticks[-1]
@@ -85,7 +137,7 @@ def grouped_bars(title: str, cats: list[str], series: list[tuple[str, str, list]
     for t in ticks:
         s.add("line", x1=L, x2=width - R, y1=y(t), y2=y(t), stroke=GRID)
         s.text(L - 6, y(t) + 4, tick_fmt(t), anchor="end")
-    _legend(s, [(n, c) for n, c, _ in series], L, 62)
+    _legend(s, items, L, 62, dashed=(ref[1],) if ref else ())
     band = (width - L - R) / max(len(cats), 1)
     bw = min(34.0, band * 0.8 / max(len(series), 1))
     for i, cat in enumerate(cats):
@@ -100,9 +152,9 @@ def grouped_bars(title: str, cats: list[str], series: list[tuple[str, str, list]
         for k, part in enumerate(_wrap(cat, max(8, int(band / 6.5)))):
             s.text(L + i * band + band / 2, height - B + 16 + 13 * k, part, fill=INK2, anchor="middle")
     s.add("line", x1=L, x2=width - R, y1=y(0), y2=y(0), stroke=AXIS)
-    if ref:
-        s.add("line", x1=L, x2=width - R, y1=y(ref[0]), y2=y(ref[0]), stroke=INK2, stroke_dasharray="5 4")
-        s.text(L + 4, y(ref[0]) - 5, ref[1], size=10.5, fill=INK2)
+    if ref:  # labelled in the legend: an in-plot label collided with bar values
+        s.add("line", x1=L, x2=width - R, y1=y(ref[0]), y2=y(ref[0]), stroke=INK2, stroke_width=1.5,
+              stroke_dasharray="4 3")
     return s.render()
 
 
@@ -110,9 +162,11 @@ def hbars(title: str, labels: list[str], series: list[tuple[str, str, list]], *,
           fmt=lambda v: str(v), width: int = 760, label_w: int = 190) -> str:
     """Horizontal grouped bars, for long category names (e.g. true vs predicted subclass counts)."""
     row = 12 * len(series) + 10
-    height = 80 + row * len(labels) + 34
+    rows = _legend_rows([(n, c) for n, c, _ in series], 16, width - 16)
+    height = 80 + row * len(labels) + 34 + 16 * (rows - 1)
     s = _Svg(width, height, title, subtitle)
-    L, R, T = label_w, 44, 76
+    label_w = max(label_w, int(max((_tw(lab) for lab in labels), default=0)) + 16)
+    L, R, T = label_w, 44, 76 + 16 * (rows - 1)
     vals = [v for _, _, vs in series for v in vs if v is not None]
     ticks = nice_ticks(max(vals + [1e-9]), 4)
     top = ticks[-1]
@@ -134,6 +188,7 @@ def hbars(title: str, labels: list[str], series: list[tuple[str, str, list]], *,
 def heatmap(title: str, rows: list[str], cols: list[str], counts: list[list[int]], *, subtitle: str = "",
             width: int = 760, label_w: int = 150) -> str:
     """Confusion matrix: rows = true, cols = predicted; shade = share of the row, text = count."""
+    label_w = max(label_w, int(max((_tw(r) for r in rows), default=0)) + 16)
     cell = min(92.0, (width - label_w - 20) / max(len(cols), 1))
     height = int(106 + cell * len(rows) + 30)
     s = _Svg(width, height, title, subtitle)
@@ -154,7 +209,7 @@ def heatmap(title: str, rows: list[str], cols: list[str], counts: list[list[int]
             ink = BG if share > 0.55 else INK2
             s.text(L + j * cell + cell / 2, T + i * cell + cell / 2 + 1, str(v), size=12.5, fill=ink, anchor="middle", weight=600)
             if v:
-                s.text(L + j * cell + cell / 2, T + i * cell + cell / 2 + 15, f"{share:.0%}", size=9.5, fill=ink, anchor="middle")
+                s.text(L + j * cell + cell / 2, T + i * cell + cell / 2 + 15, f"{share:.0%}", size=10, fill=ink, anchor="middle")
     s.text(16, height - 10, "true class (rows)", size=10.5)
     return s.render()
 
@@ -165,7 +220,10 @@ def lines(title: str, series: list[dict], *, subtitle: str = "", x_label: str = 
           width: int = 760, height: int = 340) -> str:
     """Line chart. Each series: ``{"name", "color", "x", "y", optional "lo"/"hi" band, optional "dash"}``."""
     s = _Svg(width, height, title, subtitle)
-    L, R, T, B = 58, 18, 76, 52
+    rows = _legend_rows([(se["name"], se["color"]) for se in series], 58, width - 16)
+    height += 16 * (rows - 1)
+    s.h = height
+    L, R, T, B = 58, 18, 76 + 16 * (rows - 1), 52
     xs = [v for se in series for v in se["x"]]
     ys = [v for se in series for k in ("y", "lo", "hi") for v in se.get(k, []) if v is not None]
     ys += [h for h, _ in hlines]
@@ -178,6 +236,8 @@ def lines(title: str, series: list[dict], *, subtitle: str = "", x_label: str = 
         y0, y1 = min(ys + [0.0]), max(ys + [0.0])
         pad = (y1 - y0) * 0.08 or 0.1
         y0, y1 = y0 - (pad if y0 < 0 else 0), y1 + pad
+    tick_w = max((_tw(y_fmt(t)) for t in _span_ticks(y0, y1)), default=0)
+    L = max(L, int(tick_w + 6 + (22 if y_label else 8)))
     X = lambda v: L + (v - x0) / (x1 - x0) * (width - L - R)  # noqa: E731
     Y = lambda v: T + (1 - (v - y0) / (y1 - y0)) * (height - T - B)  # noqa: E731
     for t in _span_ticks(y0, y1):
@@ -188,7 +248,7 @@ def lines(title: str, series: list[dict], *, subtitle: str = "", x_label: str = 
     if x_label:
         s.text((L + width - R) / 2, height - 12, x_label, fill=INK2, anchor="middle")
     if y_label:
-        s.text(14, (T + height - B) / 2, y_label, fill=INK2, anchor="middle", rotate=-90)
+        s.text(L - tick_w - 14, (T + height - B) / 2, y_label, fill=INK2, anchor="middle", rotate=-90)
     for v in rug:
         s.add("line", x1=X(v), x2=X(v), y1=float(height - B), y2=float(height - B - 6), stroke=INK2, stroke_opacity=0.5)
     for h, lab in hlines:
@@ -233,6 +293,18 @@ def _wrap(text: str, width: int) -> list[str]:
             cur = w
         else:
             cur = f"{cur} {w}".strip()
+    return out + [cur] if cur else out
+
+
+def _wrap_px(text: str, max_w: float, size: float = 11) -> list[str]:
+    words, out, cur = str(text).split(), [], ""
+    for w in words:
+        cand = f"{cur} {w}".strip()
+        if cur and _tw(cand, size) > max_w:
+            out.append(cur)
+            cur = w
+        else:
+            cur = cand
     return out + [cur] if cur else out
 
 

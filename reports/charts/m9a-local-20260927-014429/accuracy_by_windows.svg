@@ -5,29 +5,29 @@
 <text x="16" y="42" font-size="11.5" fill="#6f6e69">Documents bucketed by 8k-token window count</text>
 <line x1="52" x2="744" y1="302" y2="302" stroke="#e1e0d9"/>
 <text x="46" y="306" font-size="11" fill="#6f6e69" text-anchor="end">0%</text>
-<line x1="52" x2="744" y1="256.8" y2="256.8" stroke="#e1e0d9"/>
-<text x="46" y="260.8" font-size="11" fill="#6f6e69" text-anchor="end">20%</text>
-<line x1="52" x2="744" y1="211.6" y2="211.6" stroke="#e1e0d9"/>
-<text x="46" y="215.6" font-size="11" fill="#6f6e69" text-anchor="end">40%</text>
-<line x1="52" x2="744" y1="166.4" y2="166.4" stroke="#e1e0d9"/>
-<text x="46" y="170.4" font-size="11" fill="#6f6e69" text-anchor="end">60%</text>
-<line x1="52" x2="744" y1="121.2" y2="121.2" stroke="#e1e0d9"/>
-<text x="46" y="125.2" font-size="11" fill="#6f6e69" text-anchor="end">80%</text>
-<line x1="52" x2="744" y1="76" y2="76" stroke="#e1e0d9"/>
-<text x="46" y="80" font-size="11" fill="#6f6e69" text-anchor="end">100%</text>
+<line x1="52" x2="744" y1="258.4" y2="258.4" stroke="#e1e0d9"/>
+<text x="46" y="262.4" font-size="11" fill="#6f6e69" text-anchor="end">20%</text>
+<line x1="52" x2="744" y1="214.8" y2="214.8" stroke="#e1e0d9"/>
+<text x="46" y="218.8" font-size="11" fill="#6f6e69" text-anchor="end">40%</text>
+<line x1="52" x2="744" y1="171.2" y2="171.2" stroke="#e1e0d9"/>
+<text x="46" y="175.2" font-size="11" fill="#6f6e69" text-anchor="end">60%</text>
+<line x1="52" x2="744" y1="127.6" y2="127.6" stroke="#e1e0d9"/>
+<text x="46" y="131.6" font-size="11" fill="#6f6e69" text-anchor="end">80%</text>
+<line x1="52" x2="744" y1="84" y2="84" stroke="#e1e0d9"/>
+<text x="46" y="88" font-size="11" fill="#6f6e69" text-anchor="end">100%</text>
 <rect x="52" y="53" width="10" height="10" rx="2" fill="#2a78d6"/>
 <text x="70" y="62" font-size="11" fill="#3d3d3a" text-anchor="start">doc-type accuracy</text>
-<rect x="122.5" y="87.55" width="32" height="214.45" fill="#2a78d6" rx="2"/>
-<text x="138.5" y="83.55" font-size="10" fill="#3d3d3a" text-anchor="middle">94.9%</text>
+<rect x="122.5" y="95.14" width="32" height="206.86" fill="#2a78d6" rx="2"/>
+<text x="138.5" y="91.14" font-size="10" fill="#3d3d3a" text-anchor="middle">94.9%</text>
 <text x="138.5" y="318" font-size="11" fill="#3d3d3a" text-anchor="middle">1 window (n=274)</text>
-<rect x="295.5" y="94.08" width="32" height="207.92" fill="#2a78d6" rx="2"/>
-<text x="311.5" y="90.08" font-size="10" fill="#3d3d3a" text-anchor="middle">92.0%</text>
+<rect x="295.5" y="101.44" width="32" height="200.56" fill="#2a78d6" rx="2"/>
+<text x="311.5" y="97.44" font-size="10" fill="#3d3d3a" text-anchor="middle">92.0%</text>
 <text x="311.5" y="318" font-size="11" fill="#3d3d3a" text-anchor="middle">2–3 (n=25)</text>
-<rect x="468.5" y="76" width="32" height="226" fill="#2a78d6" rx="2"/>
-<text x="484.5" y="72" font-size="10" fill="#3d3d3a" text-anchor="middle">100.0%</text>
+<rect x="468.5" y="84" width="32" height="218" fill="#2a78d6" rx="2"/>
+<text x="484.5" y="80" font-size="10" fill="#3d3d3a" text-anchor="middle">100.0%</text>
 <text x="484.5" y="318" font-size="11" fill="#3d3d3a" text-anchor="middle">4–8 (n=9)</text>
-<rect x="641.5" y="76" width="32" height="226" fill="#2a78d6" rx="2"/>
-<text x="657.5" y="72" font-size="10" fill="#3d3d3a" text-anchor="middle">100.0%</text>
+<rect x="641.5" y="84" width="32" height="218" fill="#2a78d6" rx="2"/>
+<text x="657.5" y="80" font-size="10" fill="#3d3d3a" text-anchor="middle">100.0%</text>
 <text x="657.5" y="318" font-size="11" fill="#3d3d3a" text-anchor="middle">9+ (n=15)</text>
 <line x1="52" x2="744" y1="302" y2="302" stroke="#c3c2b7"/>
 </svg>

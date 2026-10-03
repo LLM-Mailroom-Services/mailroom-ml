@@ -78,7 +78,7 @@ Contractor-repo report mirrors (same content as sections below):
 ## Files
 
 | file | purpose |
-|---|---|
+| --- | --- |
 | `model.safetensors` | ModernBERT backbone weights (bf16, ~298 MB) |
 | `heads.pt` | hierarchical head state dicts |
 | `labels.json` | head vocabularies (`labels` / `label2id` / `id2label` / `weights`) |

@@ -148,7 +148,7 @@ Full lineage tables: `reports/HOLDOUT-PLUS-V1-REPORT.md`.
 
 ### Path A — New Cursor cloud agent + Modal secrets
 
-Environment: https://cursor.com/dashboard/cloud-agents/environments/e/f88eb111-b84f-11f1-977f-f6b8f2fcf9b2  
+Environment: <https://cursor.com/dashboard/cloud-agents/environments/e/f88eb111-b84f-11f1-977f-f6b8f2fcf9b2>  
 Secrets: `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` (exios66). **New agent boot required.**
 
 ```bash

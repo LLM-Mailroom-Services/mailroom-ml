@@ -224,7 +224,11 @@ def export_onnx(
 
     quant_path = None
     if quantize:
-        from onnxruntime.quantization import QuantType, quantize_dynamic
+        # onnxruntime is the serve extra — core venv may omit it; lazy import at use.
+        from onnxruntime.quantization import (  # type: ignore[import-not-found]
+            QuantType,
+            quantize_dynamic,
+        )
 
         quant_path = out_dir / "model_quantized.onnx"
         quantize_dynamic(str(fp32_path), str(quant_path),

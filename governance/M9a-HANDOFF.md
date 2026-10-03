@@ -24,7 +24,7 @@ resume with full state. Read this + `governance/TASKS.md` before acting.**
 **The subclass heads suffer majority-prior collapse, not capacity failure.**
 
 | head | classes | val window-acc | val macro-F1 (obs) | reading |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | insurance_claim | 6 (near-balanced) | 0.8687 | 0.7677 | **learned — the control** |
 | corporate_record | 10 | 0.5000 | 0.2156 | partial collapse |
 | merger_agreement | 5 | 0.5267 | 0.1951 | partial collapse |
@@ -86,7 +86,7 @@ Contributing mechanics (file:line):
 ## 4. Commits (repo `mailroom-ml`, branch `main`)
 
 | commit | scope |
-|---|---|
+| --- | --- |
 | `1718358` | U4 — eval emits `per_head.{head}.{macro_f1,support}`; checkpoint selection is lexicographic (`DOC_TYPE_GATE_TOL=0.005` + `ECE_BUDGET=0.05`, then maximise mean subclass macro-F1); `--select-on-subclass` default on. Applied to the shipped run-3 val metrics the rule **would** pick epoch 2 (objective 0.3003 vs epoch-1 0.2605) — **but this is NOT persisted**: `artifacts/pytorch/model/summary.json` (run_id `20260921-093211`) still records the legacy epoch-1 pick with the legacy rule and no `subclass_objective` key. The next run's `summary.json` is the first artifact that will encode the new rule. |
 | `1081a6e` | U7b — extracted pure `_select_epoch(...)` seam; +10 tests pinning the gate/flag/`per_head`; revert now FAILS a test. 233 passed / 3 skipped. |
 | `18b8a4f` | board claim + deployed `lucius`, `prompt-engineer`, `board-evidence-auditor` into `.opencode/agents/`. |
@@ -125,6 +125,7 @@ default ON):
 
 **Exact spawn (Arm B shown; `HF_TOKEN` from
 `~/.config/opencode/secrets/hf-token`):**
+
 ```bash
 cd /Users/morningstar/Desktop/Cold_Storage/mailroom-ml
 HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py

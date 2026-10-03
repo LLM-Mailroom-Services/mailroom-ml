@@ -86,7 +86,7 @@ intake-overhaul track. Consequences:
 - `reports/` — run reports + eval JSONs (e.g. `RUN3-REPORT-20260921.md`,
   `eval_run3_20260921.json`).
 - `docs/` — `intake-classifier-combined-plan.md` (the approved-for-build plan)
-  + `plan-amendment.md`.
+  - `plan-amendment.md`.
 - `governance/` — `TASKS.md` (board) + `M9a-HANDOFF.md` (mission state).
 
 ## Commands
@@ -165,7 +165,7 @@ or GHA **heldout-plus-modal-eval**): `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` (ex
 ## Taxonomy law (hard boundary)
 
 Canonical subclass surfaces are sanctioned by `mailroom-issues` **#66/#67/#68**
-+ the `llm-dojo-scoring` dojo taxonomy (`DMR-066`). **mailroom-ml consumes the
+- the `llm-dojo-scoring` dojo taxonomy (`DMR-066`). **mailroom-ml consumes the
 taxonomy; it may not unilaterally redefine it.** Any real dictionary change
 routes **upstream as an RFC / child issue on the #85 epic** — that is a human
 call, surfaced as a `needs_attention` card, never guessed around. Head label
@@ -210,7 +210,7 @@ Roster most relevant to this repo (see the monorepo `Digital-Mailroom/AGENTS.md`
 for the full constellation roster):
 
 | Specialty | `subagent_type` | Call it for |
-|---|---|---|
+| --- | --- | --- |
 | HF & data science | `lucius` (project) | Hub downloads/uploads, `datasets`/`transformers` pipelines, EDA, statistical analysis, training/eval |
 | Data & databases | `athena-database-agent` | dataset selection/integration, schema, ingestion, data QA, SQL |
 | Modal compute | `modal-specialist` (project) | Modal apps/images/volumes/secrets/GPU/cost, cold starts — **verify the current SDK docs first** |

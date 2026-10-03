@@ -633,35 +633,36 @@ Start in shadow mode: run ModernBERT on every document, log its route recommenda
 The key principle is simple: **real documents determine truth, synthetic documents supply carefully filtered variation, and calibration determines whether the model is trusted enough to save an LLM call.** This creates a legally and operationally defensible ModernBERT training program rather than merely a larger—but potentially noisier—dataset.
 
 Sources
-[1] answerdotai/ModernBERT-base - Hugging Face <https://huggingface.co/answerdotai/ModernBERT-base>
-[2] pasted_text_1789685418.txt <https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/12189704/14120326-e590-4e7d-84dc-4d722d0b28a7/pasted_text_1789685418.txt>
-[3] pasted_text_1789685510.txt <https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/12189704/c7c61dc6-2edc-43c1-88b5-c12f73ffa0a2/pasted_text_1789685510.txt>
-[4] config.json · answerdotai/ModernBERT-base at main - Hugging Face <https://huggingface.co/answerdotai/ModernBERT-base/blob/main/config.json>
-[5] [PDF] Processing Long Legal Documents with Pre-trained Transformers <https://aclanthology.org/2022.nllp-1.11.pdf>
-[6] [PDF] Hierarchical Transformers for Long Document Classification <https://www.semanticscholar.org/paper/Hierarchical-Transformers-for-Long-Document-Pappagari-%C5%BBelasko/46b3ba0f3cb8340bc94f26e0fdf6dc4e38f68948>
-[7] coastalcph/trldc: Transformer-based Long Document Classification <https://github.com/coastalcph/trldc>
-[8] Fine-tune classifier with ModernBERT in 2025 - Philschmid <https://www.philschmid.de/fine-tune-modern-bert-in-2025>
-[9] Fine-tune ModernBERT for text classification using synthetic data <https://huggingface.co/blog/davidberenstein1957/fine-tune-modernbert-on-synthetic-data>
-[10] [1706.04599] On Calibration of Modern Neural Networks <https://arxiv.org/abs/1706.04599>
-[11] Revisiting the Calibration of Modern Neural Networks <https://proceedings.neurips.cc/paper_files/paper/2021/file/8420d359404024567b5aefda1231af24-Paper.pdf>
-[12] Text data augmentation for large language models: a ... <https://link.springer.com/article/10.1007/s10462-025-11405-5>
-[13] Text Data Augmentation for Large Language Models: A ... <https://arxiv.org/html/2501.18845v1>
-[14] Synthetic Data Generation Using Large Language Models ... <https://arxiv.org/html/2503.14023>
-[15] Long Document Classification in the Transformer Era: A Survey on ... <https://wires.onlinelibrary.wiley.com/doi/10.1002/widm.70019>
-[16] Class VI - Wells used for Geologic Sequestration of Carbon Dioxide <https://www.epa.gov/uic/class-vi-wells-used-geologic-sequestration-carbon-dioxide>
-[17] Class: The Next Generation Virtual Classroom | Class <https://www.class.com/>
-[18] [PDF] BERT-based Models for Arabic Long Document Classification <https://ceur-ws.org/Vol-3656/paper1.pdf>
-[19] It's All in The [MASK]: Simple Instruction-Tuning Enables BERT-like ... <https://arxiv.org/html/2502.03793v1>
-[20] ModernBERT for Sequence Classification - issues with finetuning <https://github.com/huggingface/transformers/issues/38720>
-[21] [D] Finetuning ModernBERT is taking 3hrs (2 epochs) and 35gigs of ... <https://www.reddit.com/r/MachineLearning/comments/1is0q1a/d_finetuning_modernbert_is_taking_3hrs_2_epochs/>
-[22] Efficient Methods for Updating a BERT Sequence Classification ... <https://stackoverflow.com/questions/78611808/efficient-methods-for-updating-a-bert-sequence-classification-model-with-new-cla>
-[23] Refreshing zero-shot classification with ModernBERT - Medium <https://blog.knowledgator.com/refreshing-zero-shot-classification-with-modernbert-1a7ea9a4a776>
-[24] (PDF) Hierarchical Transformers for Long Document Classification <https://www.academia.edu/79734742/Hierarchical_Transformers_for_Long_Document_Classification>
-[25] Extending Temperature Scaling with Homogenizing Maps <http://jmlr.org/papers/volume26/24-0700/24-0700.pdf>
-[26] On Calibration of Modern Neural Networks <https://www.semanticscholar.org/paper/On-Calibration-of-Modern-Neural-Networks-Guo-Pleiss/d65ce2b8300541414bfe51d03906fca72e93523c>
-[27] Network Calibration by Class-based Temperature Scaling <https://www.eng.biu.ac.il/goldbej/files/2022/01/Lior_Frenkel_Eusipco_2021.pdf>
-[28] Neural Network Calibration <https://geoffpleiss.com/blog/nn_calibration.html>
-[29] Tropic-AI/moBERTo - Hugging Face <https://huggingface.co/Tropic-AI/moBERTo>
-[30] artiwise-ai/modernbert-base-tr-uncased - Hugging Face <https://huggingface.co/artiwise-ai/modernbert-base-tr-uncased>
-[31] On Calibration of Modern Neural Networks <https://fernandoperezc.github.io/Advanced-Topics-in-Machine-Learning-and-Data-Science/Fluri.pdf>
-[32] Calibration Techniques in Deep Neural Networks - Heartbeat <https://heartbeat.comet.ml/calibration-techniques-in-deep-neural-networks-55ad76fea58b>
+
+[1]: https://huggingface.co/answerdotai/ModernBERT-base "answerdotai/ModernBERT-base - Hugging Face"
+[2]: https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/12189704/14120326-e590-4e7d-84dc-4d722d0b28a7/pasted_text_1789685418.txt "pasted_text_1789685418.txt"
+[3]: https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/attachments/12189704/c7c61dc6-2edc-43c1-88b5-c12f73ffa0a2/pasted_text_1789685510.txt "pasted_text_1789685510.txt"
+[4]: https://huggingface.co/answerdotai/ModernBERT-base/blob/main/config.json "config.json · answerdotai/ModernBERT-base at main - Hugging Face"
+[5]: https://aclanthology.org/2022.nllp-1.11.pdf "[PDF] Processing Long Legal Documents with Pre-trained Transformers"
+[6]: https://www.semanticscholar.org/paper/Hierarchical-Transformers-for-Long-Document-Pappagari-%C5%BBelasko/46b3ba0f3cb8340bc94f26e0fdf6dc4e38f68948 "[PDF] Hierarchical Transformers for Long Document Classification"
+[7]: https://github.com/coastalcph/trldc "coastalcph/trldc: Transformer-based Long Document Classification"
+[8]: https://www.philschmid.de/fine-tune-modern-bert-in-2025 "Fine-tune classifier with ModernBERT in 2025 - Philschmid"
+[9]: https://huggingface.co/blog/davidberenstein1957/fine-tune-modernbert-on-synthetic-data "Fine-tune ModernBERT for text classification using synthetic data"
+[10]: https://arxiv.org/abs/1706.04599 "[1706.04599] On Calibration of Modern Neural Networks"
+[11]: https://proceedings.neurips.cc/paper_files/paper/2021/file/8420d359404024567b5aefda1231af24-Paper.pdf "Revisiting the Calibration of Modern Neural Networks"
+[12]: https://link.springer.com/article/10.1007/s10462-025-11405-5 "Text data augmentation for large language models: a ..."
+[13]: https://arxiv.org/html/2501.18845v1 "Text Data Augmentation for Large Language Models: A ..."
+[14]: https://arxiv.org/html/2503.14023 "Synthetic Data Generation Using Large Language Models ..."
+[15]: https://wires.onlinelibrary.wiley.com/doi/10.1002/widm.70019 "Long Document Classification in the Transformer Era: A Survey on ..."
+[16]: https://www.epa.gov/uic/class-vi-wells-used-geologic-sequestration-carbon-dioxide "Class VI - Wells used for Geologic Sequestration of Carbon Dioxide"
+[17]: https://www.class.com/ "Class: The Next Generation Virtual Classroom | Class"
+[18]: https://ceur-ws.org/Vol-3656/paper1.pdf "[PDF] BERT-based Models for Arabic Long Document Classification"
+[19]: https://arxiv.org/html/2502.03793v1 "It's All in The [MASK]: Simple Instruction-Tuning Enables BERT-like ..."
+[20]: https://github.com/huggingface/transformers/issues/38720 "ModernBERT for Sequence Classification - issues with finetuning"
+[21]: https://www.reddit.com/r/MachineLearning/comments/1is0q1a/d_finetuning_modernbert_is_taking_3hrs_2_epochs/ "[D] Finetuning ModernBERT is taking 3hrs (2 epochs) and 35gigs of ..."
+[22]: https://stackoverflow.com/questions/78611808/efficient-methods-for-updating-a-bert-sequence-classification-model-with-new-cla "Efficient Methods for Updating a BERT Sequence Classification ..."
+[23]: https://blog.knowledgator.com/refreshing-zero-shot-classification-with-modernbert-1a7ea9a4a776 "Refreshing zero-shot classification with ModernBERT - Medium"
+[24]: https://www.academia.edu/79734742/Hierarchical_Transformers_for_Long_Document_Classification "(PDF) Hierarchical Transformers for Long Document Classification"
+[25]: http://jmlr.org/papers/volume26/24-0700/24-0700.pdf "Extending Temperature Scaling with Homogenizing Maps"
+[26]: https://www.semanticscholar.org/paper/On-Calibration-of-Modern-Neural-Networks-Guo-Pleiss/d65ce2b8300541414bfe51d03906fca72e93523c "On Calibration of Modern Neural Networks"
+[27]: https://www.eng.biu.ac.il/goldbej/files/2022/01/Lior_Frenkel_Eusipco_2021.pdf "Network Calibration by Class-based Temperature Scaling"
+[28]: https://geoffpleiss.com/blog/nn_calibration.html "Neural Network Calibration"
+[29]: https://huggingface.co/Tropic-AI/moBERTo "Tropic-AI/moBERTo - Hugging Face"
+[30]: https://huggingface.co/artiwise-ai/modernbert-base-tr-uncased "artiwise-ai/modernbert-base-tr-uncased - Hugging Face"
+[31]: https://fernandoperezc.github.io/Advanced-Topics-in-Machine-Learning-and-Data-Science/Fluri.pdf "On Calibration of Modern Neural Networks"
+[32]: https://heartbeat.comet.ml/calibration-techniques-in-deep-neural-networks-55ad76fea58b "Calibration Techniques in Deep Neural Networks - Heartbeat"

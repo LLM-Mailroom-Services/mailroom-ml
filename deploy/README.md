@@ -12,13 +12,13 @@ Deploy layer for the ModernBERT ingest fast-path classifier. Three pieces:
 
 | Component | Version | Evidence |
 | --- | --- | --- |
-| Modal SDK | **1.5.5** (2026-08-28) | <https://modal.com/docs/sdk/py/releases> (live, fetched 2026-09-18) + PyPI json (`pypi.org/pypi/modal/json` → 1.5.5, `requires_python <3.15,>=3.10`) |
+| Modal SDK | **1.6.0** (2026-09-28) | <https://modal.com/docs/sdk/py/releases> (live, fetched 2026-10-02) + PyPI json (`pypi.org/pypi/modal/json` → 1.6.0, `requires_python <3.15,>=3.10`) |
 | GPU config | string API, e.g. `gpu="L4"` | current docs examples (flux / gpu_fallbacks / llm_inference) — the committed app's "Modal ≥1.0 configures GPUs by string" comment is **confirmed correct**; `modal.gpu.L4()` objects are gone |
 | Web endpoints | `@modal.fastapi_endpoint` | current Web Functions guide — `@modal.web_endpoint` was renamed to `fastapi_endpoint` prior to v0.73.82 |
 | `App(name, tags=)`, `Image.debian_slim(python_version=)`, `uv_pip_install`, `add_local_dir`, `.env()`, `Secret.from_dict`, `Volume.from_name(create_if_missing=True)` + `commit()`, `startup_timeout=` | current | `modal.App`/`modal.Image`/`modal.Secret`/`modal.Volume` reference pages (live) + 1.2.0 (tags) and 1.1.4 (startup_timeout) release notes |
-| transformers | ≥ 4.48 (ModernBERT requirement) | answerdotai/ModernBERT-base model card; plan §2.1 |
-| optimum | current (`optimum-cli export onnx`) | optimum quicktour (live, main branch). NOTE: the old spelling `optimum-cli export-onnx` is pre-1.6-era; current is `optimum-cli export onnx` |
-| onnxruntime | ≥ 1.18 | pyproject `serve` extra; `quantize_dynamic`/`QuantType.QInt8` stable API |
+| transformers | ≥ 5.18 | pyproject `train` extra; ModernBERT model card requires ≥ 4.48 |
+| optimum | ≥ 2.3 (`optimum-cli export onnx`) | optimum quicktour. NOTE: the old spelling `optimum-cli export-onnx` is pre-1.6-era; current is `optimum-cli export onnx` |
+| onnxruntime | ≥ 1.30 | pyproject `serve` extra; `quantize_dynamic`/`QuantType.QInt8` stable API |
 
 ## 2. Prerequisites
 
@@ -116,13 +116,11 @@ never assumes it, the flag is explicit per run.
 
 ## 4. ONNX export + parity (the primary serving artifact)
 
-Requires the train/serve extras (torch, transformers, onnxruntime). Exporting
-with torch ≥ 2.14 additionally needs the ONNX toolchain wheels (`onnx`,
-`onnxscript` — the 2.14 exporter imports them):
+Requires the train/serve extras (torch, transformers, onnxruntime, plus
+`onnx` / `onnxscript` — the torch 2.14 exporter imports them):
 
 ```bash
 uv sync --extra train --extra serve
-uv pip install onnx onnxscript        # torch >= 2.14 export/quantize toolchain
 
 # 1) export: fp32 model.onnx + int8 model_quantized.onnx (dynamic batch+seq)
 uv run python deploy/onnx_export.py \

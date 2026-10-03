@@ -48,14 +48,14 @@ image = (
     modal.Image.debian_slim(python_version="3.12")
     .env({"PYTHONPATH": "/root/src", "HF_HOME": HF_CACHE_MOUNT})
     .uv_pip_install(
-        "torch>=2.4",
-        "transformers>=4.48",
-        "pandas>=2.2",
-        "numpy>=1.26",
-        "pyarrow>=15.0",
-        "onnxruntime>=1.17",
-        "huggingface_hub>=0.24",
-        "datasets>=2.19",
+        "torch>=2.14",
+        "transformers>=5.18",
+        "pandas>=3.0.6",
+        "numpy>=2.2",
+        "pyarrow>=25.0",
+        "onnxruntime>=1.30",
+        "huggingface_hub>=1.33,<2",
+        "datasets>=5.0.1",
     )
     .add_local_dir(ROOT / "src", remote_path="/root/src")
     .add_local_dir(ROOT / "training", remote_path="/root/training")

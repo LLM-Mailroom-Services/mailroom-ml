@@ -3,9 +3,9 @@
 Port of the committed predecessor app (``Mailroom-Corpus-EDA @ cf096fa``,
 ``modernbert/modal_app.py``) updated for the mailroom-ml package.
 
-Verified against the current Modal SDK on 2026-09-18:
+Verified against the current Modal SDK on 2026-10-02:
 
-- SDK version: **modal 1.5.5** (2026-08-28) — https://modal.com/docs/sdk/py/releases
+- SDK version: **modal 1.6.0** (2026-09-28) — https://modal.com/docs/sdk/py/releases
 - GPUs are configured **by string** (e.g. ``gpu="L4"``, ``gpu="H100:2"``) — the
   committed app's comment is confirmed correct; the object API
   (``modal.gpu.L4()``) no longer exists in the 1.x line. See
@@ -66,7 +66,7 @@ import modal
 
 # Package identity -----------------------------------------------------------
 APP_NAME = "mailroom-ml-train"
-MODAL_SDK_VERSION = "1.5.5"  # verified 2026-09-18 (docs releases page + PyPI)
+MODAL_SDK_VERSION = "1.6.0"  # verified 2026-10-02 (docs releases page + PyPI)
 
 # Named resources (Volume names are shared with the committed predecessor so an
 # existing checkpoint corpus stays readable; the hf-cache is re-homed).
@@ -77,14 +77,14 @@ HF_CACHE_MOUNT = "/root/.cache/huggingface"
 TRAINER_SCRIPT = "/root/training/train_modernbert.py"
 
 # GPU + timeouts — exposed as constants so the deploy test suite can assert the
-# deployed configuration offline (string GPU API, verified against 1.5.5 docs).
+# deployed configuration offline (string GPU API, verified against 1.6.0 docs).
 TRAIN_GPU = "L4"
 # 8h: 5 epochs at dynamic padding measures ~1h/epoch on an L4 (~5h) +
 # held-out test eval. A timeout here kills the run WITHOUT a checkpoint
 # (saved only at the end), so the ceiling must clear the worst case.
 TRAIN_TIMEOUT_S = 60 * 60 * 8
 TRAIN_STARTUP_TIMEOUT_S = 60 * 10
-# Compute guardrails (verified against the installed modal 1.5.5 SDK + docs on
+# Compute guardrails (verified against the installed modal 1.6.0 SDK + docs on
 # 2026-09-19): the default GPU-function request is 0.125 cores / 128 MiB — the
 # first deployed run starved on 1 vCPU (GPU idle, epoch 1 never landed in 45
 # min). cpu=8 physical cores (soft limit bursts to +16) and 16 GiB RAM keep the
@@ -128,21 +128,21 @@ image = (
         }
     )
     .uv_pip_install(
-        "torch>=2.4",
-        "transformers>=4.48",  # ModernBERT requires >= 4.48 (model card)
-        "accelerate>=1.0",
-        "datasets>=2.19",
-        "evaluate>=0.4",
-        "scipy>=1.11",
-        "pandas>=2.2",
-        "numpy>=1.26",
-        "pyarrow>=15.0",
-        "pyyaml>=6.0",
-        "tqdm>=4.0",
-        "huggingface_hub>=0.24",
-        "onnxruntime>=1.19",
-        "onnx>=1.16",
-        "onnxscript",
+        "torch>=2.14",
+        "transformers>=5.18",  # ModernBERT; floor tracks pyproject train extra
+        "accelerate>=1.15",
+        "datasets>=5.0.1",
+        "evaluate>=0.4.6",
+        "scipy>=1.17",
+        "pandas>=3.0.6",
+        "numpy>=2.2",
+        "pyarrow>=25.0",
+        "pyyaml>=6.0.3",
+        "tqdm>=4.66",
+        "huggingface_hub>=1.33,<2",  # datasets 5.0.1 caps the hub client at <2
+        "onnxruntime>=1.30",
+        "onnx>=1.19",
+        "onnxscript>=0.7",
     )
     .add_local_dir(ROOT / "src", remote_path="/root/src")
     .add_local_dir(ROOT / "training", remote_path="/root/training")
@@ -232,7 +232,7 @@ def _build_train_cmd(
 
 
 @app.function(
-    gpu=TRAIN_GPU,  # string API — verified current for the 1.5.5 SDK
+    gpu=TRAIN_GPU,  # string API — verified current for the 1.6.0 SDK
     cpu=TRAIN_CPU,  # 8 physical cores — 1-vCPU default starved the GPU (see above)
     memory=TRAIN_MEMORY_MIB,  # 16 GiB
     volumes={CHECKPOINT_MOUNT: checkpoint_vol, HF_CACHE_MOUNT: hf_cache_vol},

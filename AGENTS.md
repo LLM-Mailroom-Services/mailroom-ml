@@ -243,8 +243,8 @@ docs** before writing configuration.
 ## Deploy (Modal) & cost discipline
 
 - **Modal is deploy-time only** — never part of the runtime venv; tests stub
-  or `importorskip` it. The SDK is pinned in `pyproject.toml` (`modal==1.5.5`,
-  verified 2026-09-18).
+  or `importorskip` it. The SDK is pinned in `pyproject.toml` (`modal==1.6.0`,
+  verified 2026-10-02).
 - Training app `mailroom-ml-train` (`deploy/modal_app.py`), serving fallback
   `mailroom-ml-serve` (`deploy/serve_app.py`). Checkpoints live on the
   `modernbert-checkpoints` Volume: `/checkpoints/latest/` (the consumed

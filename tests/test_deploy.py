@@ -5,7 +5,7 @@ Coverage:
 - ``modal`` importable → both Modal apps construct (names, volumes, image),
   the documented trainer CLI surface is produced exactly by
   ``_build_train_cmd``, and the deployed GPU/timeout constants match the
-  runbook (string GPU API per the 1.5.5 docs).
+  runbook (string GPU API per the 1.6.0 docs).
 - ONNX parity is wired behind the ``serve`` marker and skips when
   torch/onnxruntime/transformers or the exported artifacts are absent, so the
   core suite stays green without any of these deps.
@@ -78,7 +78,7 @@ def test_train_app_uses_current_documented_surface() -> None:
 
     import deploy.modal_app as modal_app
 
-    # App tags (1.2.0+) and volumes are constructor metadata in the 1.5.5 SDK.
+    # App tags (1.2.0+) and volumes are constructor metadata in the 1.6.0 SDK.
     app_params = inspect.signature(modal.App.__init__).parameters
     assert "tags" in app_params and "volumes" in app_params
     assert modal_app.app.name == "mailroom-ml-train"

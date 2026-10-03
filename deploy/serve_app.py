@@ -6,7 +6,7 @@ cost). This app exists only as an escape hatch — e.g. a pipeline node that
 cannot host a local session, or a demo endpoint — and runs the **same ONNX
 int8 artifact** on Modal CPU (no GPU, no torch in this image).
 
-Verified against the current Modal SDK on 2026-09-18 (modal 1.5.5):
+Verified against the current Modal SDK on 2026-10-02 (modal 1.6.0):
 
 - ``@modal.fastapi_endpoint`` is the current "turn a function into a web
   endpoint" API. The historical ``@modal.web_endpoint`` name was renamed to
@@ -55,7 +55,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 APP_NAME = "mailroom-ml-serve"
-MODAL_SDK_VERSION = "1.5.5"  # verified 2026-09-18 (docs releases page + PyPI)
+MODAL_SDK_VERSION = "1.6.0"  # verified 2026-10-02 (docs releases page + PyPI)
 ONNX_VOLUME_NAME = "mailroom-ml-onnx"
 ONNX_VOLUME_MOUNT = "/model-vol"
 BUNDLED_MODEL_PATH = "/artifacts/onnx/model"
@@ -80,11 +80,11 @@ MAX_LENGTH = int(os.environ.get("SERVE_MAX_LENGTH", "8192"))  # ModernBERT nativ
 # uses the standalone `tokenizers` Rust wheel (no torch dependency).
 # ---------------------------------------------------------------------------
 _ONNX_IMAGE_DEPS = (
-    "fastapi[standard]>=0.115",
-    "pydantic>=2.7",
-    "onnxruntime>=1.18",
-    "tokenizers>=0.19",
-    "huggingface_hub>=0.24",
+    "fastapi[standard]>=0.142",
+    "pydantic>=2.13",
+    "onnxruntime>=1.30",
+    "tokenizers>=0.23.1,<0.24",
+    "huggingface_hub>=1.33,<2",
 )
 
 _local_onnx = ARTIFACTS_DIR / "onnx" / "model"

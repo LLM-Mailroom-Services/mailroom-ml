@@ -20,7 +20,7 @@ Corpus: `mailroom-finetune @ 19720ceb…` (modifiable duplicate; canonical
 | U2b issues incorporation (#84–#92, #66–#68, #52, #57, #75) | orchestrator | ✅ done | plan §15 matrix; config.py BERT_INTAKE_*, surface canons |
 | U3 data layer port (mailroom-finetune) | athena | ✅ done | 28+9 tests; byte-compat statement; commit 703352d |
 | U3b label-surface derivation + parity tests (#66/#67/#75) | athena | ✅ done | `labels.py` observed_label_surfaces + `tests/test_surfaces.py`; commits `2b7e120`/`631c5e5` |
-| U4 deploy layer (Modal, current SDK) | modal-specialist | ✅ done | deploy/ + runbook; SDK 1.5.5 verified |
+| U4 deploy layer (Modal, current SDK) | modal-specialist | ✅ done | deploy/ + runbook; SDK pin is `modal==1.6.0` (2026-10-02) |
 | U5 model/inference/calibration/routing/training + enrichment | lucius (linked session) | ✅ done | `src/mailroom_ml/inference.py` ModelBundle + training drivers; M9a handoff commit trail |
 | U6 integration + full suite | orchestrator | ✅ done | `uv run pytest -m "not fullcorpus"` green on main |
 | U7 commit + report | orchestrator | ✅ done | `reports/RUN3-REPORT-20260921.md` + eval JSON |

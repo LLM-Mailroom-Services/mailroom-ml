@@ -172,7 +172,6 @@ random heads on this architecture.
 
 ```bash
 uv sync --extra train --extra serve
-uv pip install onnx onnxscript
 uv run python deploy/onnx_export.py \
   --pytorch-dir artifacts/pytorch/model --out-dir artifacts/onnx/model
 uv run python deploy/onnx_parity_check.py --require-int8

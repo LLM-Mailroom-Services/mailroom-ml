@@ -150,8 +150,8 @@ python deploy/spawn_train.py --epochs 3 --batch-size 4 --grad-accum 8 \
 - **Hub publish** is a separate post-train gate — see **§ post-train** (not
   implicit from `--push-to-hub` on the trainer alone).
 
-**Modal SDK:** 1.5.5 (verified latest stable 2026-09-21; `pyproject.toml`
-deploy extra pins `modal==1.5.5`).
+**Modal SDK:** 1.6.0 (verified latest stable 2026-10-02; `pyproject.toml`
+deploy extra pins `modal==1.6.0`).
 
 ## 6b. M9b retrain arm (2026-09-28, mailroom-ml#43)
 

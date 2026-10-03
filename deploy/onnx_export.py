@@ -31,12 +31,10 @@ quantizer family optimum's ``ORTQuantizer`` wraps — see the optimum quicktour,
 https://huggingface.co/docs/optimum/exporters/onnx/usage_guides/export_a_model,
 for the standard-checkpoint path with ``optimum-cli export onnx --quantize int8``).
 
-Requires the train/serve extras (torch, transformers, onnxruntime). Exporting
-with torch >= 2.14 additionally needs the ONNX toolchain wheel (``onnx`` /
-``onnxscript`` — the 2.14 exporter imports it):
+Requires the train/serve extras (torch, transformers, onnxruntime, plus
+``onnx`` / ``onnxscript`` — the torch >= 2.14 exporter imports them):
 
     uv sync --extra train --extra serve
-    uv pip install onnx onnxscript    # torch >= 2.14 export/quantize toolchain
 
 Then:
 

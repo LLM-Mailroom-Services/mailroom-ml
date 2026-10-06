@@ -1,18 +1,28 @@
 """Hermetic tests for Hub publish planning (no network, no token)."""
 from __future__ import annotations
 
+import importlib.util
 import json
 import subprocess
 import sys
 from pathlib import Path
 
 from mailroom_ml.m9a_gates import gates_all_met
-from training.publish_run_to_hub import (
-    METRICS_BEGIN,
-    METRICS_END,
-    build_metrics_markdown,
-    patch_readme_metrics,
+# ``post-train`` is a hyphenated directory (not importable as a package), so
+# the publish script is loaded by file path.
+_PUBLISH_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "training" / "train" / "post-train" / "publish_run_to_hub.py"
 )
+_spec = importlib.util.spec_from_file_location("publish_run_to_hub", _PUBLISH_PATH)
+_publish = importlib.util.module_from_spec(_spec)
+sys.modules["publish_run_to_hub"] = _publish
+_spec.loader.exec_module(_publish)
+
+METRICS_BEGIN = _publish.METRICS_BEGIN
+METRICS_END = _publish.METRICS_END
+build_metrics_markdown = _publish.build_metrics_markdown
+patch_readme_metrics = _publish.patch_readme_metrics
 
 
 def test_gates_all_met_from_fixture():
@@ -66,7 +76,7 @@ def test_cli_dry_run_missing_checkpoint(tmp_path: Path):
     rc = subprocess.call(
         [
             sys.executable,
-            str(Path(__file__).resolve().parents[1] / "training/publish_run_to_hub.py"),
+            str(_PUBLISH_PATH),
             "--dry-run",
             "--checkpoint",
             str(tmp_path / "nope"),
@@ -98,7 +108,7 @@ def test_cli_dry_run_prints_plan(tmp_path: Path):
     out = subprocess.check_output(
         [
             sys.executable,
-            str(Path(__file__).resolve().parents[1] / "training/publish_run_to_hub.py"),
+            str(_PUBLISH_PATH),
             "--dry-run",
             "--checkpoint",
             str(ckpt),

@@ -34,7 +34,7 @@ HF_CACHE_VOLUME_NAME = "mailroom-ml-hf-cache"
 CHECKPOINT_MOUNT = "/checkpoints"
 HF_CACHE_MOUNT = "/root/.cache/huggingface"
 STAGE_MOUNT = "/root/stage"
-EVAL_SCRIPT = "/root/training/eval_modernbert.py"
+EVAL_SCRIPT = "/root/training/eval/eval_modernbert.py"
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))

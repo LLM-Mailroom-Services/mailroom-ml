@@ -74,7 +74,7 @@ CHECKPOINT_VOLUME_NAME = "modernbert-checkpoints"
 HF_CACHE_VOLUME_NAME = "mailroom-ml-hf-cache"
 CHECKPOINT_MOUNT = "/checkpoints"
 HF_CACHE_MOUNT = "/root/.cache/huggingface"
-TRAINER_SCRIPT = "/root/training/train_modernbert.py"
+TRAINER_SCRIPT = "/root/training/train/train_modernbert.py"
 
 # GPU + timeouts — exposed as constants so the deploy test suite can assert the
 # deployed configuration offline (string GPU API, verified against 1.6.0 docs).

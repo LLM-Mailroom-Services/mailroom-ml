@@ -16,7 +16,7 @@ import pytest
 
 from conftest import ROOT, fixture_rows, requires_transformers
 
-CLI_PATH = ROOT / "training" / "build_dataset.py"
+CLI_PATH = ROOT / "training" / "dataset" / "mailroom-dataset" / "build_dataset.py"
 
 spec = importlib.util.spec_from_file_location("build_dataset_cli", CLI_PATH)
 build_dataset = importlib.util.module_from_spec(spec)

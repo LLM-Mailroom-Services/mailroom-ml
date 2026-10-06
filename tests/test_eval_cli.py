@@ -11,14 +11,14 @@ import numpy as np
 import pytest
 
 from mailroom_ml.calibration import ece, ece_from_conf
-from training.eval_modernbert import (
+from training.eval.eval_modernbert import (
     _macro_f1_observed,
     _per_head_report,
     build_comparable_metrics,
     build_parser,
     stratified_sample,
 )
-from training.eval_modernbert import (
+from training.eval.eval_modernbert import (
     main as eval_main,
 )
 
@@ -182,7 +182,7 @@ def test_evaluate_documents_reports_cohorts_separately(monkeypatch):
     """#104: single-window vs multi-window cohorts scored separately; the
     single-window cohort's agreement is trivially 1.0 and must not be
     conflated with the multi-window cohort's."""
-    import training.eval_modernbert as ev
+    import training.eval.eval_modernbert as ev
 
     def _fake_window(title, text, max_tokens, **_kwargs):
         return ["w1", "w2"] if text == "multi" else ["w1"]
@@ -204,7 +204,7 @@ def test_evaluate_documents_reports_cohorts_separately(monkeypatch):
 def test_sweep_refused_without_ece_sidecar(monkeypatch):
     """#104: no per-head ECE sidecar (pre-#107 artifact) -> the threshold
     sweep refuses instead of recommending from unaudited calibration."""
-    import training.eval_modernbert as ev
+    import training.eval.eval_modernbert as ev
 
     monkeypatch.setattr(ev, "window_document",
                         lambda title, text, max_tokens, **_k: ["w1"])
@@ -219,7 +219,7 @@ def test_sweep_refused_without_ece_sidecar(monkeypatch):
 def test_sweep_refused_when_head_ece_over_threshold(monkeypatch):
     """#104: doc_type ECE >= HEAD_ECE_EXCLUSION_THRESHOLD (uncalibratable)
     -> refused, never a threshold pass."""
-    import training.eval_modernbert as ev
+    import training.eval.eval_modernbert as ev
 
     policy = {"budget": 0.05, "excluded": {
         "doc_type": {"excluded": False, "ece_calibrated": 0.161},
@@ -240,7 +240,7 @@ def test_sweep_refused_when_head_ece_over_threshold(monkeypatch):
 def test_sweep_runs_with_clean_sidecar(monkeypatch):
     """#104: a clean per-head ECE sidecar lets the min-n sweep run (and
     report insufficient data honestly when n < min_n)."""
-    import training.eval_modernbert as ev
+    import training.eval.eval_modernbert as ev
 
     policy = {"budget": 0.05, "excluded": {
         "doc_type": {"excluded": False, "ece_calibrated": 0.02}}}
@@ -318,7 +318,7 @@ def test_per_head_pairs_conditional_and_overflow_excluded(monkeypatch):
     list is ``None``."""
     import pandas as pd
 
-    import training.eval_modernbert as ev
+    import training.eval.eval_modernbert as ev
 
     assert _macro_f1_observed([("a", None)]) == 0.0
     assert _macro_f1_observed([]) is None

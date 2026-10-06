@@ -1,0 +1,104 @@
+{
+  "cohort": null,
+  "metrics": {
+    "doc_type_accuracy": {
+      "a": 0.9505,
+      "b": 0.9505,
+      "delta": 0.0,
+      "paired": {
+        "ci_high": 0.0,
+        "ci_low": 0.0,
+        "mean_diff": 0.0,
+        "n_paired": 323,
+        "n_resamples": 2000
+      }
+    },
+    "fast_path_rate": {
+      "a": 0.3034,
+      "b": 0.743,
+      "delta": -0.4396,
+      "paired": {
+        "ci_high": -0.38080495356037153,
+        "ci_low": -0.5015479876160991,
+        "mean_diff": -0.44108204334365325,
+        "n_paired": 323,
+        "n_resamples": 2000
+      }
+    },
+    "ood_rate": {
+      "a": 0.0991,
+      "b": 0.0402,
+      "delta": 0.058899999999999994,
+      "paired": null
+    },
+    "selective_risk_threshold": {
+      "a": 0.9,
+      "b": 0.97,
+      "delta": -0.06999999999999995,
+      "paired": null
+    },
+    "window_ece": {
+      "a": 0.0259,
+      "b": 0.0152,
+      "delta": 0.0107,
+      "paired": null
+    }
+  },
+  "n_docs_a": 323,
+  "n_docs_b": 323,
+  "n_paired": 323,
+  "note": "Paired bootstrap on aligned per_doc filenames when present; otherwise headline scalars only (no fabricated pairing).",
+  "paired": {
+    "doc_type_accuracy": {
+      "ci_high": 0.0,
+      "ci_low": 0.0,
+      "mean_diff": 0.0,
+      "n_paired": 323,
+      "n_resamples": 2000
+    },
+    "fast_path_rate": {
+      "ci_high": -0.38080495356037153,
+      "ci_low": -0.5015479876160991,
+      "mean_diff": -0.44108204334365325,
+      "n_paired": 323,
+      "n_resamples": 2000
+    },
+    "subclass_accuracy": {
+      "ci_high": 0.01238390092879257,
+      "ci_low": -0.09597523219814241,
+      "mean_diff": -0.042357585139318886,
+      "n_paired": 323,
+      "n_resamples": 2000
+    }
+  },
+  "pairing": "document_id",
+  "per_head": {
+    "contract": {
+      "a": 0.0195,
+      "b": 0.162,
+      "delta": -0.14250000000000002
+    },
+    "corporate_record": {
+      "a": 0.2485,
+      "b": 0.904,
+      "delta": -0.6555
+    },
+    "correspondence": {
+      "a": 0.1289,
+      "b": 0.351,
+      "delta": -0.2221
+    },
+    "insurance_claim": {
+      "a": 0.9889,
+      "b": 1.0,
+      "delta": -0.011099999999999999
+    },
+    "merger_agreement": {
+      "a": 0.2381,
+      "b": 0.0,
+      "delta": 0.2381
+    }
+  },
+  "resamples": 2000,
+  "seed": 42
+}

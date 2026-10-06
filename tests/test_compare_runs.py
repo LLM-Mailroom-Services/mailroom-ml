@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from training.compare_runs import (
+from training.eval.compare_runs import (
     build_parser,
     compare_reports,
     format_markdown,

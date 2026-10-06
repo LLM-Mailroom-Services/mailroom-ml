@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-SCRIPT = ROOT / "training" / "complete_run.sh"
+SCRIPT = ROOT / "training" / "train" / "complete_run.sh"
 
 
 def test_complete_run_bash_syntax():

@@ -32,7 +32,7 @@ from mailroom_ml.config import (  # noqa: E402
 )
 from mailroom_ml.dataset import build_documents  # noqa: E402
 from mailroom_ml.labels import label_maps  # noqa: E402
-from training.train_modernbert import (  # noqa: E402
+from training.train.train_modernbert import (  # noqa: E402
     CE_IGNORE_INDEX,
     DOC_TYPE_GATE_TOL,
     ECE_BUDGET,
@@ -830,7 +830,7 @@ def test_train_epoch_aborts_on_nonfinite_loss():
 def test_summary_records_hyperparameters_and_test_metrics():
     """R2/R3: the summary carries the full hyperparameter set and the held-out
     test metrics, and flags whether the selection gate was met."""
-    from training.train_modernbert import _summary
+    from training.train.train_modernbert import _summary
 
     args = SimpleNamespace(
         data="repo", model=MODEL_ID, seed=42, epochs=3, batch_size=4,
@@ -871,7 +871,7 @@ def test_summary_carries_per_head_ece_and_exclusion_policy():
     data source.  Heads over the budget are flagged excluded; heads under
     it are not; a selection without the sidecar yields an empty policy."""
     from mailroom_ml.config import ECE_BUDGET
-    from training.train_modernbert import _summary
+    from training.train.train_modernbert import _summary
 
     args = SimpleNamespace(
         data="repo", model=MODEL_ID, seed=42, epochs=3, batch_size=4,

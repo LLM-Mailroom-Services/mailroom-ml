@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_preflight_module():
-    path = ROOT / "training" / "preflight.py"
+    path = ROOT / "training" / "train" / "preflight.py"
     spec = spec_from_loader("preflight_cli", SourceFileLoader("preflight_cli", str(path)))
     mod = module_from_spec(spec)
     assert spec.loader is not None

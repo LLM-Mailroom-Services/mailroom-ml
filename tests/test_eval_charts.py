@@ -121,7 +121,7 @@ GALLERIES = {
 @pytest.mark.parametrize("tag", sorted(GALLERIES))
 def test_committed_galleries_match_their_eval_json(tag):
     """reports/charts/<tag> is regenerated from the committed eval JSON, byte for byte."""
-    runs = [(lab, json.loads((ROOT / "reports" / f).read_text())) for lab, f in GALLERIES[tag]]
+    runs = [(lab, json.loads((ROOT / "reports" / "json" / f).read_text())) for lab, f in GALLERIES[tag]]
     out = ROOT / "reports" / "charts" / tag
     for name, svg in ec.render(runs).items():
         assert (out / name).read_text() == svg, f"{tag}/{name} is stale: re-run write_eval_report.py charts"

@@ -69,7 +69,7 @@ from mailroom_ml.enrichment import (
 )
 from mailroom_ml.labels import INSURANCE_SUBCLASSES, label_maps
 
-CLI_PATH = ROOT / "training" / "assemble_enrichment.py"
+CLI_PATH = ROOT / "training" / "dataset" / "mailroom-dataset" / "assemble_enrichment.py"
 _spec = importlib.util.spec_from_file_location("assemble_enrichment_cli", CLI_PATH)
 assemble_cli = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(assemble_cli)  # type: ignore[union-attr]

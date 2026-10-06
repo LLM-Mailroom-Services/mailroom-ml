@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_fetch_module():
-    path = ROOT / "training" / "fetch_corpus.py"
+    path = ROOT / "training" / "dataset" / "mailroom-dataset" / "fetch_corpus.py"
     spec = spec_from_loader("fetch_corpus_cli", SourceFileLoader("fetch_corpus_cli", str(path)))
     mod = module_from_spec(spec)
     assert spec.loader is not None

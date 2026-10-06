@@ -20,7 +20,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 PY="${ROOT}/.venv/bin/python"
 [[ -x "$PY" ]] || { echo "missing Linux venv at .venv" >&2; exit 1; }

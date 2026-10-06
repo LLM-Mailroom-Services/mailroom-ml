@@ -98,7 +98,7 @@ def test_train_cmd_builds_exact_cli() -> None:
         eval_test=True,
     )
     assert cmd[0] == modal_app.sys.executable
-    assert cmd[1] == "/root/training/train_modernbert.py"
+    assert cmd[1] == "/root/training/train/train_modernbert.py"
     assert cmd[2:4] == ["--data", modal_app.TRAINING_DATA_REPO]
     assert cmd[4:6] == ["--output", "/checkpoints/latest"]
     flags = cmd[2::2]  # flag positions: index 0 is the executable, so 2, 4, 6…
@@ -121,7 +121,7 @@ def test_train_cmd_omits_optional_flags_when_turned_off() -> None:
     assert "--push-to-hub" not in cmd
     assert "--eval-test" not in cmd
     assert set(cmd) == {
-        modal_app.sys.executable, "/root/training/train_modernbert.py",
+        modal_app.sys.executable, "/root/training/train/train_modernbert.py",
         "--data", modal_app.TRAINING_DATA_REPO, "--output",
         "/checkpoints/latest", "--epochs", "1", "--batch-size", "--grad-accum", "--lr", "1e-05", "--seed",
     }
@@ -138,7 +138,7 @@ def test_train_app_sources_are_bundled() -> None:
     assert (root / "training").is_dir()
     assert (root / "configs").is_dir()
     # the trainer entrypoint the image wraps
-    assert modal_app.TRAINER_SCRIPT == "/root/training/train_modernbert.py"
+    assert modal_app.TRAINER_SCRIPT == "/root/training/train/train_modernbert.py"
 
 
 def test_train_cmd_threads_log_every() -> None:

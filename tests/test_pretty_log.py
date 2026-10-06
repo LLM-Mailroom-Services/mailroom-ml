@@ -5,7 +5,7 @@ import json
 import re
 from pathlib import Path
 
-from training.pretty_log import (
+from training.logging.pretty_log import (
     ALT_ENTER,
     ALT_LEAVE,
     CURSOR_HOME,
@@ -176,7 +176,7 @@ def test_render_watch_from_fixture_jsonl(tmp_path: Path):
         "micro_planned": 4221,
     }
     jsonl.write_text(json.dumps(row) + "\n", encoding="utf-8")
-    from training.pretty_log import read_last_jsonl
+    from training.logging.pretty_log import read_last_jsonl
 
     last = read_last_jsonl(jsonl)
     assert last is not None
@@ -401,7 +401,7 @@ def test_monitor_owl_blink_and_loading():
 
 def test_mailroom_m_has_two_peaks_not_n():
     """Both M glyphs must show outer stems + center valley (not an N diagonal)."""
-    from training.pretty_log import _WM_FONT_3, _WM_FONT_4
+    from training.logging.pretty_log import _WM_FONT_3, _WM_FONT_4
 
     for font in (_WM_FONT_3, _WM_FONT_4):
         m = font["M"]
@@ -423,7 +423,7 @@ def test_wordmark_fonts_uniform_glyph_dimensions():
     """Every letter in each wordmark font tier must share one row count and
     one column count (catches thin/1-col strokes and width mismatches like
     the old 7-col M sitting inside a font of 6-col letters)."""
-    from training.pretty_log import _WM_FONT_3, _WM_FONT_4, _assert_uniform_font
+    from training.logging.pretty_log import _WM_FONT_3, _WM_FONT_4, _assert_uniform_font
 
     letters = "THEMAILRO"
     for font in (_WM_FONT_3, _WM_FONT_4):
@@ -478,7 +478,7 @@ def test_injected_hardware_no_subprocess(monkeypatch):
     def _fail(*args, **kwargs):
         raise AssertionError("must use injected dict, not nvidia-smi/ps")
 
-    monkeypatch.setattr("training.pretty_log.subprocess.run", _fail)
+    monkeypatch.setattr("training.logging.pretty_log.subprocess.run", _fail)
     hw = _hw_sample()
     full = render_hardware_panel(hw, on=False)
     assert "NVIDIA Test GPU" in full

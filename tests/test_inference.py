@@ -705,3 +705,61 @@ def test_head_from_state_reconstructs_linear_and_mlp():
     assert list(m2.state_dict().keys()) == ["0.weight", "0.bias",
                                             "3.weight", "3.bias"]
     assert m2(torch.randn(2, hidden)).shape == (2, 5)
+
+
+def test_decode_logit_adjust_flips_rare_class_overshoot():
+    """Equal to M9b correspondence: n=2 attorney_demand vs n=471 email.
+
+    Raw logits pick the rare class; adding decode tau=1.0 * log(pi) (the
+    residual that undoes train-time tau=1.0) must restore the majority.
+    Default tau=0 must keep the rare winner (no silent eval change).
+    """
+    from mailroom_ml.inference import apply_subclass_decode_logit_adjust
+
+    maps = {
+        "doc_type": HEADS["doc_type"],
+        "correspondence": {
+            **HEADS["correspondence"],
+            "weights": {"email": 0.28, "letter": 1.3, "notice": 1.1,
+                        "attorney_demand": 80.3},
+            "trainable_labels": ["email", "letter", "notice",
+                                 "attorney_demand"],
+        },
+    }
+    # attorney_demand (idx 3) leads by 4 nats; log(pi_email/pi_ad) ~ 5.7
+    rare_win = np.array([[0.0, 0.0, 0.0, 4.0]], dtype=np.float32)
+    dt = np.array([[0, 0, 0, 8, 0, -5]], dtype=np.float32)
+    logits = {"doc_type": dt, "correspondence": rare_win}
+    b0 = _stub_bundle(lambda ids, mask: logits, maps=maps,
+                      subclass_decode_logit_adjust=0.0)
+    out0 = apply_subclass_decode_logit_adjust(logits, b0)
+    assert int(out0["correspondence"][0].argmax()) == 3
+    b1 = _stub_bundle(lambda ids, mask: logits, maps=maps,
+                      subclass_decode_logit_adjust=1.0)
+    out1 = apply_subclass_decode_logit_adjust(logits, b1)
+    assert int(out1["correspondence"][0].argmax()) == 0
+    assert int(out1["doc_type"][0].argmax()) == 3  # doc_type untouched
+
+
+def test_classify_windows_decode_logit_adjust_changes_subclass_vote():
+    maps = {
+        "doc_type": HEADS["doc_type"],
+        "correspondence": {
+            **HEADS["correspondence"],
+            "weights": {"email": 0.28, "letter": 1.3, "notice": 1.1,
+                        "attorney_demand": 80.3},
+            "trainable_labels": ["email", "letter", "notice",
+                                 "attorney_demand"],
+            "trainable_id2label": {"0": "email", "1": "letter",
+                                   "2": "notice", "3": "attorney_demand"},
+        },
+    }
+    dt = [0.0, 0.0, 0.0, 10.0, 0.0, -5.0]
+    rare = [0.0, 0.0, 0.0, 4.0]
+    b = _stub_bundle(
+        lambda ids, mask: _logits_like("x", {"doc_type": dt,
+                                             "correspondence": rare}, 1),
+        maps=maps, subclass_decode_logit_adjust=1.0)
+    res = classify_windows(b, ["one window"])
+    assert res["doc_type"] == "correspondence"
+    assert res["subclass"] == "email"

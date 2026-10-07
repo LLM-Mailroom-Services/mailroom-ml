@@ -81,6 +81,7 @@ from mailroom_ml.config import (
     WINDOW_OVERLAP_TOKENS,
 )
 from mailroom_ml.labels import attach_trainable_fields, normalize_label_maps
+from mailroom_ml.logit_adjust import log_prior_values
 from mailroom_ml.windows import window_document
 
 CE_IGNORE_INDEX = -100
@@ -227,7 +228,10 @@ class LossConfig:
       come from the stored inverse-frequency weights (prior ∝ 1/w). Uses no
       per-row weights, so it cannot over-amplify a handful of rare rows the
       way a capped weight can. 0.0 (default) = off; pair 1.0 with
-      ``weight_mode="none"``.
+      ``weight_mode="none"``. Inference does **not** apply this term
+      (argmax uses raw logits). To retune ``tau_eff`` on a trained
+      checkpoint without a new run, eval
+      ``--subclass-decode-logit-adjust d`` with ``tau_eff = tau_train - d``.
     """
     lambda_dt: float = 0.65
     label_smoothing: float = 0.0
@@ -260,14 +264,11 @@ def log_prior(weights: dict[str, float], labels: list[str],
 
     ``class_weights`` stores ``N / (K * n_k)``, so ``n_k ∝ 1 / w_k``. A label
     with no stored weight has no train support; it gets the smallest prior
-    seen, so the adjustment never favours it.
+    seen, so the adjustment never favours it. Shared with decode-time
+    adjust (``mailroom_ml.logit_adjust``) so residual ``tau`` is exact.
     """
-    inv = [1.0 / weights[lab] for lab in labels if weights.get(lab)]
-    floor = min(inv) if inv else 1.0
-    raw = torch.tensor([1.0 / weights[lab] if weights.get(lab) else floor
-                        for lab in labels], dtype=torch.float32,
-                       device=device)
-    return torch.log(raw / raw.sum())
+    vals = log_prior_values(weights, labels)
+    return torch.tensor(vals, dtype=torch.float32, device=device)
 
 
 def param_groups(model, lr: float,

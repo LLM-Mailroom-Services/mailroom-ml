@@ -492,3 +492,21 @@ def test_eval_app_parses_mixed_stdout_json() -> None:
     parsed = _parse_eval_report_stdout(blob)
     assert parsed["n_docs"] == 1323
     assert parsed["eval_subset"] == "heldout-plus"
+
+
+def test_eval_app_decode_logit_adjust_cli_default_zero() -> None:
+    _need_modal()
+    from deploy.eval_app import _eval_cli_cmd, _parse_decode_adjust_sweep
+
+    cmd = _eval_cli_cmd(
+        "runs/20261006-021245", 0, 42, "test",
+        selective_risk=False, as_json=True)
+    assert "--subclass-decode-logit-adjust" in cmd
+    assert cmd[cmd.index("--subclass-decode-logit-adjust") + 1] == "0.0"
+    cmd_d = _eval_cli_cmd(
+        "runs/20261006-021245", 0, 42, "test",
+        selective_risk=False, as_json=True,
+        subclass_decode_logit_adjust=0.5)
+    assert cmd_d[cmd_d.index("--subclass-decode-logit-adjust") + 1] == "0.5"
+    assert _parse_decode_adjust_sweep("0.25,0.5,0.75,1.0") == [
+        "0.25", "0.5", "0.75", "1.0"]

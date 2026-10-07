@@ -57,6 +57,13 @@ def test_cli_defaults_match_plan_surface():
     assert ns.as_json is False
 
 
+def test_cli_subclass_decode_logit_adjust_default_off():
+    ns = build_parser().parse_args([])
+    assert ns.subclass_decode_logit_adjust == 0.0
+    ns = build_parser().parse_args(["--subclass-decode-logit-adjust", "0.5"])
+    assert ns.subclass_decode_logit_adjust == 0.5
+
+
 def test_stratified_sample_deterministic_and_bounded():
     filenames = [f"f{i:02d}" for i in range(30)]
     strata = ["contract"] * 10 + ["correspondence"] * 10 + ["insurance_claim"] * 10

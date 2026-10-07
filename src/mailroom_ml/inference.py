@@ -55,6 +55,7 @@ from mailroom_ml.config import (
     WINDOW_OVERLAP_TOKENS,
 )
 from mailroom_ml.labels import normalize_label_maps
+from mailroom_ml.logit_adjust import apply_logit_adjust
 
 __all__ = [
     "ModelBundle",
@@ -69,6 +70,7 @@ __all__ = [
     "classify_document",
     "project_subclass",
     "TriageResult",
+    "apply_subclass_decode_logit_adjust",
 ]
 
 
@@ -114,6 +116,8 @@ class ModelBundle:
     ood_probe: dict[str, Any] | None = None
     # #29 input-construction version recorded on the artifact (default v1).
     input_construction: str = INPUT_CONSTRUCTION_VERSION
+    # Decode-time Menon residual (not train-time tau). 0 = shipped argmax.
+    subclass_decode_logit_adjust: float = 0.0
 
     @property
     def label_schema_version(self) -> str:
@@ -518,6 +522,33 @@ def _id2label_for_logits(head_cfg: dict[str, Any], n_logits: int) -> dict[str, s
     return head_cfg["id2label"]
 
 
+def apply_subclass_decode_logit_adjust(
+        logits_by_head: dict[str, np.ndarray], bundle: ModelBundle,
+        tau: float | None = None) -> dict[str, np.ndarray]:
+    """Add ``tau * log(train prior)`` to subclass logits (not doc_type).
+
+    Train-time LA is loss-only; this is the residual decode term. Default
+    ``tau`` is ``bundle.subclass_decode_logit_adjust`` (0 = no-op).
+    """
+    delta = bundle.subclass_decode_logit_adjust if tau is None else tau
+    if not delta:
+        return logits_by_head
+    out = dict(logits_by_head)
+    for name, lg in logits_by_head.items():
+        if name == "doc_type":
+            continue
+        head = bundle.maps.get(name) or {}
+        labels = list(head.get("trainable_labels") or head.get("labels") or [])
+        weights = head.get("weights") or {}
+        if not labels or not weights:
+            continue
+        width = int(lg.shape[-1])
+        if len(labels) != width:
+            labels = labels[:width]
+        out[name] = apply_logit_adjust(lg, weights, labels, float(delta))
+    return out
+
+
 def classify_windows(bundle: ModelBundle, window_texts: list[str],
                      temperatures: dict[str, float] | None = None,
                      max_length: int = MAX_TOKENS) -> dict[str, Any]:
@@ -538,7 +569,8 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
 
     # calibrated probs per head across all windows (batch once)
     ids, mask = encode_inputs(bundle, window_texts, max_length=max_length)
-    logits_by_head = predict(bundle, ids, mask)
+    logits_by_head = apply_subclass_decode_logit_adjust(
+        predict(bundle, ids, mask), bundle)
     temps = dict(bundle.temperatures) if temperatures is None else temperatures
 
     heads = sorted(k for k in logits_by_head if k != "doc_type")

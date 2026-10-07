@@ -7,6 +7,8 @@ of CPU-hours.
 
     HF_TOKEN=... modal run deploy/eval_app.py --sample 50 --seed 42
     HF_TOKEN=... modal run deploy/eval_app.py --module runs/<run-id> --json
+    HF_TOKEN=... modal run deploy/eval_app.py --module runs/<run-id> --sample 0 \\
+        --as-json --decode-adjust-sweep 0.25,0.5,0.75,1.0 --out reports/json
 
 - mounts the checkpoint Volume (``modernbert-checkpoints`` — the trainer's
   ``latest/`` pointer or any archived ``runs/<run-id>/``),
@@ -146,6 +148,53 @@ def _ensure_stage_tree() -> None:
         print(f"[mailroom-ml-eval] stage cache hit under {STAGE_MOUNT}", flush=True)
 
 
+def _eval_cli_cmd(
+        module: str, sample: int, seed: int, subset: str, *,
+        selective_risk: bool, as_json: bool,
+        subclass_decode_logit_adjust: float = 0.0,
+        eval_extra: str = "") -> list[str]:
+    """Build the eval_modernbert.py argv (d=0 is shipped argmax)."""
+    cmd = [
+        sys.executable,
+        EVAL_SCRIPT,
+        "--checkpoint", f"{CHECKPOINT_MOUNT}/{module}",
+        "--stage", STAGE_MOUNT,
+        "--subset", subset,
+        "--sample", str(sample),
+        "--seed", str(seed),
+        "--subclass-decode-logit-adjust", str(subclass_decode_logit_adjust),
+    ]
+    if selective_risk:
+        cmd.append("--selective-risk")
+    if as_json:
+        cmd.append("--json")
+    extra = (eval_extra or "").split()
+    if extra:
+        cmd.extend(extra)
+    return cmd
+
+
+def _parse_decode_adjust_sweep(raw: str) -> list[str]:
+    """Comma-separated d values, preserving the operator's spelling."""
+    return [part.strip() for part in (raw or "").split(",") if part.strip()]
+
+
+def _run_one_eval_cli(cmd: list[str]) -> dict:
+    print("[mailroom-ml-eval] " + " ".join(cmd), flush=True)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.stderr.strip():
+        print(result.stderr, end="", flush=True)
+    if result.returncode != 0:
+        if result.stdout.strip():
+            print(result.stdout[-4000:], flush=True)
+        print(result.stderr[-4000:], flush=True)
+        raise RuntimeError(f"eval_modernbert.py exited {result.returncode}")
+    out: dict = {"returncode": result.returncode}
+    if "--json" in cmd and result.stdout.strip():
+        out["report"] = _parse_eval_report_stdout(result.stdout)
+    return out
+
+
 @app.function(
     gpu="L4",
     volumes={
@@ -158,45 +207,62 @@ def _ensure_stage_tree() -> None:
 )
 def run_eval(module: str = "latest", sample: int = 50, seed: int = 42,
              subset: str = "test", selective_risk: bool = True,
-             as_json: bool = False) -> dict:
-    """Run the eval CLI against a checkpoint on the Volume."""
+             as_json: bool = False,
+             subclass_decode_logit_adjust: float = 0.0,
+             eval_extra: str = "",
+             decode_adjust_sweep: str = "") -> dict:
+    """Run the eval CLI against a checkpoint on the Volume.
+
+    ``decode_adjust_sweep`` (e.g. ``0.25,0.5,0.75,1.0``) runs every d in
+    one L4 container. Default ``subclass_decode_logit_adjust=0`` is current
+    argmax; do not re-run d=0 unless it is listed in the sweep.
+    """
     remote_started = time.perf_counter()
     if subset == "test":
         _ensure_stage_tree()
-    cmd = [
-        sys.executable,
-        EVAL_SCRIPT,
-        "--checkpoint", f"{CHECKPOINT_MOUNT}/{module}",
-        "--stage", STAGE_MOUNT,
-        "--subset", subset,
-        "--sample", str(sample),
-        "--seed", str(seed),
-    ]
-    if selective_risk:
-        cmd.append("--selective-risk")
-    if as_json:
-        cmd.append("--json")
-    print("[mailroom-ml-eval] " + " ".join(cmd), flush=True)
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.stderr.strip():
-        print(result.stderr, end="", flush=True)
-    if result.returncode != 0:
-        if result.stdout.strip():
-            print(result.stdout[-4000:], flush=True)
-        print(result.stderr[-4000:], flush=True)
-        raise RuntimeError(f"eval_modernbert.py exited {result.returncode}")
+    sweep = _parse_decode_adjust_sweep(decode_adjust_sweep)
+    if sweep:
+        reports: dict[str, dict] = {}
+        for d_str in sweep:
+            cmd = _eval_cli_cmd(
+                module, sample, seed, subset,
+                selective_risk=selective_risk, as_json=as_json,
+                subclass_decode_logit_adjust=float(d_str),
+                eval_extra=eval_extra)
+            one = _run_one_eval_cli(cmd)
+            if as_json:
+                reports[d_str] = one.get("report") or {}
+        remote_wall = time.perf_counter() - remote_started
+        return {
+            "returncode": 0,
+            "module": module,
+            "sample": sample,
+            "seed": seed,
+            "subset": subset,
+            "remote_wall_seconds": round(remote_wall, 3),
+            "gpu": "L4",
+            "decode_adjust_sweep": sweep,
+            "reports": reports,
+        }
+    cmd = _eval_cli_cmd(
+        module, sample, seed, subset,
+        selective_risk=selective_risk, as_json=as_json,
+        subclass_decode_logit_adjust=subclass_decode_logit_adjust,
+        eval_extra=eval_extra)
+    one = _run_one_eval_cli(cmd)
     remote_wall = time.perf_counter() - remote_started
     out: dict = {
-        "returncode": result.returncode,
+        "returncode": one["returncode"],
         "module": module,
         "sample": sample,
         "seed": seed,
         "subset": subset,
         "remote_wall_seconds": round(remote_wall, 3),
         "gpu": "L4",
+        "subclass_decode_logit_adjust": subclass_decode_logit_adjust,
     }
-    if as_json and result.stdout.strip():
-        out["report"] = _parse_eval_report_stdout(result.stdout)
+    if as_json and one.get("report"):
+        out["report"] = one["report"]
     return out
 
 
@@ -228,10 +294,78 @@ def _local_helpers():
     )
 
 
+def _write_eval_json(dest: Path, report: dict, *,
+                     attach_run_telemetry, experiment_record_from_report,
+                     configure_tracing, eval_span, flush_tracing,
+                     per_doc_trace_rows, tracer, name: str, profile,
+                     remote_wall: float, wall_total: float) -> None:
+    attach_run_telemetry(
+        report,
+        remote_wall_seconds=float(remote_wall or wall_total),
+        wall_seconds_total=wall_total,
+        modal_profile=profile,
+        modal_app=APP_NAME,
+    )
+    experiment_record = experiment_record_from_report(
+        report, experiment_name=name, modal_profile=profile)
+    experiment_record["tracing_backend"] = (
+        "phoenix" if os.environ.get("MODERNBERT_TRACE_SINK", "auto") != "none" else "none"
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    print(f"[mailroom-ml-eval] wrote {dest}", flush=True)
+    telem = _telemetry_dir_for_eval_json(dest)
+    telem.mkdir(parents=True, exist_ok=True)
+    rec_path = telem / "experiment_record.json"
+    rec_path.write_text(
+        json.dumps(experiment_record, sort_keys=True, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    print(f"[mailroom-ml-eval] wrote {rec_path}", flush=True)
+    trace_path = telem / "otel_spans.jsonl"
+    flush_tracing(tracer, out_path=trace_path)
+    manifest_path = telem / "otel_spans.manifest.json"
+    if trace_path.is_file():
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "span_file": str(trace_path.relative_to(telem)),
+                    "n_lines": sum(1 for _ in trace_path.open()),
+                },
+                sort_keys=True,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    doc_rows = per_doc_trace_rows(report.get("per_doc") or [], run_id=name)
+    doc_trace = telem / "per_doc_trace.jsonl"
+    doc_trace.write_text(
+        "\n".join(json.dumps(r, sort_keys=True) for r in doc_rows) + "\n",
+        encoding="utf-8",
+    )
+    print(f"[mailroom-ml-eval] wrote {doc_trace} ({len(doc_rows)} docs)", flush=True)
+    report["telemetry_paths"] = {
+        "experiment_record": str(rec_path),
+        "otel_spans": str(trace_path),
+        "per_doc_trace": str(doc_trace),
+    }
+    dest.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"[mailroom-ml-eval] wall={wall_total:.1f}s "
+        f"gpu_est=${experiment_record.get('estimated_gpu_cost_usd')} "
+        f"doc_type_acc={report.get('doc_type_accuracy')}",
+        flush=True,
+    )
+
+
 @app.local_entrypoint()
 def main(module: str = "latest", sample: int = 50, seed: int = 42,
          subset: str = "test", selective_risk: bool = True, as_json: bool = False,
-         out: str = "", experiment_name: str = "") -> None:
+         out: str = "", experiment_name: str = "",
+         subclass_decode_logit_adjust: float = 0.0,
+         eval_extra: str = "",
+         decode_adjust_sweep: str = "") -> None:
     (
         attach_run_telemetry,
         experiment_record_from_report,
@@ -241,7 +375,8 @@ def main(module: str = "latest", sample: int = 50, seed: int = 42,
         per_doc_trace_rows,
     ) = _local_helpers()
     print(f"mailroom-ml-eval: module={module} subset={subset} sample={sample} "
-          f"seed={seed} selective_risk={selective_risk}")
+          f"seed={seed} selective_risk={selective_risk} "
+          f"d={subclass_decode_logit_adjust} sweep={decode_adjust_sweep or '-'}")
     profile = _active_modal_profile()
     name = experiment_name or f"modernbert_{subset}_sample{sample}_seed{seed}"
     tracer = configure_tracing(
@@ -267,73 +402,46 @@ def main(module: str = "latest", sample: int = 50, seed: int = 42,
             subset=subset,
             selective_risk=selective_risk,
             as_json=as_json,
+            subclass_decode_logit_adjust=subclass_decode_logit_adjust,
+            eval_extra=eval_extra,
+            decode_adjust_sweep=decode_adjust_sweep,
         )
     wall_total = time.perf_counter() - wall_started
+    run_id = Path(module).name
+    helpers = dict(
+        attach_run_telemetry=attach_run_telemetry,
+        experiment_record_from_report=experiment_record_from_report,
+        configure_tracing=configure_tracing,
+        eval_span=eval_span,
+        flush_tracing=flush_tracing,
+        per_doc_trace_rows=per_doc_trace_rows,
+        tracer=tracer,
+        profile=profile,
+        remote_wall=float(meta.get("remote_wall_seconds") or wall_total),
+        wall_total=wall_total,
+    )
+    if as_json and meta.get("reports"):
+        out_dir = Path(out) if out else Path("reports/json")
+        if out_dir.suffix == ".json":
+            out_dir = out_dir.parent
+        for d_str, report in meta["reports"].items():
+            dest = out_dir / f"eval_{run_id}-d{d_str}.json"
+            d_name = experiment_name or (
+                f"modernbert_{subset}_n{report.get('n_docs')}_d{d_str}")
+            _write_eval_json(dest, report, name=d_name, **helpers)
+        return
     if as_json and meta.get("report"):
         report = meta["report"]
-        attach_run_telemetry(
-            report,
-            remote_wall_seconds=float(meta.get("remote_wall_seconds") or wall_total),
-            wall_seconds_total=wall_total,
-            modal_profile=profile,
-            modal_app=APP_NAME,
-        )
-        name = experiment_name or (
-            f"modernbert_{subset}_n{report.get('n_docs')}_seed{seed}")
-        experiment_record = experiment_record_from_report(
-            report, experiment_name=name, modal_profile=profile)
-        experiment_record["tracing_backend"] = (
-            "phoenix" if os.environ.get("MODERNBERT_TRACE_SINK", "auto") != "none" else "none"
-        )
-        payload = json.dumps(report, sort_keys=True, indent=2)
         if out:
             dest = Path(out)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(payload + "\n", encoding="utf-8")
-            print(f"[mailroom-ml-eval] wrote {dest}", flush=True)
-            telem = _telemetry_dir_for_eval_json(dest)
-            telem.mkdir(parents=True, exist_ok=True)
-            rec_path = telem / "experiment_record.json"
-            rec_path.write_text(
-                json.dumps(experiment_record, sort_keys=True, indent=2) + "\n",
-                encoding="utf-8",
-            )
-            print(f"[mailroom-ml-eval] wrote {rec_path}", flush=True)
-            trace_path = telem / "otel_spans.jsonl"
-            flush_tracing(tracer, out_path=trace_path)
-            manifest_path = telem / "otel_spans.manifest.json"
-            if trace_path.is_file():
-                manifest_path.write_text(
-                    json.dumps(
-                        {
-                            "span_file": str(trace_path.relative_to(telem)),
-                            "n_lines": sum(1 for _ in trace_path.open()),
-                        },
-                        sort_keys=True,
-                        indent=2,
-                    )
-                    + "\n",
-                    encoding="utf-8",
-                )
-            doc_rows = per_doc_trace_rows(report.get("per_doc") or [], run_id=name)
-            doc_trace = telem / "per_doc_trace.jsonl"
-            doc_trace.write_text(
-                "\n".join(json.dumps(r, sort_keys=True) for r in doc_rows) + "\n",
-                encoding="utf-8",
-            )
-            print(f"[mailroom-ml-eval] wrote {doc_trace} ({len(doc_rows)} docs)", flush=True)
-            report["telemetry_paths"] = {
-                "experiment_record": str(rec_path),
-                "otel_spans": str(trace_path),
-                "per_doc_trace": str(doc_trace),
-            }
-            dest.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+            name = experiment_name or (
+                f"modernbert_{subset}_n{report.get('n_docs')}_seed{seed}")
+            _write_eval_json(dest, report, name=name, **helpers)
         else:
             flush_tracing(tracer, out_path=None)
-            print(payload)
-        print(
-            f"[mailroom-ml-eval] wall={wall_total:.1f}s "
-            f"gpu_est=${experiment_record.get('estimated_gpu_cost_usd')} "
-            f"doc_type_acc={report.get('doc_type_accuracy')}",
-            flush=True,
-        )
+            print(json.dumps(report, sort_keys=True, indent=2))
+            print(
+                f"[mailroom-ml-eval] wall={wall_total:.1f}s "
+                f"doc_type_acc={report.get('doc_type_accuracy')}",
+                flush=True,
+            )

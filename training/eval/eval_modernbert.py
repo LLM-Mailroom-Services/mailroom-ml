@@ -109,7 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "selective-risk sweep (implies --selective-risk). "
                          "PATH may be a file or a directory")
     ap.add_argument("--json", action="store_true", dest="as_json",
-                    help="emit the report as JSON")
+                    help="print the report dict as JSON")
+    ap.add_argument("--subclass-decode-logit-adjust", type=float, default=0.0,
+                    help="add tau * log(train prior) to subclass logits at "
+                         "decode (0 = shipped argmax). M9b tau_train=1.0: "
+                         "0.5 yields effective tau 0.5 without retraining")
     ap.add_argument("--write-markdown", type=Path, default=None,
                     help="write TEST-EVAL markdown via training/write_eval_report.py "
                          "(requires --run-tag)")
@@ -769,6 +773,7 @@ def main(argv: list[str] | None = None) -> int:
         bundle = load_bundle(args.checkpoint)
     except (BundleUnavailable, BundleLoadError) as exc:
         raise SystemExit(str(exc)) from exc
+    bundle.subclass_decode_logit_adjust = args.subclass_decode_logit_adjust
     docs = _load_eval_docs(args.stage, args.subset)
     want_sweep = args.selective_risk or args.write_routing_thresholds
     report = evaluate_documents(
@@ -776,6 +781,7 @@ def main(argv: list[str] | None = None) -> int:
         max_length=args.max_length, selective_risk=want_sweep)
     report["eval_subset"] = args.subset
     report["finetune_revision"] = FINETUNE_REVISION
+    report["subclass_decode_logit_adjust"] = args.subclass_decode_logit_adjust
     if args.write_routing_thresholds is not None:
         sweep = report.get("selective_risk") or {
             "refused": True, "reason": "selective_risk not in report"}

@@ -83,8 +83,8 @@ Authoritative constants: `src/mailroom_ml/config.py`.
 
 ```bash
 # GPU local (only if you have one)
-uv run python training/train_modernbert.py --help
-uv run python training/train_modernbert.py \
+uv run python training/train/train_modernbert.py --help
+uv run python training/train/train_modernbert.py \
   --data Lucius-Morningstar/mailroom-modernbert-training \
   --output artifacts/pytorch/model \
   --epochs 3 --select-on-subclass \
@@ -92,12 +92,16 @@ uv run python training/train_modernbert.py \
   --subclass-label-smoothing 0.0 \
   --input-construction v1
 
-uv run python training/eval_modernbert.py \
-  --checkpoint artifacts/pytorch/model --json --selective-risk \
+# routing thresholds are fit on the validation (calibration) split — the eval
+# refuses --write-routing-thresholds on any pool containing test docs (D11)
+uv run python training/eval/eval_modernbert.py \
+  --checkpoint artifacts/pytorch/model --subset validation --sample 0 --json \
   --write-routing-thresholds artifacts/pytorch/model/routing_thresholds.json
+uv run python training/eval/eval_modernbert.py \
+  --checkpoint artifacts/pytorch/model --sample 0 --json --selective-risk
 
 # Paired bootstrap compare (classifier vs LLM sorter export, or two runs)
-uv run python training/compare_runs.py \
+uv run python training/eval/compare_runs.py \
   --a reports/eval_run3_20260921.json --b reports/eval_b.json
 ```
 
@@ -108,24 +112,24 @@ uv run python training/compare_runs.py \
 ## Enrichment ladder
 
 ```bash
-uv run python training/fetch_corpus.py
-uv run python training/preflight.py
-uv run python training/assemble_enrichment.py --tiers 1 --dry-run
+uv run python training/dataset/mailroom-dataset/fetch_corpus.py
+uv run python training/train/preflight.py
+uv run python training/dataset/mailroom-dataset/assemble_enrichment.py --tiers 1 --dry-run
 
 # Tier-1 MAUD / S1 (#16): local path or repo@rev once a Hub pin exists
-uv run python training/assemble_enrichment.py --tiers 1 \
+uv run python training/dataset/mailroom-dataset/assemble_enrichment.py --tiers 1 \
   --maud-pool path/to/maud.jsonl --s1-pool path/to/s1.jsonl --dry-run
 
 # Tier-2 (#26): Enron blind pin is the default text pool; score first
-uv run python training/score_blind_pool.py \
+uv run python training/eval/score_blind_pool.py \
   --pool data/enrichment/enron_blind.parquet \
   --checkpoint artifacts/pytorch/model \
   --out data/enrichment/blind_scored.parquet
-uv run python training/assemble_enrichment.py --tiers 2 \
+uv run python training/dataset/mailroom-dataset/assemble_enrichment.py --tiers 2 \
   --blind-pool data/enrichment/blind_scored.parquet --dry-run
 
 # Tier-3 (#28): seven gates are implemented (no stub cue checks)
-uv run python training/assemble_enrichment.py --tiers 3 \
+uv run python training/dataset/mailroom-dataset/assemble_enrichment.py --tiers 3 \
   --tier3-cards cards.json --tier3-candidates candidates.jsonl --dry-run
 ```
 

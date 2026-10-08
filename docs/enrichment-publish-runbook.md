@@ -13,25 +13,25 @@ Operator sequence for changing the **staged training set** on the Hub. Cross-lin
 ## 1. Preflight
 
 ```bash
-uv run python training/preflight.py
-uv run python training/preflight.py --online   # HF_TOKEN set
+uv run python training/train/preflight.py
+uv run python training/train/preflight.py --online   # HF_TOKEN set
 ```
 
 ## 2. Stage canonical tree (if not already present)
 
 ```bash
-uv run python training/build_dataset.py --stage-only
+uv run python training/dataset/mailroom-dataset/build_dataset.py --stage-only
 ```
 
 ## 3. Assemble enrichment (train split only)
 
 ```bash
-uv run python training/assemble_enrichment.py \
+uv run python training/dataset/mailroom-dataset/assemble_enrichment.py \
   --stage data/modernbert_training/stage --tiers 1 --dry-run
 # remove --dry-run when counts/audit look correct
 
 # Tier-1 MAUD / S1 (#16): no Hub pin yet — pass a local JSONL/parquet
-uv run python training/assemble_enrichment.py --tiers 1 --dry-run \
+uv run python training/dataset/mailroom-dataset/assemble_enrichment.py --tiers 1 --dry-run \
   --maud-pool path/to/maud.jsonl --s1-pool path/to/s1.jsonl
 ```
 
@@ -45,11 +45,11 @@ pin does **not** carry `doc_type_conf` / `subclass_conf` / `agreement`. Score
 it first (does not invent confidences):
 
 ```bash
-uv run python training/score_blind_pool.py \
+uv run python training/eval/score_blind_pool.py \
   --pool data/enrichment/enron_blind.parquet \
   --checkpoint artifacts/pytorch/model \
   --out data/enrichment/blind_scored.parquet
-uv run python training/assemble_enrichment.py --tiers 2 \
+uv run python training/dataset/mailroom-dataset/assemble_enrichment.py --tiers 2 \
   --blind-pool data/enrichment/blind_scored.parquet --dry-run
 ```
 
@@ -69,7 +69,7 @@ empty until an operator pins a generator.
 **Enrichment-inclusive tree** (do not re-run `stage()` over adopted rows):
 
 ```bash
-uv run python training/build_dataset.py --publish --no-stage \
+uv run python training/dataset/mailroom-dataset/build_dataset.py --publish --no-stage \
   --repo-id Lucius-Morningstar/mailroom-modernbert-training
 ```
 

@@ -23,7 +23,7 @@ subclass mapping are tracked as phase 2 (no fresh pool exists on the Hub).
 
 Usage (from the repo root, ``data/parquet`` snapshot + Enron files present):
 
-    uv run python training/build_heldout_plus.py \\
+    uv run python training/dataset/mailroom-dataset/build_heldout_plus.py \\
         --enron-gt /tmp/heldout-probe/enron/ground_truth/test.jsonl \\
         --enron-blind /tmp/heldout-probe/enron/blind/test.jsonl \\
         --n 1000 --seed 42 --out data/heldout_plus_v1

@@ -198,7 +198,7 @@ CUAD_FULL_REVISION = "e69afe340b48133b7173d74b8ad220fcd28a1a6e"
 # Tier-2 blind candidate source (#26): the Enron blind config is the
 # revision-pinned *text* pool.  ``assemble_tier2`` still requires scored
 # columns (doc_type_conf / subclass_conf / agreement) — produce them with
-# ``training/score_blind_pool.py`` against a checkpoint; do not invent
+# ``training/eval/score_blind_pool.py`` against a checkpoint; do not invent
 # confidences.  CLI ``--blind-pool`` defaults to this pin.
 BLIND_POOL_REPO = ENRON_DEDUP_REPO
 BLIND_POOL_REVISION = ENRON_DEDUP_REVISION

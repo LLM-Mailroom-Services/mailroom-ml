@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 CONTRACT_F1 = 0.20
 CORR_F1 = 0.25
 DOC_TYPE_ACC = 0.89
@@ -9,10 +11,16 @@ WINDOW_ECE = 0.05
 
 
 def _f(x: object) -> float | None:
+    """Gate metric as a finite float; missing/garbage/NaN/inf -> ``None``.
+
+    NaN compares False against every threshold, so a NaN metric would slip
+    through ``actual < thr`` checks; it is a missing measurement, not a pass.
+    """
     try:
-        return float(x)  # type: ignore[arg-type]
+        v = float(x)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+    return v if math.isfinite(v) else None
 
 
 def m9a_gate_rows(report: dict) -> list[tuple[str, float | None, float, str]]:
@@ -39,14 +47,10 @@ def gate_status(actual: float | None, thr: float, how: str) -> str:
 
 
 def gates_all_met(report: dict) -> bool:
-    for _name, actual, thr, how in m9a_gate_rows(report):
-        if actual is None:
-            return False
-        if how == "ge" and actual < thr:
-            return False
-        if how == "le" and actual > thr:
-            return False
-    return True
+    # one rule for the boolean and the per-row display: a gate passes only
+    # when gate_status says MET
+    return all(gate_status(actual, thr, how) == "MET"
+               for _name, actual, thr, how in m9a_gate_rows(report))
 
 
 def format_gates_cli(report: dict) -> str:

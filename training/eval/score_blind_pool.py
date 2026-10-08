@@ -4,18 +4,22 @@
 Writes ``doc_type_conf``, ``subclass_conf``, and ``agreement`` so
 ``assemble_enrichment.py --tiers 2`` can run without hand-picked columns.
 
-    uv run python training/score_blind_pool.py \\
+    uv run python training/eval/score_blind_pool.py \\
         --pool data/enrichment/enron_blind.parquet \\
         --checkpoint artifacts/pytorch/model \\
         --out data/enrichment/blind_scored.parquet
 
-Does not invent confidences: rows that fail the classifier are kept with
-zero scores and ``scored=false``.  No Hub writes.
+Does not invent confidences: rows the classifier could not score (oversize,
+no windows, a classifier error) are kept with zero scores, ``scored=false``
+and a ``score_reason``.  The unscored count is printed per reason, and the
+run fails (exit 3) when NO row could be scored — a broken bundle must not
+silently write an all-zero pool.  No Hub writes.
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from collections import Counter
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
@@ -67,6 +71,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.limit:
         df = df.head(args.limit).copy()
     rows = []
+    unscored: Counter = Counter()
     for r in df.to_dict("records"):
         title = str(r.get(args.title_col) or "")
         text = str(r.get(args.text_col) or r.get("body") or "")
@@ -75,15 +80,25 @@ def main(argv: list[str] | None = None) -> int:
             out = classify_document(
                 bundle, title, text, max_tokens=MAX_TOKENS,
                 filename=str(r.get("filename") or r.get("id") or ""))
+            # scored only when the classifier actually produced confidences:
+            # oversize / no-window early returns carry status "ok" but no
+            # calibrated_confidence
+            scored = (out.get("status") == "ok"
+                      and out.get("calibrated_confidence") is not None)
             rec["doc_type_conf"] = float(out.get("calibrated_confidence") or 0.0)
             rec["subclass_conf"] = float(out.get("subclass_confidence") or 0.0)
             rec["agreement"] = float(out.get("agreement") or 0.0)
-            rec["scored"] = out.get("status") == "ok"
-        except Exception:  # noqa: BLE001 — keep the row, zero scores
+            rec["scored"] = scored
+            rec["score_reason"] = "" if scored else str(
+                out.get("reason") or out.get("status") or "unscored")
+        except Exception as exc:  # noqa: BLE001 — keep the row, zero scores
             rec["doc_type_conf"] = 0.0
             rec["subclass_conf"] = 0.0
             rec["agreement"] = 0.0
             rec["scored"] = False
+            rec["score_reason"] = f"error:{type(exc).__name__}"
+        if not rec["scored"]:
+            unscored[rec["score_reason"]] += 1
         rows.append(rec)
     out = pd.DataFrame(rows)
     for col in BLIND_REQUIRED_COLUMNS:
@@ -94,7 +109,15 @@ def main(argv: list[str] | None = None) -> int:
         out.to_parquet(args.out, index=False)
     else:
         out.to_json(args.out, orient="records", lines=True)
-    print(f"scored {len(out)} rows -> {args.out}")
+    n_unscored = sum(unscored.values())
+    print(f"scored {len(out) - n_unscored}/{len(out)} rows -> {args.out}")
+    if unscored:
+        print(f"unscored by reason: {dict(sorted(unscored.items()))}",
+              file=sys.stderr)
+    if len(out) and n_unscored == len(out):
+        print("ERROR: no row could be scored — check the bundle / pool "
+              "columns before assembling Tier 2", file=sys.stderr)
+        return 3
     return 0
 
 

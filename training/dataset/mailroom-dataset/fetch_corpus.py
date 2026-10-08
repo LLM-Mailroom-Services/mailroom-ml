@@ -5,8 +5,8 @@ Populates ``data/parquet/{ground_truth,default}/`` so ``load_corpus_rows()`` and
 ``@pytest.mark.fullcorpus`` tests can run locally.
 
 Usage:
-    uv run python training/fetch_corpus.py
-    uv run python training/fetch_corpus.py --dry-run
+    uv run python training/dataset/mailroom-dataset/fetch_corpus.py
+    uv run python training/dataset/mailroom-dataset/fetch_corpus.py --dry-run
 """
 from __future__ import annotations
 

@@ -118,14 +118,23 @@ if [[ ! -f "$EVAL_JSON" ]]; then
     echo "ERROR: no free GPU for eval (need <${MIN_FREE_MIB} MiB used). Set CUDA_VISIBLE_DEVICES or wait." >&2
     exit 6
   fi
-  echo "=== held-out eval + calibration (GPU ${GPU_IDX}) ==="
   mkdir -p reports
+  # routing thresholds are fit on the calibration (validation) split, never
+  # on held-out test (plan D11); the test eval then measures them honestly.
+  echo "=== routing thresholds from validation sweep (GPU ${GPU_IDX}) ==="
+  CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval/eval_modernbert.py \
+    --checkpoint "$CKPT" \
+    --stage data/modernbert_training/stage \
+    --subset validation \
+    --sample 0 \
+    --write-routing-thresholds "${CKPT}/routing_thresholds.json" \
+    --json >"reports/eval_${RUN_TAG}-validation.json"
+  echo "=== held-out eval + calibration (GPU ${GPU_IDX}) ==="
   CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval/eval_modernbert.py \
     --checkpoint "$CKPT" \
     --stage data/modernbert_training/stage \
     --sample 0 \
     --selective-risk \
-    --write-routing-thresholds "${CKPT}/routing_thresholds.json" \
     --json >"$EVAL_JSON"
   echo "eval report -> ${EVAL_JSON}"
 else

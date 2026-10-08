@@ -2,10 +2,10 @@
 """Write TEST-EVAL / M9a markdown from eval JSON (artifact-driven).
 
 Usage:
-  uv run python training/write_eval_report.py test --run-tag TAG --eval-json PATH
-  uv run python training/write_eval_report.py heldout-plus --run-tag TAG --eval-json PATH
-  uv run python training/write_eval_report.py compare --a A.json --b B.json --out PATH.md
-  uv run python training/write_eval_report.py charts --eval-json OLD.json --eval-json NEW.json \
+  uv run python training/eval/write_eval_report.py test --run-tag TAG --eval-json PATH
+  uv run python training/eval/write_eval_report.py heldout-plus --run-tag TAG --eval-json PATH
+  uv run python training/eval/write_eval_report.py compare --a A.json --b B.json --out PATH.md
+  uv run python training/eval/write_eval_report.py charts --eval-json OLD.json --eval-json NEW.json \
       --label "Run 3" --label "Arm B" --out reports/charts/<tag>
 """
 from __future__ import annotations

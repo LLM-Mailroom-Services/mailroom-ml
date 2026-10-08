@@ -63,16 +63,22 @@ intake-overhaul track. Consequences:
   - `windows.py` — v1 (published title/`\\n\\n`/body) and v2 tagged prefix (#29).
   - `enrichment.py` / `provenance.py` / `tracing.py` — augmentation sources,
     lineage, trace sidecars. MAUD/S1 adapters (#16); seven Tier-3 gates (#28).
-- `training/` — the runnable drivers (not imported by the library)
-  - `build_dataset.py` — corpus → staged training set.
-  - `assemble_enrichment.py` — the measured augmentation ladder (authentic →
-    source-matched enrichment → distillation → label-card synthesis).
-  - `score_blind_pool.py` — add required confidence columns for Tier-2 (#26).
-  - `train_modernbert.py` — the trainer (`--subclass-label-smoothing` #22,
+- `training/` — the runnable drivers (not imported by the library), grouped
+  into `dataset/{mailroom-dataset,enron}/`, `train/` (+ `train/post-train/`),
+  `eval/` and `logging/`; drivers resolve the repo root by fixed depth
+  (`Path(__file__).resolve().parents[N]`), so moving one means updating it.
+  - `dataset/mailroom-dataset/build_dataset.py` — corpus → staged training set.
+  - `dataset/mailroom-dataset/assemble_enrichment.py` — the measured
+    augmentation ladder (authentic → source-matched enrichment →
+    distillation → label-card synthesis).
+  - `eval/score_blind_pool.py` — add required confidence columns for Tier-2 (#26).
+  - `train/train_modernbert.py` — the trainer (`--subclass-label-smoothing` #22,
     `--input-construction` #29; writes `ood_probe.json` from val logits).
-  - `eval_modernbert.py` — the eval harness (`--write-routing-thresholds` #25;
-    reports `fast_path_rate` + `ood`).
-  - `compare_runs.py` — paired bootstrap CIs across two eval JSONs (#17).
+  - `eval/eval_modernbert.py` — the eval harness (`--write-routing-thresholds`
+    #25, fit on `--subset validation` only — refused on pools with test docs;
+    reports `fast_path_rate` under the production gate + `ood`).
+  - `eval/compare_runs.py` — paired bootstrap CIs across two eval JSONs (#17).
+  - `check_m9a_gates.py` — the #112 gate report (NaN/missing metrics fail).
 - `configs/` — tracked policy YAML referenced from `config.py` (e.g.
   `synthetic_policy_v1.yaml`; bundled into the Modal training image).
 - `deploy/` — Modal layer + ONNX export. **Runbook: `deploy/README.md`.**
@@ -110,14 +116,14 @@ uv run ruff check <changed files>
 # CI (GitHub Actions): ruff + pytest -m "not fullcorpus" on every PR (mailroom-ml #12).
 
 # data snapshot (fullcorpus tests + local EDA)
-uv run python training/fetch_corpus.py              # mailroom-finetune -> data/parquet
-uv run python training/preflight.py                 # operator QA before publish/Modal
+uv run python training/dataset/mailroom-dataset/fetch_corpus.py              # mailroom-finetune -> data/parquet
+uv run python training/train/preflight.py                 # operator QA before publish/Modal
 # enrichment → Hub publish: docs/enrichment-publish-runbook.md (mailroom-ml #24)
 
 # training / eval (local, only if you have a GPU)
-uv run python training/train_modernbert.py --help
-uv run python training/eval_modernbert.py --checkpoint artifacts/pytorch/model --json
-uv run python training/compare_runs.py --a reports/eval_a.json --b reports/eval_b.json
+uv run python training/train/train_modernbert.py --help
+uv run python training/eval/eval_modernbert.py --checkpoint artifacts/pytorch/model --json
+uv run python training/eval/compare_runs.py --a reports/eval_a.json --b reports/eval_b.json
 
 # Modal (see deploy/README.md for the full runbook + cost notes)
 HF_TOKEN=... uv run --extra deploy modal deploy deploy/modal_app.py

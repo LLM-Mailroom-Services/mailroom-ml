@@ -6,7 +6,7 @@ Operator-only: requires ``HF_TOKEN`` (or ``HUGGING_FACE_HUB_TOKEN``). Use
 
 Typical post-M9a sequence (after ``run_m9a_local.sh`` train + eval + gates):
 
-    HF_TOKEN=... .venv/bin/python training/publish_run_to_hub.py \\
+    HF_TOKEN=... .venv/bin/python training/train/post-train/publish_run_to_hub.py \\
       --checkpoint data/modernbert_training/runs/m9a-local-.../latest \\
       --eval-json reports/eval_m9a-local-....json \\
       --release-tag m9a-local-20260927-010430
@@ -16,6 +16,7 @@ See ``governance/M9a-HANDOFF.md`` § post-train Hub release.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -144,6 +145,61 @@ def resolve_run_id(summary: dict, checkpoint: Path, release_tag: str) -> str:
     return checkpoint.resolve().name
 
 
+def default_release_tag(checkpoint: Path) -> str:
+    """Release tag implied by the checkpoint layout ("" when none is).
+
+    ``.../runs/<tag>/latest`` (local runs) -> ``<tag>``;
+    ``.../runs/<tag>`` (the Modal per-run archive) -> ``<tag>``.  Any other
+    layout (``artifacts/pytorch/model``, ``/checkpoints/latest``) names no
+    run, so the caller falls back to ``summary.json`` ``run_id`` instead of
+    tagging the release ``pytorch`` / ``checkpoints`` / ``runs``.
+    """
+    ck = checkpoint.resolve()
+    if ck.name == "latest" and ck.parent.parent.name == "runs":
+        return ck.parent.name
+    if ck.parent.name == "runs":
+        return ck.name
+    return ""
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def artifact_mismatch(report: dict, checkpoint: Path) -> str | None:
+    """Why the eval JSON does not describe these weights, or None.
+
+    ``eval_modernbert`` records ``artifact_sha`` = sha256 of the evaluated
+    ``model.safetensors`` (pytorch bundles).  Publishing an eval of another
+    epoch / run next to these weights would ship a model card that lies.
+    """
+    want = report.get("artifact_sha")
+    weights = checkpoint / "model.safetensors"
+    if not want or report.get("model_kind") != "pytorch" or not weights.is_file():
+        return None
+    have = _sha256_file(weights)
+    if have != want:
+        return (f"eval artifact_sha {str(want)[:12]}… != checkpoint "
+                f"model.safetensors {have[:12]}…")
+    return None
+
+
+def _is_missing_entry(exc: Exception) -> bool:
+    """True only for "the repo has no README yet" (404), never other errors."""
+    try:
+        from huggingface_hub.errors import EntryNotFoundError
+    except ImportError:  # older huggingface_hub
+        from huggingface_hub.utils import EntryNotFoundError
+    if isinstance(exc, EntryNotFoundError):
+        return True
+    resp = getattr(exc, "response", None)
+    return getattr(resp, "status_code", None) == 404
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", type=Path, required=True,
@@ -171,6 +227,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--invoke-check-gates",
         action="store_true",
         help="also run training/check_m9a_gates.py before upload",
+    )
+    ap.add_argument(
+        "--allow-artifact-mismatch",
+        action="store_true",
+        help="upload even when the eval JSON's artifact_sha does not match "
+             "the checkpoint's model.safetensors",
     )
     return ap
 
@@ -203,11 +265,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
     report = json.loads(eval_path.read_text(encoding="utf-8"))
 
-    release_tag = (args.release_tag or "").strip()
-    if not release_tag:
-        parent = ckpt.parent.name
-        if parent and parent != "latest":
-            release_tag = parent
+    release_tag = (args.release_tag or "").strip() or default_release_tag(ckpt)
     run_id = resolve_run_id(summary, ckpt, release_tag)
     if not release_tag:
         release_tag = run_id
@@ -223,10 +281,15 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     gates_ok = gates_all_met(report)
-    commit_msg = (
-        f"Release {release_tag} ({released_at}): ModernBERT classifier "
-        f"run_id={run_id} M9a gates={'PASS' if gates_ok else 'FAIL'}"
-    )
+    mismatch = artifact_mismatch(report, ckpt)
+
+    def _commit_msg() -> str:
+        return (
+            f"Release {release_tag} ({released_at}): ModernBERT classifier "
+            f"run_id={run_id} M9a gates={'PASS' if gates_ok else 'FAIL'}"
+        )
+
+    commit_msg = _commit_msg()
 
     plan = {
         "repo": args.repo,
@@ -260,7 +323,16 @@ def main(argv: list[str] | None = None) -> int:
         if rc != 0 and not args.ignore_gates:
             print("ERROR: check_m9a_gates.py failed — refusing upload", file=sys.stderr)
             return 1
-        gates_ok = rc == 0
+        # the script can only veto: a passing script never overrides a failing
+        # in-process gate check (both read the same eval JSON)
+        gates_ok = gates_ok and rc == 0
+        commit_msg = _commit_msg()
+
+    if mismatch and not args.allow_artifact_mismatch:
+        print(f"ERROR: {mismatch} — the eval does not describe these weights; "
+              "pass --allow-artifact-mismatch to publish anyway",
+              file=sys.stderr)
+        return 1
 
     if not gates_ok and not args.ignore_gates:
         print(
@@ -305,7 +377,11 @@ def main(argv: list[str] | None = None) -> int:
             args.repo, "README.md", repo_type="model"
         )
         existing_readme = Path(existing_readme).read_text(encoding="utf-8")
-    except Exception:
+    except Exception as exc:
+        # only "no README yet" starts an empty card; a transient / auth error
+        # must not overwrite the existing model card with just the metrics
+        if not _is_missing_entry(exc):
+            raise
         existing_readme = ""
 
     readme_out = patch_readme_metrics(existing_readme, metrics_md)

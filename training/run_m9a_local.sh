@@ -293,12 +293,20 @@ set -o pipefail
 echo "=== train finished; running held-out eval + calibration surfaces ==="
 EVAL_JSON="reports/eval_${RUN_TAG}.json"
 mkdir -p reports
+# routing thresholds are fit on the calibration (validation) split, never on
+# held-out test (plan D11); the test eval then measures them honestly.
+CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval/eval_modernbert.py \
+  --checkpoint "$OUT" \
+  --stage data/modernbert_training/stage \
+  --subset validation \
+  --sample 0 \
+  --write-routing-thresholds "$OUT/routing_thresholds.json" \
+  --json >"reports/eval_${RUN_TAG}-validation.json"
 CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval/eval_modernbert.py \
   --checkpoint "$OUT" \
   --stage data/modernbert_training/stage \
   --sample 0 \
   --selective-risk \
-  --write-routing-thresholds "$OUT/routing_thresholds.json" \
   --json >"$EVAL_JSON"
 echo "eval report -> $EVAL_JSON"
 GATE_RC=0

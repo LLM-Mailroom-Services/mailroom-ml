@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -50,7 +51,13 @@ from mailroom_ml.config import (
 from mailroom_ml.labels import SUBCLASS_BY_CLASS, label_maps, normalize_subclass
 from mailroom_ml.normalize import deterministic_normalize
 from mailroom_ml.preprocessing import build_title
-from mailroom_ml.provenance import build_manifest, record_manifest_sha, sha256_bytes
+from mailroom_ml.provenance import (
+    atomic_write_text,
+    build_manifest,
+    clean_sha256,
+    record_manifest_sha,
+    sha256_bytes,
+)
 from mailroom_ml.windows import estimate_tokens, window_document
 
 __all__ = [
@@ -146,10 +153,28 @@ def load_corpus_rows() -> list[dict]:
     blind = _load_config("default")
     text_by_fn = dict(zip(blind["filename"], blind["doc_text"], strict=False))
     md_by_fn = dict(zip(blind["filename"], blind["metadata"], strict=False))
+    gt_rows = gt.sort_values("filename").to_dict("records")
+    # The join is on filename and corrupt data is loud: a GT filename with no
+    # text row (or a null doc_text) must NOT silently become an empty/"None"
+    # document the model would train on.
+    missing = sorted(
+        str(r["filename"]) for r in gt_rows
+        if str(r["filename"]) not in text_by_fn
+        or text_by_fn[str(r["filename"])] is None
+        or (not isinstance(text_by_fn[str(r["filename"])], str)
+            and pd.isna(text_by_fn[str(r["filename"])]))
+    )
+    if missing:
+        raise ValueError(
+            f"corpus join defect for {FINETUNE_REPO}@{FINETUNE_REVISION}: "
+            f"{len(missing)} ground_truth filename(s) have no doc_text row "
+            f"(or a null doc_text) in the default config: "
+            f"{missing[:10]}{' ...' if len(missing) > 10 else ''}"
+        )
     rows = []
-    for r in gt.sort_values("filename").to_dict("records"):
+    for r in gt_rows:
         fn = str(r["filename"])
-        r["doc_text"] = str(text_by_fn.get(fn, ""))
+        r["doc_text"] = str(text_by_fn[fn])
         r["metadata"] = md_by_fn.get(fn) or {}
         rows.append(r)
 
@@ -241,19 +266,18 @@ def dedup_by_sha(df: pd.DataFrame, pool_df: pd.DataFrame) -> pd.DataFrame:
     df = df.reset_index(drop=True)
     if df.empty or pool_df.empty:
         return df
-    pool = pool_df[
-        pool_df["content_sha256"].notna()
-        & pool_df["content_sha256"].astype(str).str.strip().ne("")
-    ]
+    pool_sha = pool_df["content_sha256"].map(clean_sha256)
+    pool = pool_df[pool_sha.ne("")]
     if pool.empty:
         return df
     sha_to_filenames = {
         sha: set(fns)
-        for sha, fns in pool.groupby(pool["content_sha256"].astype(str))["filename"].apply(set).items()
+        for sha, fns in pool.groupby(pool_sha[pool_sha.ne("")])["filename"].apply(set).items()
     }
 
     def _is_pool_duplicate(row: pd.Series) -> bool:
-        sha = str(row["content_sha256"] or "").strip()
+        # NaN/None must read as "no hash" (kept), never as the string "nan".
+        sha = clean_sha256(row["content_sha256"])
         if not sha:
             return False
         pool_fns = sha_to_filenames.get(sha)
@@ -275,7 +299,11 @@ def leakage_audit(df: pd.DataFrame) -> dict[str, Any]:
       ``folded_groups`` (case/separator-folded near-dups), and up to 3
       exemplar groups (title, row count, filenames);
     - ``per_class_val_share`` — validation share among non-test rows per
-      doc_type (0.0 when a class has no train+val rows).
+      doc_type (0.0 when a class has no train+val rows);
+    - ``content_sha256_across_splits`` — sha -> ``{"splits", "filenames"}``
+      for every non-empty ``content_sha256`` present in more than one split
+      (identical CONTENT straddling splits, even under different filenames).
+      Reported, never silently dropped.
     """
     result: dict[str, Any] = {}
 
@@ -320,6 +348,22 @@ def leakage_audit(df: pd.DataFrame) -> dict[str, Any]:
         n_val = int((grp["split"] == "validation").sum())
         share[str(cls)] = n_val / len(grp) if len(grp) else 0.0
     result["per_class_val_share"] = share
+
+    # identical content across splits (filename-independent leak)
+    sha_groups: dict[str, dict[str, set[str]]] = {}
+    if "content_sha256" in df.columns:
+        for sha, fn, sp in zip(df["content_sha256"].map(clean_sha256),
+                               df["filename"].astype(str),
+                               df["split"].astype(str), strict=True):
+            if not sha:
+                continue
+            g = sha_groups.setdefault(sha, {"splits": set(), "filenames": set()})
+            g["splits"].add(sp)
+            g["filenames"].add(fn)
+    result["content_sha256_across_splits"] = {
+        sha: {"splits": sorted(g["splits"]), "filenames": sorted(g["filenames"])}
+        for sha, g in sorted(sha_groups.items()) if len(g["splits"]) > 1
+    }
     return result
 
 
@@ -332,8 +376,9 @@ def filename_leak_audit(df: pd.DataFrame) -> dict[str, Any]:
     leak loud: it counts rows whose ``title`` equals the filename, and rows
     whose ``title``/``doc_text`` contains the doc_type or subclass token.
 
-    A clean build has ``title_eq_filename == 0`` (semantic-only titles) and
-    ``title_looks_like_filename == 0``.  ``title_contains_subclass`` /
+    A clean build has ``title_eq_filename == 0`` (semantic-only titles),
+    ``title_eq_filename_stem == 0`` (title == filename minus extension, exact
+    or case/separator-folded) and ``title_looks_like_filename == 0``.  ``title_contains_subclass`` /
     ``doc_text_contains_subclass`` are reported for information only — a real
     document legitimately names its own type (a bylaws exhibit is titled
     "BYLAWS"; a claim letter says "AUTOMOBILE CLAIMS"), so those are signal,
@@ -349,6 +394,14 @@ def filename_leak_audit(df: pd.DataFrame) -> dict[str, Any]:
     sub = df["subclass"].astype(str)
 
     title_eq_fn = title == fn
+    # a title equal to the filename STEM (extension dropped), exactly or with
+    # case/separator folding ("Non_Compete-Agmt" vs non-compete_agmt.txt) —
+    # the same label leak, one ``.txt`` removed.
+    stems = fn.map(lambda f: Path(f).stem)
+    title_eq_stem = pd.Series(
+        [bool(t.strip()) and bool(st) and (t == st or (_fold(t) != "" and _fold(t) == _fold(st)))
+         for t, st in zip(title, stems, strict=True)],
+        index=title.index, dtype=bool)
     # a title that still looks like a stored filename: an extension AND no
     # whitespace (a real subject line may end in ".DOC" — e.g. "Memorandum for
     # ISDA U.S.Netting Legislation.DOC" — so require the no-space shape).
@@ -371,11 +424,13 @@ def filename_leak_audit(df: pd.DataFrame) -> dict[str, Any]:
         "title_eq_filename": int(title_eq_fn.sum()),
         "title_eq_filename_pct": round(100 * title_eq_fn.mean(), 2),
         "title_looks_like_filename": int(title_looks_fn.sum()),
+        "title_eq_filename_stem": int(title_eq_stem.sum()),
         "title_contains_doc_type": int(sum(title_has_dt)),
         "title_contains_subclass": int(sum(title_has_sub)),
         "doc_text_contains_doc_type": int(sum(text_has_dt)),
         "doc_text_contains_subclass": int(sum(text_has_sub)),
-        "clean": bool(not title_eq_fn.any() and not title_looks_fn.any()),
+        "clean": bool(not title_eq_fn.any() and not title_looks_fn.any()
+                      and not title_eq_stem.any()),
     }
 
 
@@ -403,7 +458,7 @@ def build_documents(rows: list[dict]) -> pd.DataFrame:
         recs.append({
             "filename": str(r["filename"]),
             "document_id": str(r.get("document_id") or ""),
-            "content_sha256": str(r.get("content_sha256") or ""),
+            "content_sha256": clean_sha256(r.get("content_sha256")),
             "source_revision": str(r.get("source_revision") or FINETUNE_REVISION),
             "title": title,
             "doc_text": doc_text,
@@ -501,6 +556,10 @@ def stage(stage_dir: Path, rows: list[dict] | None = None,
         for split in ("train", "validation"):
             counts.setdefault("windows", {})[split] = _write(
                 wins[wins["split"] == split], "windows", split)
+    else:
+        # a documents-only re-stage must not leave a PREVIOUS build's windows
+        # behind: verify/stats/publish would read stale data as if current.
+        shutil.rmtree(stage_dir / "data" / "windows", ignore_errors=True)
 
     _write_dataset_info(stage_dir, counts)
 
@@ -511,10 +570,10 @@ def stage(stage_dir: Path, rows: list[dict] | None = None,
             sort_keys=True, indent=2),
     }
     for name, content in sidecars.items():
-        (stage_dir / name).write_text(content + "\n", encoding="utf-8")
+        atomic_write_text(stage_dir / name, content + "\n")
 
     manifest = build_manifest(docs, counts, maps)
-    (stage_dir / "manifest.txt").write_text(manifest, encoding="utf-8")
+    atomic_write_text(stage_dir / "manifest.txt", manifest)
     return {"counts": counts, "manifest_sha256": record_manifest_sha(manifest)}
 
 
@@ -560,8 +619,8 @@ def _write_dataset_info(stage_dir: Path, counts: dict[str, dict[str, int]]) -> N
         }
 
     info = {cfg: _config(cfg, splits) for cfg, splits in counts.items()}
-    (stage_dir / "dataset_info.json").write_text(
-        json.dumps(info, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(stage_dir / "dataset_info.json",
+                      json.dumps(info, indent=2) + "\n")
 
 
 _ENRICHMENT_GLOBS = ("data/documents/train/enrichment-*",
@@ -584,10 +643,9 @@ def has_adopted_enrichment(stage_dir: Path) -> bool:
 def stage_stats(stage_dir: Path) -> dict:
     """Count the ACTUAL staged tree — every parquet file per config/split.
 
-    ``verify_stage`` reads only ``files[0]`` per split (it checks schema/split
-    invariants, not totals); the enrichment parquet lives beside the canonical
-    file, so a post-enrichment ``documents/train`` (or ``windows/train``) holds
-    two files and its true row count is their sum.  Returns the same shape as
+    The enrichment parquet lives beside the canonical file, so a
+    post-enrichment ``documents/train`` (or ``windows/train``) holds two
+    files and its true row count is their sum.  Returns the same shape as
     ``stage()`` (``counts`` + ``manifest_sha256``) so the publish CLI can
     consume either path.
     """
@@ -633,7 +691,10 @@ def verify_stage(stage_dir: Path) -> dict:
     windows checks, but a present windows dir must carry train+validation,
     never ``test``); the ``split`` column matches its directory; doc_type is
     within the 5 committed classes and every subclass within its class
-    vocabulary; NO filename appears in more than one split.  Returns ``ok``,
+    vocabulary (a bad doc_type is reported, never a crash); NO filename AND
+    no non-empty ``content_sha256`` shared between an enrichment row and
+    another split (canonical-only straddles are reported in ``warnings``).  Every
+    shard of a split is read and counted.  Returns ``ok``,
     ``problems``, ``rows``, ``splits`` and per-config ``counts``.
     """
 
@@ -651,7 +712,10 @@ def verify_stage(stage_dir: Path) -> dict:
             if not files:
                 problems.append(f"missing {cfg}/{split}")
                 continue
-            df = pd.read_parquet(files[0])
+            # ALL shards per split: ``enrichment-*.parquet`` sorts BEFORE
+            # ``train-*.parquet``, so reading only ``files[0]`` skipped the
+            # canonical train shard and under-counted once enrichment exists.
+            df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
             counts.setdefault(cfg, {})[split] = int(len(df))
             if (df["split"] != split).any():
                 problems.append(f"{cfg}/{split}: split column mismatch")
@@ -659,7 +723,7 @@ def verify_stage(stage_dir: Path) -> dict:
                 bad = df[~df["doc_type"].isin(DOC_TYPES)]
                 if len(bad):
                     problems.append(f"documents/{split}: {len(bad)} bad doc_type")
-                for cls, grp in df.groupby("doc_type"):
+                for cls, grp in df[df["doc_type"].isin(DOC_TYPES)].groupby("doc_type"):
                     allowed = set(SUBCLASS_BY_CLASS[cls])
                     bad_sub = grp[~grp["subclass"].isin(allowed)]
                     if len(bad_sub):
@@ -679,9 +743,39 @@ def verify_stage(stage_dir: Path) -> dict:
     if not leak["clean"]:
         problems.append(
             f"label leak: {leak['title_eq_filename']} rows title==filename, "
+            f"{leak['title_eq_filename_stem']} rows title==filename-stem, "
             f"{leak['title_looks_like_filename']} titles look like filenames")
+    # identical CONTENT in more than one split (even under different filenames)
+    # is a train/test leak the filename check cannot see.  Reported, never
+    # silently dropped.  A straddling group that includes an ENRICHMENT row
+    # (``source_corpus`` set) is a defect the dedup gate should have caught ->
+    # a problem; canonical-only straddles are inherent to the pinned corpus's
+    # own near-dup families -> surfaced in ``warnings`` (and the result key).
+    cross = leakage_audit(docs)["content_sha256_across_splits"]
+    warnings: list[str] = []
+    if cross:
+        enriched_fns: set[str] = set()
+        if "source_corpus" in docs.columns:
+            sc = docs["source_corpus"]
+            enriched_fns = set(docs.loc[sc.notna() & sc.astype(str).str.strip().ne(""),
+                                        "filename"].astype(str))
+        bad_groups = sorted(sha for sha, g in cross.items()
+                            if enriched_fns & set(g["filenames"]))
+        if bad_groups:
+            problems.append(
+                f"{len(bad_groups)} content_sha256 value(s) shared between an "
+                f"enrichment row and another split (identical content leaks "
+                f"across splits): {bad_groups[:3]}"
+                f"{' ...' if len(bad_groups) > 3 else ''}")
+        n_canon = len(cross) - len(bad_groups)
+        if n_canon:
+            warnings.append(
+                f"{n_canon} canonical content_sha256 value(s) appear in more "
+                f"than one split (corpus near-dup families)")
     return {"ok": not problems, "problems": problems,
             "rows": int(len(docs)),
             "splits": docs["split"].value_counts().to_dict(),
             "counts": counts,
-            "leak_audit": leak}
+            "leak_audit": leak,
+            "warnings": warnings,
+            "content_sha256_across_splits": cross}

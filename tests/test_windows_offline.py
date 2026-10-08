@@ -161,6 +161,16 @@ def test_v1_terminates_when_title_fills_context(fake_tok, title_words):
     assert wins  # over-context windows are returned; encode_inputs rejects
 
 
+@pytest.mark.parametrize("version", ["v1", "v2"])
+def test_title_leaving_no_room_past_overlap_routes_llm(fake_tok, version):
+    """body_budget <= overlap: the slide could only advance ~1 token per
+    window (a 2,000-token doc -> ~2,000 windows).  One over-context window
+    is returned instead, which encode_inputs rejects -> LLM route."""
+    wins = window_document(_words(85, "T"), _words(2000), 100, 16,
+                           version=version, filename="f.pdf")
+    assert len(wins) == 1
+
+
 def test_v2_terminates_when_prefix_fills_context(fake_tok):
     wins = window_document(_words(150, "T"), _words(30), 100, 10,
                            version="v2", filename="f.pdf")

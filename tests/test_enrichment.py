@@ -2,7 +2,7 @@
 
 Covers ``mailroom_ml.enrichment`` (Tier-1 assemblers per pool, Tier-2
 pseudo-label scaffold, Tier-3 eligibility/mixture/seven gates) and the
-``training/assemble_enrichment.py`` CLI.  Fully hermetic: tiny injected
+``training/dataset/mailroom-dataset/assemble_enrichment.py`` CLI.  Fully hermetic: tiny injected
 DataFrames/CSVs, no network, no Hub, no LLM, no GPU.  Byte-determinism of
 every written artifact is asserted (no timestamps, re-runs reproduce
 identical bytes).
@@ -25,7 +25,6 @@ import pytest
 from conftest import (  # type: ignore[import-not-found]
     ROOT,
     fixture_rows,
-    requires_transformers,
 )
 from mailroom_ml import config as cfg
 from mailroom_ml.dataset import build_documents
@@ -38,6 +37,9 @@ from mailroom_ml.enrichment import (
     WINDOW_SCHEMA_COLUMNS,
     AuditStore,
     LabelCard,
+    _balance_by_subclass,
+    _cue_present,
+    _title_leaks_label,
     apply_insurance_cap,
     apply_mixture_caps,
     assemble_bdr_pool,
@@ -1129,9 +1131,13 @@ def test_cli_tier2_end_to_end(tmp_path):
     assert (prov["label_source"] == "pseudo_enron").all()
 
 
-@requires_transformers
-@pytest.mark.train
-def test_cli_windows_marry_the_windows_layout(tmp_path):
+def test_cli_windows_marry_the_windows_layout(tmp_path, monkeypatch):
+    # hermetic windower: this test pins the windows LAYOUT/schema, not the
+    # ModernBERT tokenizer bytes (a Hub download the core suite must not need)
+    monkeypatch.setattr(
+        "mailroom_ml.windows.window_document",
+        lambda title, doc_text, *_a, **_k: [
+            f"{title}\n\n{doc_text}" if title else doc_text])
     stage_dir = tmp_path / "stage"
     write_stage(stage_dir, _canonical())
     pools = {"enron": _tiny_enron_pool(tmp_path),
@@ -1152,6 +1158,32 @@ def test_cli_windows_marry_the_windows_layout(tmp_path):
     assert (wins["filename"].isin(
         pd.read_parquet(stage_dir / "data" / "documents" / "train"
                         / "enrichment-00000-of-00001.parquet")["filename"])).all()
+
+
+@pytest.mark.parametrize("exc", [RuntimeError("transformers not installed"),
+                                 OSError("huggingface.co unreachable")])
+def test_cli_tokenizer_failure_is_clean_and_leaves_the_stage_untouched(
+        tmp_path, monkeypatch, capsys, exc):
+    # windows.py raises RuntimeError (no transformers) or lets the Hub OSError
+    # propagate: either way the CLI reports + returns 2 and stages NOTHING
+    # (no enrichment docs without their windows).
+    def _boom(*_a, **_k):
+        raise exc
+    monkeypatch.setattr("mailroom_ml.windows.window_document", _boom)
+    stage_dir = tmp_path / "stage"
+    write_stage(stage_dir, _canonical())
+    pools = {"enron": _tiny_enron_pool(tmp_path),
+             "cuad": _tiny_cuad_pool(tmp_path),
+             "cms": _empty_pools(tmp_path, ("cms",))["cms"],
+             "gnotheia": _empty_pools(tmp_path, ("gnotheia",))["gnotheia"],
+             "bdr": _empty_pools(tmp_path, ("bdr",))["bdr"],
+             "insurbias": _empty_pools(tmp_path, ("insurbias",))["insurbias"]}
+    args = ["--stage", str(stage_dir), "--tiers", "1"]
+    for name, path in pools.items():
+        args += [f"--{name}-pool", str(path)]
+    assert assemble_cli.main(args) == 2
+    assert "windowing failed" in capsys.readouterr().err
+    assert not list((stage_dir / "data" / "documents" / "train").glob("enrichment-*"))
 
 
 def test_cli_tier3_eligibility_and_gates(tmp_path):
@@ -1259,7 +1291,8 @@ def test_s1_pool_caps_and_dedups():
         {"filename": "s1_off.txt", "doc_text": "Something else.",
          "subclass": "not_on_head"},
     ])
-    res = assemble_s1_pool(pool, canonical, cap_mult=1.0)
+    # 4 corporate_record train rows; cap_mult=2.0 -> the class may DOUBLE (4 new)
+    res = assemble_s1_pool(pool, canonical, cap_mult=2.0)
     assert "s1_ok.txt" in set(res.rows["filename"])
     reasons = set(res.rejected["reason"])
     assert "duplicate_sha_canonical" in reasons
@@ -1296,3 +1329,282 @@ def test_cli_maud_s1_local_paths(tmp_path):
         / "enrichment-00000-of-00001.parquet")
     assert "maud_cli" in set(docs["filename"])
     assert "s1_cli.txt" in set(docs["filename"])
+
+
+# ---------------------------------------------------------------------------
+# Regressions (brief #5): caps, normalization, gates, leak checks, messages
+# ---------------------------------------------------------------------------
+
+def test_apply_mixture_caps_rejects_subclass_without_authentic_support():
+    """A row whose subclass is absent from authentic_counts was neither kept
+    nor rejected (silently vanished)."""
+    rows = pd.concat([_rows_t3("a000", "a"), _rows_t3("z000", "zz_unknown")],
+                     ignore_index=True)
+    kept, cut = apply_mixture_caps(rows, {"a": 60})
+    assert set(kept["filename"]) == {"a000"}
+    gone = cut[cut["filename"] == "z000"]
+    assert gone["reason"].tolist() == ["no_authentic_support"]
+    # nothing vanishes: kept + cut account for every input row
+    assert len(kept) + len(cut) == len(rows)
+
+
+def test_enrichment_rows_are_clerk_normalized_but_hash_the_source_text():
+    """Enrichment doc_text/title must be deterministic_normalize()d (BOM, CRLF,
+    blank runs) like canonical rows; content_sha256 stays the SOURCE hash so
+    dedup against the corpus's source hashes keeps working."""
+    from mailroom_ml.normalize import deterministic_normalize
+
+    raw = "\ufeffDear Sir,\r\n\r\n\r\n\r\nPlease   find the notice.\r\n"
+    gt = pd.DataFrame([{
+        "filename": "enron_norm.txt", "expected": "correspondence",
+        "expected_subclass": "letter", "doc_text": raw, "aeslc_join": "1",
+        "subject": "  Re:   spaced\r\n subject "}])
+    row = assemble_enron_gt(gt, _canonical()).rows.iloc[0]
+    assert row["doc_text"] == deterministic_normalize(raw)[0]
+    assert "\r" not in row["doc_text"] and "\ufeff" not in row["doc_text"]
+    assert "\n\n\n" not in row["doc_text"]
+    assert row["title"] == deterministic_normalize(" Re:   spaced\r\n subject ")[0]
+    assert row["content_sha256"] == content_sha256(raw)
+    from mailroom_ml.windows import estimate_tokens
+    assert row["token_estimate"] == estimate_tokens(row["doc_text"])
+
+
+def test_whitespace_variant_of_canonical_text_is_still_a_duplicate():
+    """Normalization changes the stored text but must not defeat sha dedup
+    against the canonical corpus (which hashes source text)."""
+    canonical = _canonical()
+    canon_text = canonical[
+        canonical["filename"] == "enron_letter_002.txt"]["doc_text"].iloc[0]
+    gt = pd.DataFrame([{
+        "filename": "enron_variant.txt", "expected": "correspondence",
+        "expected_subclass": "letter", "aeslc_join": "1",
+        "doc_text": canon_text.replace(" ", "   ") + "\r\n\r\n\r\n"}])
+    res = assemble_enron_gt(gt, canonical)
+    assert res.rows.empty
+    assert "duplicate_sha_canonical" in set(res.rejected["reason"])
+
+
+def test_whitespace_only_text_is_missing_doc_text_after_normalization():
+    gt = pd.DataFrame([{
+        "filename": "enron_blank.txt", "expected": "correspondence",
+        "expected_subclass": "letter", "aeslc_join": "1",
+        "doc_text": "\ufeff \u200b \x00 \r\n"}])
+    res = assemble_enron_gt(gt, _canonical())
+    assert res.rows.empty
+    assert res.rejected["reason"].tolist() == ["missing_doc_text"]
+
+
+def test_gate_entity_overlap_ignores_single_capitalized_words():
+    """`The`, `Dear`, `Agreement` are sentence/title case, not entities: a
+    lone capitalized word used to be a 'shared proper-noun span' and rejected
+    virtually every candidate."""
+    corpus = ["The deal closed. Agreement reached. Dear Sir, thanks."]
+    res = gate_entity_overlap("The memo follows. Agreement pending. Dear Reader, hi.", corpus)
+    assert res.decision == "pass"
+    # a real multi-word span still rejects; the stoplist still applies
+    assert gate_entity_overlap(
+        "Welcome to Acme Corp.", ["Acme Corp shipped."]).decision == "reject"
+    assert gate_entity_overlap(
+        "Acme Corp is here.", ["Acme Corp shipped."],
+        known_entities=("acme corp",)).reason.startswith("known entity")
+
+
+def test_run_seven_gates_materializes_one_shot_iterators_once():
+    """list(corpus_texts) at the top exhausted a generator, so the lexical /
+    entity gates then saw an empty corpus and passed contaminated text."""
+    card = LabelCard(parent_class="contract", subclass="hosting")
+    corpus_doc = "the hosting agreement includes service level targets for uptime"
+    cand = {"id": "g1", "parent_class": "contract", "subclass": "hosting",
+            "title": "t", "doc_text": corpus_doc}
+    report = run_seven_gates(cand, card, (t for t in [corpus_doc]),
+                             pool_texts=(t for t in ["unrelated pool text"]))
+    assert report.passed is False
+    assert report.first_failure.gate == "lexical_contamination"
+    # a one-shot corpus must also reach the entity gate (gate 4) intact
+    cand2 = {**cand, "id": "g2",
+             "doc_text": "Welcome to Acme Corp for a fresh arrangement of terms."}
+    report2 = run_seven_gates(cand2, card, iter(["Acme Corp shipped the goods on time."]))
+    assert report2.first_failure.gate == "entity_overlap"
+
+
+def test_gate_thresholds_honor_explicit_zero_and_nan_prob_fails():
+    base = {"doc_text": "alpha beta gamma delta", "model_doc_type": "contract",
+            "model_subclass": "hosting"}
+    card = LabelCard(parent_class="contract", subclass="hosting")
+    # explicit min_prob=0.0 is honoured (was replaced by the 0.5 default)
+    assert gate_model_disagreement(
+        {**base, "model_doc_type_prob": 0.2}, card, min_prob=0.0).decision == "pass"
+    assert gate_model_disagreement(
+        {**base, "model_doc_type_prob": 0.2}, card).reason == "model_prob_below_floor"
+    # NaN probability FAILS the floor (nan < x is False and used to pass)
+    nan = gate_model_disagreement({**base, "model_doc_type_prob": float("nan")}, card)
+    assert nan.decision == "reject" and nan.reason == "model_prob_below_floor"
+    # explicit max_similarity=0.0: any overlap at all is a near-duplicate
+    cand = {"doc_text": "alpha beta gamma delta"}
+    res = gate_embedding_diversity(
+        cand, pool_texts=["alpha beta something else entirely"], max_similarity=0.0)
+    assert res.decision == "reject" and res.reason == "near_duplicate"
+    assert res.details["max_similarity"] == 0.0
+
+
+def test_gate_independent_adjudication_empty_verdict_rejects():
+    card = LabelCard(parent_class="contract", subclass="hosting")
+    base = {"doc_text": "x", "title": "t"}
+    for adj in ({}, {"label": ""}, {"parent_class": "contract"}):
+        res = gate_independent_adjudication({**base, "adjudication": adj}, card)
+        assert res.decision == "reject" and res.reason == "adjudication_empty", adj
+    # agreeing / disagreeing verdicts keep working
+    ok = gate_independent_adjudication(
+        {**base, "adjudication": {"label": "hosting"}}, card)
+    assert ok.decision == "pass" and ok.reason == "adjudicator_agrees"
+    bad = gate_independent_adjudication(
+        {**base, "adjudication": {"label": "license"}}, card)
+    assert bad.reason == "adjudication_mismatch"
+    # the documented flat adjudicator_* keys are honoured
+    assert gate_independent_adjudication(
+        {**base, "adjudicator_subclass": "hosting",
+         "adjudicator_parent_class": "contract"}, card).decision == "pass"
+    assert gate_independent_adjudication(
+        {**base, "adjudicator_label": ""}, card).reason == "adjudication_empty"
+    # absent (None / NaN, e.g. a DataFrame row) -> the structural rule path
+    assert gate_independent_adjudication(
+        {**base, "adjudication": float("nan")}, card).reason == "no_independent_rules"
+
+
+def test_title_leak_check_folds_hyphens_underscores_and_case():
+    assert _title_leaks_label("Non-Compete No-Solicit Agreement", "non_compete_no_solicit")
+    assert _title_leaks_label("ALL-CASH Merger", "all_cash")
+    assert _title_leaks_label("All   Cash\nMerger", "all_cash")
+    assert not _title_leaks_label("Share Purchase Agreement", "all_cash")
+    assert not _title_leaks_label("", "all_cash")
+
+
+def test_insurance_pool_and_pseudo_labels_run_the_title_leak_check():
+    pool = pd.DataFrame([
+        {"filename": "g_leak.txt", "doc_text": "polycontext one", "ttl": "Property Claim File"},
+        {"filename": "g_ok.txt", "doc_text": "polycontext two", "ttl": "Claim 4471"}])
+    res = assemble_gnotheia_pool(pool, _canonical(), title_col="ttl",
+                                 head_subclasses=INSURANCE_SUBCLASSES)
+    assert res.rows["filename"].tolist() == ["g_ok.txt"]
+    assert res.rejected["reason"].tolist() == ["leak_title"]
+
+    canonical = _mini_canonical(n_corr=100, corr_subclasses=("email", "letter"))
+    cands = _cands(2, "letter", prefix="p")
+    cands["title"] = ["A Letter To Counsel", "Quarterly numbers"]
+    out = assemble_pseudo_labels(cands, canonical)
+    assert out.rows["filename"].tolist() == ["p_001.txt"]
+    assert "leak_title" in set(out.rejected["reason"])
+
+
+def _merger_pool(n: int) -> pd.DataFrame:
+    return pd.DataFrame([{"filename": f"m_{i:03d}.txt", "doc_text": f"fresh merger text {i}",
+                          "subclass": "all_cash"} for i in range(n)])
+
+
+def test_maud_and_s1_caps_end_the_class_at_cap_mult_x_not_cap_mult_plus_one():
+    """cap_mult=2.0 means the class ends at 2x its size (like CUAD/Enron);
+    MAUD/S1 used cap_mult x n NEW rows (ending at 3x)."""
+    canonical = _legal_canonical()           # 4 merger + 4 corporate train rows
+    res = assemble_maud_pool(_merger_pool(10), canonical, cap_mult=2.0)
+    assert len(res.rows) == 4                # 2.0x of 4 -> 4 new rows (was 8)
+    cut = res.rejected[res.rejected["reason"] == "cap_merger_agreement"]
+    assert len(cut) == 6
+    assert "may end at 2.0 x" in cut["detail"].iloc[0]
+    s1 = pd.DataFrame([{"filename": f"s_{i:03d}.txt", "doc_text": f"fresh bylaws text {i}",
+                        "subclass": "bylaws"} for i in range(10)])
+    res_s1 = assemble_s1_pool(s1, canonical, cap_mult=2.0)
+    assert len(res_s1.rows) == 4
+    assert (res_s1.rejected["reason"] == "cap_corporate_record").sum() == 6
+    # cap_mult=1.0 adds nothing (the class stays its size)
+    assert assemble_maud_pool(_merger_pool(3), canonical, cap_mult=1.0).rows.empty
+
+
+def test_cuad_cap_message_describes_the_real_formula():
+    canonical = _canonical()
+    res = assemble_cuad_pool(
+        pd.DataFrame([{"id": f"c{i}", "input": {"doc_text": f"contract body {i}"},
+                       "metadata": {"category": "Consulting Agreements"}} for i in range(8)]),
+        canonical, cap_mult=2.0)
+    detail = res.rejected[res.rejected["reason"] == "cap_contract"]["detail"].iloc[0]
+    assert "new rows" in detail and "may end at 2.0 x" in detail
+
+
+def test_balance_redistributes_unused_slots():
+    """Slots a short subclass cannot fill go to the others instead of cutting
+    rows while the budget still has room."""
+    def rec(sc, i):
+        return {"filename": f"{sc}_{i:02d}.txt", "subclass": sc, "label_confidence": 1.0}
+    records = [rec("a", 0)] + [rec("b", i) for i in range(5)]
+    kept, rejected = _balance_by_subclass(records, 6)
+    assert len(kept) == 6 and not rejected      # was 4 kept / 2 cut (3 slots each)
+    kept, rejected = _balance_by_subclass(records, 4)
+    assert sorted(r["subclass"] for r in kept) == ["a", "b", "b", "b"]
+    assert len(rejected) == 2
+    # head subclasses with NO candidates hand their slots back too
+    kept, _ = _balance_by_subclass(records, 6, subclass_universe=("a", "b", "c", "d"))
+    assert len(kept) == 6
+    # deterministic regardless of input order
+    kept2, _ = _balance_by_subclass(list(reversed(records)), 4)
+    assert [r["filename"] for r in kept2] == [r["filename"] for r in _balance_by_subclass(records, 4)[0]]
+
+
+def test_pseudo_balance_uses_the_actual_cap_not_the_survivor_count():
+    """_balance_by_subclass(kept, len(kept)) cut rows although the 30% cap was
+    nowhere near reached (22 survivors, budget 30)."""
+    canonical = _mini_canonical(n_corr=100, corr_subclasses=("email", "letter"))
+    cands = pd.concat([_cands(2, "email", prefix="e"), _cands(20, "letter", prefix="l")],
+                      ignore_index=True)
+    res = assemble_pseudo_labels(cands, canonical)
+    assert len(res.rows) == 22
+    assert "pseudo_balance_cut" not in set(res.rejected["reason"])
+
+
+def test_cue_with_trailing_punctuation_matches():
+    """`\\b` after ':' never matches, so a cue like "Re:" was dead."""
+    assert _cue_present("Re: quarterly numbers", "Re:")
+    assert _cue_present("subject: re: x", "RE:")
+    assert not _cue_present("There is more", "Re:")   # leading boundary kept
+    assert _cue_present("uptime target", "uptime")
+    assert not _cue_present("downtimes", "uptime")
+    card = LabelCard(parent_class="correspondence", subclass="letter",
+                     positive_cues=("Re:",))
+    assert gate_rule_cues({"doc_text": "Re: hello"}, card).decision == "pass"
+
+
+def test_build_enrichment_windows_refuses_missing_windows():
+    """No silent fallback to ONE unbounded window over the whole text."""
+    rec = {"filename": "w.txt", "title": "", "doc_text": "x " * 50_000,
+           "doc_type": "correspondence", "subclass": "letter"}
+    with pytest.raises(ValueError, match=r"w\.txt.*no 'windows'"):
+        build_enrichment_windows([rec])
+    with pytest.raises(ValueError):
+        build_enrichment_windows([{**rec, "windows": []}])
+
+
+def test_cross_pool_message_names_the_pool_that_won():
+    text = "Same doc in three pools."
+    ra = assemble_cms_pool(pd.DataFrame([{"filename": "a.txt", "expected_subclass": "carrier",
+                                          "doc_text": text}]), _canonical(),
+                           head_subclasses=INSURANCE_SUBCLASSES)
+    rb = assemble_gnotheia_pool(pd.DataFrame([{"filename": "b.txt", "doc_text": text}]),
+                                _canonical(), head_subclasses=INSURANCE_SUBCLASSES)
+    _, rejects = combine_tier1([("cms", ra), ("gnotheia", rb)])
+    detail = rejects["detail"].iloc[0]
+    assert "(cms)" in detail and "(gnotheia)" not in detail
+
+
+def test_insurance_cap_message_names_the_kept_subclass_not_the_cut_one():
+    canonical = _mini_canonical(n_ins=10, ins_subclasses=("carrier",))
+    ins = pd.concat([
+        assemble_gnotheia_pool(pd.DataFrame([{"filename": f"g{i}.txt",
+                                              "doc_text": f"prop {i}"} for i in range(10)]),
+                               canonical, head_subclasses=INSURANCE_SUBCLASSES).rows,
+        assemble_cms_pool(pd.DataFrame([{"filename": f"c{i}.txt", "expected_subclass": "carrier",
+                                         "doc_text": f"car {i}"} for i in range(5)]),
+                          canonical, head_subclasses=INSURANCE_SUBCLASSES).rows,
+    ], ignore_index=True)
+    kept, cut = apply_insurance_cap(ins, canonical, class_cap_mult=2.0)
+    assert set(kept["subclass"]) == {"property"} and len(cut) == 5
+    detail = cut["detail"].iloc[0]
+    assert "cut 'carrier' row" in detail
+    assert "kept subclasses ['property']" in detail

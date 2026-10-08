@@ -13,7 +13,7 @@ import json
 import pandas as pd
 import pytest
 
-from conftest import fixture_rows, requires_transformers, transformers_available
+from conftest import fixture_rows, transformers_available
 from mailroom_ml.config import DATA_DIR, DOC_TYPES
 from mailroom_ml.dataset import (
     build_documents,
@@ -30,6 +30,21 @@ from mailroom_ml.dataset import (
     verify_stage,
 )
 from mailroom_ml.labels import SUBCLASS_BY_CLASS
+
+
+def _fake_window_document(title, doc_text, *_a, **_k):
+    """Tokenizer-free stand-in for ``windows.window_document`` (one window =
+    the published v1 ``title\\n\\nbody`` shape): the core suite must never
+    need the ModernBERT tokenizer (a Hub download)."""
+    return [f"{title}\n\n{doc_text}" if title else doc_text]
+
+
+@pytest.fixture
+def fake_windower(monkeypatch):
+    import mailroom_ml.dataset as dataset_mod
+
+    monkeypatch.setattr(dataset_mod, "window_document", _fake_window_document)
+
 
 EXPECTED_COLUMNS = [
     "filename", "document_id", "content_sha256", "source_revision", "title",
@@ -87,9 +102,7 @@ def test_build_documents_fixtures():
     assert merged["subclass"] == "all_cash"
 
 
-@requires_transformers
-@pytest.mark.train
-def test_build_windows_fixtures():
+def test_build_windows_fixtures(fake_windower):
     docs = build_documents(fixture_rows())
     wins = build_windows(docs)
     # fixtures are tiny: the 10% val draw can be empty — but test is ALWAYS out
@@ -99,9 +112,7 @@ def test_build_windows_fixtures():
     assert wins["filename"].nunique() == (docs["split"] != "test").sum()
 
 
-@requires_transformers
-@pytest.mark.train
-def test_stage_and_verify_stage(tmp_path):
+def test_stage_and_verify_stage(tmp_path, fake_windower):
     stats = stage(tmp_path, rows=fixture_rows(), with_windows=True)
     check = verify_stage(tmp_path)
     assert check["ok"], check["problems"]
@@ -144,9 +155,7 @@ def test_stage_stats_sums_all_files_and_refresh_info(tmp_path):
     assert info["documents"]["splits"]["train"]["num_examples"] == n_train + 2
 
 
-@requires_transformers
-@pytest.mark.train
-def test_stage_byte_deterministic_rebuilds(tmp_path):
+def test_stage_byte_deterministic_rebuilds(tmp_path, fake_windower):
     """Rebuilds are byte-identical: manifest + sidecars + parquet bytes."""
     rows = fixture_rows()
     a_dir, b_dir = tmp_path / "a", tmp_path / "b"
@@ -242,7 +251,7 @@ def test_leakage_audit_fixture_clean_and_dup_titles():
 @pytest.mark.fullcorpus
 @pytest.mark.skipif(
     not (DATA_DIR / "parquet" / "ground_truth" / "train").exists(),
-    reason="local snapshot absent (data/parquet) — fetch via training/build_dataset.py",
+    reason="local snapshot absent (data/parquet) — fetch via training/dataset/mailroom-dataset/fetch_corpus.py",
 )
 def test_full_corpus_contract():
     """Full-corpus invariants: 3,302 rows, splits, no leakage, vocab."""
@@ -371,3 +380,174 @@ def test_verify_stage_fails_loudly_on_filename_leak(tmp_path):
     chk = verify_stage(tmp_path)
     assert chk["ok"] is False
     assert any("label leak" in p for p in chk["problems"])
+
+
+# ---------------------------------------------------------------------------
+# verify_stage / loader / audit regressions (brief #5 bugs 1-5, 20, 22)
+# ---------------------------------------------------------------------------
+
+def test_verify_stage_reads_every_shard_not_just_the_first(tmp_path):
+    """`enrichment-*.parquet` sorts BEFORE `train-*.parquet`: reading only
+    files[0] skipped the canonical train shard (and its problems) entirely."""
+    stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    d = tmp_path / "data" / "documents" / "train"
+    canonical = pd.read_parquet(d / "train-00000-of-00001.parquet")
+    n_train = len(canonical)
+    extra = canonical.head(2).copy()
+    extra["filename"] = ["zzzz-extra-0", "zzzz-extra-1"]
+    extra["content_sha256"] = ["ex0", "ex1"]
+    extra["title"] = ["", ""]
+    extra.to_parquet(d / "enrichment-00000-of-00001.parquet")
+    check = verify_stage(tmp_path)
+    assert check["ok"], check["problems"]
+    # the train count is the SUM of both shards (was the enrichment shard alone)
+    assert check["counts"]["documents"]["train"] == n_train + 2
+
+    # a defect in the canonical shard must now be seen even though the
+    # enrichment shard sorts first
+    bad = canonical.copy()
+    bad.loc[bad.index[0], "split"] = "validation"
+    bad.to_parquet(d / "train-00000-of-00001.parquet")
+    problems = verify_stage(tmp_path)["problems"]
+    assert any("documents/train: split column mismatch" in p for p in problems)
+
+
+def test_verify_stage_bad_doc_type_is_reported_not_a_crash(tmp_path):
+    stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    f = tmp_path / "data" / "documents" / "train" / "train-00000-of-00001.parquet"
+    df = pd.read_parquet(f)
+    df.loc[df.index[0], "doc_type"] = "not_a_class"  # used to KeyError
+    df.to_parquet(f)
+    check = verify_stage(tmp_path)
+    assert check["ok"] is False
+    assert any("bad doc_type" in p for p in check["problems"])
+
+
+def _fake_corpus(monkeypatch, tmp_path, *, drop_text=(), null_text=()):
+    """Point load_corpus_rows at in-memory GT + text frames."""
+    import mailroom_ml.dataset as dataset_mod
+
+    (tmp_path / "ground_truth" / "train").mkdir(parents=True)
+    pd.DataFrame({"x": [1]}).to_parquet(tmp_path / "ground_truth" / "train" / "a.parquet")
+    monkeypatch.setattr(dataset_mod, "_PARQUET_DIR", tmp_path)
+    gt = pd.DataFrame({"filename": ["a.txt", "b.txt"], "expected": ["contract"] * 2,
+                       "split": ["train", "test"]})
+    texts = {"a.txt": "alpha body", "b.txt": "beta body"}
+    for fn in drop_text:
+        texts.pop(fn)
+    for fn in null_text:
+        texts[fn] = None
+    blind = pd.DataFrame({"filename": list(texts), "doc_text": list(texts.values()),
+                          "metadata": [{}] * len(texts)})
+    monkeypatch.setattr(dataset_mod, "_load_config",
+                        lambda cfg: gt if cfg == "ground_truth" else blind)
+
+
+@pytest.mark.parametrize("kw", [{"drop_text": ("b.txt",)}, {"null_text": ("b.txt",)}])
+def test_load_corpus_rows_missing_text_is_loud(monkeypatch, tmp_path, kw):
+    """A GT filename with no text row (or a null doc_text) used to become an
+    empty / "None" document silently."""
+    _fake_corpus(monkeypatch, tmp_path, **kw)
+    with pytest.raises(ValueError, match=r"corpus join defect.*b\.txt"):
+        load_corpus_rows()
+
+
+def _leak_frame(**over):
+    base = {"filename": ["Non_Compete-Agmt_001.txt"], "title": [""],
+            "doc_text": ["body"], "doc_type": ["contract"], "subclass": ["affiliate"]}
+    base.update(over)
+    return pd.DataFrame(base)
+
+
+def test_filename_leak_audit_catches_filename_stem_titles():
+    from mailroom_ml.dataset import filename_leak_audit
+
+    assert filename_leak_audit(_leak_frame())["clean"] is True
+    exact = filename_leak_audit(_leak_frame(title=["Non_Compete-Agmt_001"]))
+    assert exact["title_eq_filename_stem"] == 1 and exact["clean"] is False
+    # case / separator folded form of the stem is the same leak
+    folded = filename_leak_audit(_leak_frame(title=["non compete agmt 001"]))
+    assert folded["title_eq_filename_stem"] == 1 and folded["clean"] is False
+    # an unrelated title stays clean
+    assert filename_leak_audit(_leak_frame(title=["Master Services"]))["clean"] is True
+
+
+def test_verify_stage_flags_stem_title_leak(tmp_path):
+    stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    f = tmp_path / "data" / "documents" / "train" / "train-00000-of-00001.parquet"
+    df = pd.read_parquet(f)
+    df.loc[df.index[0], "title"] = df.loc[df.index[0], "filename"].rsplit(".", 1)[0]
+    df.to_parquet(f)
+    check = verify_stage(tmp_path)
+    assert check["ok"] is False
+    assert any("title==filename-stem" in p for p in check["problems"])
+
+
+def test_leakage_audit_reports_content_sha_across_splits_and_ignores_null():
+    df = pd.DataFrame({
+        "filename": ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"],
+        "title": ["", "", "", "", ""],
+        "doc_type": ["contract"] * 5, "subclass": ["affiliate"] * 5,
+        "split": ["train", "test", "train", "train", "validation"],
+        # a/b share content across train/test under DIFFERENT filenames;
+        # c/d/e are hash-less (None / NaN / "") and must never group
+        "content_sha256": pd.Series(["h1", "h1", None, float("nan"), ""], dtype=object),
+    })
+    audit = leakage_audit(df)
+    assert audit["content_sha256_across_splits"] == {
+        "h1": {"splits": ["test", "train"], "filenames": ["a.txt", "b.txt"]}}
+
+
+def test_verify_stage_flags_enrichment_row_sharing_content_with_test(tmp_path):
+    stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    docs = tmp_path / "data" / "documents"
+    test = pd.read_parquet(next((docs / "test").glob("*.parquet")))
+    leak = pd.read_parquet(docs / "train" / "train-00000-of-00001.parquet").head(1).copy()
+    leak["filename"] = ["zzzz-leaky-enrich"]
+    leak["title"] = [""]
+    leak["content_sha256"] = [test["content_sha256"].iloc[0] or "feedface"]
+    leak["source_corpus"] = ["local:x"]
+    if not test["content_sha256"].iloc[0]:  # fixture rows may be hash-less
+        test.loc[test.index[0], "content_sha256"] = "feedface"
+        test.to_parquet(next((docs / "test").glob("*.parquet")))
+    leak.to_parquet(docs / "train" / "enrichment-00000-of-00001.parquet")
+    check = verify_stage(tmp_path)
+    assert check["ok"] is False
+    assert any("content_sha256" in p for p in check["problems"])
+    assert check["content_sha256_across_splits"]
+
+
+def test_dedup_by_sha_null_hash_is_kept_not_pseudo_hashed():
+    """None/NaN content_sha256 used to stringify to "None"/"nan" and make every
+    hash-less row a 'duplicate' of every other one."""
+    df = pd.DataFrame({"filename": ["a.txt", "b.txt"],
+                       "content_sha256": pd.Series([None, float("nan")], dtype=object)})
+    pool = pd.DataFrame({"filename": ["p.txt", "q.txt"],
+                         "content_sha256": pd.Series([None, float("nan")], dtype=object)})
+    assert len(dedup_by_sha(df, pool)) == 2
+
+
+def test_stage_without_windows_removes_stale_windows(tmp_path, fake_windower):
+    """A documents-only re-stage must not leave a previous build's windows."""
+    stage(tmp_path, rows=fixture_rows(), with_windows=True)
+    assert (tmp_path / "data" / "windows").exists()
+    stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    assert not (tmp_path / "data" / "windows").exists()
+    assert "windows" not in stage_stats(tmp_path)["counts"]
+
+
+def test_sidecar_writes_are_atomic(tmp_path, monkeypatch):
+    """A failed replace must leave the previous sidecar intact and no tmp."""
+    import os
+
+    stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    before = (tmp_path / "labels.json").read_bytes()
+
+    def _boom(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", _boom)
+    with pytest.raises(OSError, match="disk full"):
+        stage(tmp_path, rows=fixture_rows(), with_windows=False)
+    assert (tmp_path / "labels.json").read_bytes() == before
+    assert not list(tmp_path.glob(".*.tmp"))

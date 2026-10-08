@@ -140,7 +140,7 @@ def test_label_maps_use_observed_surfaces():
 @pytest.mark.fullcorpus
 @pytest.mark.skipif(
     not (DATA_DIR / "parquet" / "ground_truth" / "train").exists(),
-    reason="local snapshot absent (data/parquet) — fetch via training/build_dataset.py",
+    reason="local snapshot absent (data/parquet) — fetch via training/dataset/mailroom-dataset/fetch_corpus.py",
 )
 def test_full_corpus_surfaces_match_sanctioned_sets():
     """#75 surface-drift guardrail on the real 3,302-row corpus.

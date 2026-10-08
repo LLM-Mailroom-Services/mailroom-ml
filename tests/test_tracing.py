@@ -50,14 +50,32 @@ def test_ml_triage_span_contract_surface():
     )
     assert s["name"] == SPAN_INTAKE_ML_TRIAGE
     assert s["metadata"]["schema_version"] == INTAKE_HANDOFF_SCHEMA_VERSION
-    assert set(s["input"]) == {"chars", "token_estimate", "windows"}
+    # the documented contract: input carries the filename (None if not passed)
+    assert set(s["input"]) == {"filename", "chars", "token_estimate", "windows"}
+    assert s["input"]["filename"] is None
+    # `output` keeps window_agreement for existing consumers (add, don't remove)
     assert set(s["output"]) == {"doc_type", "subclass", "confidence",
                                 "route", "window_agreement"}
     meta = s["metadata"]
     assert {"model_id", "artifact_sha", "dataset_revision",
             "calibration_version", "label_schema_version",
-            "synthetic_policy_version"} <= set(meta)
+            "synthetic_policy_version", "window_agreement"} <= set(meta)
     assert s["guard_failures"] == []
+
+
+def test_ml_triage_span_carries_filename_and_metadata_window_agreement():
+    """Docstring-vs-code: the contract itemizes input.filename and
+    metadata.window_agreement; both must be present (and the legacy
+    output.window_agreement must survive)."""
+    s = build_ml_triage_span(
+        method="bert", routing_path="bert_intake", routing_reason="r",
+        doc_chars=10, token_estimate=3, windows=1, model_id="m",
+        artifact_sha=None, dataset_revision=None, calibration_version=None,
+        label_schema_version=None, synthetic_policy_version=None,
+        window_agreement=0.75, filename="memo.txt")
+    assert s["input"]["filename"] == "memo.txt"
+    assert s["metadata"]["window_agreement"] == 0.75
+    assert s["output"]["window_agreement"] == 0.75
 
 
 def test_record_failure_attaches_machine_readable_blob():
@@ -79,6 +97,39 @@ def test_record_failure_attaches_machine_readable_blob():
     assert "traceback_point" in broken["failure"]
     # original span keys survive the wrap
     assert broken["name"] == SPAN_INTAKE_ML_TRIAGE
+
+
+def _boom_inner():
+    raise ValueError("deep failure")
+
+
+def _boom_outer():
+    _boom_inner()
+
+
+def test_record_failure_points_at_the_innermost_frame():
+    """The docstring promises the stack frame, not just `Type: message`: the
+    traceback_point names the file:line and function where it was raised."""
+    span = build_bert_prep_span(
+        filename="a.txt", doc_chars=1, token_estimate=1, windows=1,
+        model_id="m", artifact_sha=None, dataset_revision=None,
+        calibration_version=None, label_schema_version=None,
+        synthetic_policy_version=None, window_agreement=None, route=None,
+        doc_type=None, subclass=None, confidence=None)
+    try:
+        _boom_outer()
+    except ValueError as exc:
+        broken = record_failure(span, exc, where="classify")
+    failure = broken["failure"]
+    assert failure["frame"]["function"] == "_boom_inner"
+    assert failure["frame"]["file"] == "test_tracing.py"
+    assert failure["traceback_point"] == (
+        f"test_tracing.py:{failure['frame']['line']} _boom_inner")
+    # an exception that was never raised has no frame: falls back to the
+    # one-line text and says so
+    plain = record_failure(span, KeyError("k"), where="x")["failure"]
+    assert plain["frame"] is None
+    assert plain["traceback_point"].startswith("KeyError")
 
 
 def test_section_map_empty_by_design_is_ok():

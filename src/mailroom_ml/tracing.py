@@ -17,6 +17,7 @@ reason and the pipeline continues on the LLM path (fail-open, plan D10).
 """
 from __future__ import annotations
 
+import os
 import traceback
 from typing import Any
 
@@ -153,6 +154,7 @@ def build_ml_triage_span(
     confidence: float | None = None,
     route: str | None = None,
     guard_failures: list[str] | None = None,
+    filename: str | None = None,
 ) -> dict[str, Any]:
     """The ``intake-ml-triage`` span — the epic's M1/M3 observability surface.
 
@@ -162,10 +164,17 @@ def build_ml_triage_span(
     calibration_version, label_schema_version, synthetic_policy_version,
     window_agreement).  Nothing here is optional from the contract's
     perspective; ``None`` values mean "not produced by this path".
+
+    ``window_agreement`` is carried in ``metadata`` (the contract's home for
+    it) AND, unchanged, in ``output`` (where earlier consumers read it);
+    ``input.filename`` comes from the optional ``filename`` argument
+    (``None`` when the caller does not supply one).  Existing keys are never
+    removed — consumers keyed on the old shape keep working.
     """
     return {
         "name": SPAN_INTAKE_ML_TRIAGE,
         "input": {
+            "filename": filename,
             "chars": doc_chars,
             "token_estimate": token_estimate,
             "windows": windows,
@@ -188,6 +197,7 @@ def build_ml_triage_span(
             "calibration_version": calibration_version,
             "label_schema_version": label_schema_version,
             "synthetic_policy_version": synthetic_policy_version,
+            "window_agreement": window_agreement,
         },
         "guard_failures": guard_failures or [],
     }
@@ -197,16 +207,32 @@ def record_failure(span: dict[str, Any], exc: BaseException, *, where: str) -> d
     """Attach a machine-readable failure record to a span (fail-open, D10).
 
     The trace keeps the exception type + message, the span-owner location
-    and (when available) the first stack frame of the failure — never the
-    full traceback text in the span payload (keeps payloads small and
-    schema-stable).
+    and (when the exception was raised) the innermost stack frame of the
+    failure as ``traceback_point`` (``"<file>:<line> <function>"``, file
+    basename only) plus a structured ``frame`` — never the full traceback
+    text in the span payload (keeps payloads small and schema-stable).  An
+    exception that carries no traceback (never raised) falls back to its
+    one-line ``Type: message`` text and ``frame`` is ``None``.
     """
+    frames = traceback.extract_tb(exc.__traceback__)
+    if frames:
+        inner = frames[-1]
+        frame: dict[str, Any] | None = {
+            "file": os.path.basename(inner.filename),
+            "line": inner.lineno,
+            "function": inner.name,
+        }
+        point = f"{frame['file']}:{frame['line']} {frame['function']}"
+    else:
+        frame = None
+        point = traceback.format_exception_only(type(exc), exc)[-1].strip()
     return {
         **span,
         "failure": {
             "type": type(exc).__name__,
             "message": str(exc),
             "where": where,
-            "traceback_point": traceback.format_exception_only(type(exc), exc)[-1].strip(),
+            "traceback_point": point,
+            "frame": frame,
         },
     }

@@ -76,6 +76,19 @@ def test_duplicate_groups_tracks_sha256_families():
         "n_groups": 0, "n_duplicate_rows": 0, "groups": []}
 
 
+def test_duplicate_groups_null_sha_is_not_a_pseudo_hash():
+    """None/NaN content_sha256 must not stringify to "None"/"nan" and group
+    every hash-less row into one fake duplicate family."""
+    docs = pd.DataFrame({
+        "filename": ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"],
+        "content_sha256": pd.Series(
+            [None, None, float("nan"), "real", "real"], dtype=object),
+    })
+    dup = duplicate_groups(docs)
+    assert dup["n_groups"] == 1
+    assert dup["groups"] == [["d.txt", "e.txt"]]
+
+
 def test_duplicate_groups_skips_empty_sha256():
     docs = pd.DataFrame([
         {"filename": "a.txt", "content_sha256": ""},

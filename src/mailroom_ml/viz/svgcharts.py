@@ -232,6 +232,8 @@ def lines(title: str, series: list[dict], *, subtitle: str = "", x_label: str = 
         x1 = x0 + 1
     if y_range:
         y0, y1 = y_range
+        if y1 == y0:  # a degenerate explicit range would divide by zero in Y()
+            y1 = y0 + 1
     else:
         y0, y1 = min(ys + [0.0]), max(ys + [0.0])
         pad = (y1 - y0) * 0.08 or 0.1

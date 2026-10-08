@@ -215,10 +215,11 @@ def _window_document_v1(tok, title: str, doc_text: str,
     # every window re-tokenizes to <= max_tokens WITH specials.
     n_title = len(tok(title, add_special_tokens=False)["input_ids"]) if title else 0
     body_budget = max_tokens - 2 - n_title
-    if body_budget < 1:
-        # the title alone fills the context: no window can carry any body.
-        # Hand back the over-context text — encode_inputs raises and the
-        # caller routes LLM (never truncate).
+    if body_budget <= max(overlap, 0):
+        # the title (nearly) fills the context: a window carries no body
+        # beyond the overlap, so the slide would crawl ~1 token per window
+        # (thousands of windows).  Hand back the over-context text —
+        # encode_inputs raises and the caller routes LLM (never truncate).
         return [full]
     return _slide_windows(
         tok, ids, body_budget=body_budget, max_tokens=max_tokens,
@@ -246,8 +247,8 @@ def _window_document_v2(tok, title: str, doc_text: str,
     if n_prefix + len(ids) <= max_tokens - 2:
         return [full]
     body_budget = max_tokens - 2 - n_prefix
-    if body_budget < 1:
-        return [full]  # prefix alone fills the context -> LLM (see v1)
+    if body_budget <= max(overlap, 0):
+        return [full]  # prefix (nearly) fills the context -> LLM (see v1)
     return _slide_windows(
         tok, ids, body_budget=body_budget, max_tokens=max_tokens,
         overlap=overlap,

@@ -122,7 +122,14 @@ def render(runs: list[tuple[str, dict]]) -> dict[str, str]:
     if rows:
         th = [r["threshold"] for r in rows]
         pick = sr.get("recommended_threshold")
-        at = next((r for r in rows if r["threshold"] == pick), None)
+        # the pick is a float read back from JSON: match by tolerance (the
+        # nearest row within 1e-6), never ``==`` — a 1-ulp difference would
+        # report "no threshold met the budget" for a threshold that was met.
+        at = None
+        if pick is not None:
+            near = min(rows, key=lambda r: abs(float(r["threshold"]) - float(pick)))
+            if abs(float(near["threshold"]) - float(pick)) <= 1e-6:
+                at = near
         sub = (f"Pick {pick:.2f}: {_pct(at['coverage'])} of windows accepted at {at['accuracy'] * 100:.1f}% accuracy"
                if at else "No threshold met the error budget")
         charts["selective_risk.svg"] = sc.lines(

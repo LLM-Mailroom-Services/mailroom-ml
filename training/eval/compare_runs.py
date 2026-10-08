@@ -4,9 +4,9 @@
 Plan §11 / mailroom-ml #17: paired bootstrap CIs on headline metrics.
 Does not call live LLM APIs — compare pre-exported eval JSON only.
 
-    uv run python training/compare_runs.py --a reports/eval_a.json \\
+    uv run python training/eval/compare_runs.py --a reports/eval_a.json \\
         --b reports/eval_b.json
-    uv run python training/compare_runs.py --a a.json --b b.json --json
+    uv run python training/eval/compare_runs.py --a a.json --b b.json --json
 """
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(ROOT / "src") not in sys.path:
@@ -143,7 +143,13 @@ def compare_reports(
     seed: int = RANDOM_STATE,
     cohort: str = "",
 ) -> dict:
-    """Headline scalars + paired bootstrap where document IDs align."""
+    """Headline scalars + paired bootstrap where document IDs align.
+
+    Deltas are A minus B. Paired intervals and ``observed_diff`` use shared
+    filenames with the metric key present on both sides; headline deltas can
+    cover different populations. ``cohort`` filters pairs using A's window
+    counts and selects cohort doc_type accuracy/ECE when supplied. Without
+    shared filenames, returns headline comparisons without paired estimates."""
     idx_a = _per_doc_index(report_a)
     idx_b = _per_doc_index(report_b)
     shared = sorted(set(idx_a) & set(idx_b))
@@ -183,24 +189,33 @@ def compare_reports(
                       else float(va) - float(vb)),
         }
 
+    def _both_have(key: str) -> bool:
+        # a per-doc key must exist on BOTH sides (older eval JSONs lack
+        # sc_correct / fast_path) — never index B on A's schema
+        """Return whether every shared document has the metric key in both reports."""
+        return all(key in idx_a[k] and key in idx_b[k] for k in shared)
+
+    def _pair(key: str) -> dict:
+        """Return a bootstrap interval and observed A-minus-B mean for shared documents."""
+        xa = [1.0 if idx_a[k].get(key) else 0.0 for k in shared]
+        xb = [1.0 if idx_b[k].get(key) else 0.0 for k in shared]
+        out = paired_bootstrap(xa, xb, n_resamples=n_resamples, seed=seed)
+        # the observed A-B difference on the PAIRED population, the one the
+        # CI describes (headline ``delta`` is over each run's full doc set,
+        # which differs when the samples / cohorts differ)
+        out["observed_diff"] = float(np.mean(np.subtract(xa, xb)))
+        return out
+
     paired: dict[str, dict] = {}
     if shared:
-        dt_a = [1.0 if idx_a[k]["dt_correct"] else 0.0 for k in shared]
-        dt_b = [1.0 if idx_b[k]["dt_correct"] else 0.0 for k in shared]
-        paired["doc_type_accuracy"] = paired_bootstrap(
-            dt_a, dt_b, n_resamples=n_resamples, seed=seed)
-        metrics["doc_type_accuracy"]["paired"] = paired["doc_type_accuracy"]
-        if all("sc_correct" in idx_a[k] for k in shared):
-            sc_a = [1.0 if idx_a[k]["sc_correct"] else 0.0 for k in shared]
-            sc_b = [1.0 if idx_b[k]["sc_correct"] else 0.0 for k in shared]
-            paired["subclass_accuracy"] = paired_bootstrap(
-                sc_a, sc_b, n_resamples=n_resamples, seed=seed)
-        if all("fast_path" in idx_a[k] for k in shared):
-            fp_a = [1.0 if idx_a[k].get("fast_path") else 0.0 for k in shared]
-            fp_b = [1.0 if idx_b[k].get("fast_path") else 0.0 for k in shared]
-            paired["fast_path_rate"] = paired_bootstrap(
-                fp_a, fp_b, n_resamples=n_resamples, seed=seed)
-            metrics["fast_path_rate"]["paired"] = paired["fast_path_rate"]
+        for key, metric in (("dt_correct", "doc_type_accuracy"),
+                            ("sc_correct", "subclass_accuracy"),
+                            ("fast_path", "fast_path_rate")):
+            if not _both_have(key):
+                continue
+            paired[metric] = _pair(key)
+            if metric in metrics:
+                metrics[metric]["paired"] = paired[metric]
 
     return {
         "n_docs_a": report_a.get("n_docs"),
@@ -222,6 +237,7 @@ def compare_reports(
 
 def format_markdown(cmp: dict, *, label_a: str = "A",
                     label_b: str = "B") -> str:
+    """Render comparison scalars, paired intervals, and per-head deltas as Markdown."""
     lines = [
         f"# compare_runs: {label_a} vs {label_b}",
         "",
@@ -238,6 +254,8 @@ def format_markdown(cmp: dict, *, label_a: str = "A",
             f"[{ci['ci_low']:.4f}, {ci['ci_high']:.4f}]"
             if ci.get("ci_low") is not None else "—"
         )
+        if ci.get("observed_diff") is not None:
+            ci_s += f" (paired Δ {ci['observed_diff']:.4f}, n={ci['n_paired']})"
         lines.append(
             f"| {name} | {_fmt(row['a'])} | {_fmt(row['b'])} | "
             f"{_fmt(row['delta'])} | {ci_s} |"

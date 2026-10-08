@@ -2,20 +2,20 @@
 # Read-only M9a training monitor — polls logs and process list; never starts or kills jobs.
 #
 # Usage:
-#   ./training/watch_m9a_run.sh
-#   ./training/watch_m9a_run.sh --once
-#   ./training/watch_m9a_run.sh --log logs/m9a-local-....log --jsonl data/.../train_steps.jsonl
-#   ./training/watch_m9a_run.sh --follow   # refresh every 30s until Ctrl-C
-#   ./training/watch_m9a_run.sh --agent    # sparse follow every 42m (agents / long ETA)
-#   ./training/watch_m9a_run.sh --follow --pretty   # LLM Mailroom ASCII TUI (default on TTY)
-#   ./training/watch_m9a_run.sh --plain   # force plain text
+#   ./training/logging/watch_m9a_run.sh
+#   ./training/logging/watch_m9a_run.sh --once
+#   ./training/logging/watch_m9a_run.sh --log logs/m9a-local-....log --jsonl data/.../train_steps.jsonl
+#   ./training/logging/watch_m9a_run.sh --follow   # refresh every 30s until Ctrl-C
+#   ./training/logging/watch_m9a_run.sh --agent    # sparse follow every 42m (agents / long ETA)
+#   ./training/logging/watch_m9a_run.sh --follow --pretty   # LLM Mailroom ASCII TUI (default on TTY)
+#   ./training/logging/watch_m9a_run.sh --plain   # force plain text
 #
 # Safe for agents/subagents: use this instead of re-launching run_m9a_local.sh when
 # progress looks slow. If train_modernbert is running, only watch.
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PY="${ROOT}/.venv/bin/python"
 LOCK="${ROOT}/logs/.m9a-train.lock"
 LOG=""
@@ -107,7 +107,7 @@ print_status() {
   trainer_lines=""
   for pid in $(pgrep -f 'train_modernbert\.py' 2>/dev/null || true); do
     args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-    if [[ "$args" == *python*training/train_modernbert.py* ]]; then
+    if [[ "$args" == *python*train_modernbert.py* ]]; then
       if [[ -n "$run_tag" && "$args" != *"runs/${run_tag}/"* ]]; then
         continue
       fi
@@ -135,7 +135,7 @@ print_status() {
   fi
 
   if (( PRETTY == 1 )) && [[ -x "$PY" ]]; then
-    pretty_args=( -m training.pretty_log --once --timestamp "$ts" )
+    pretty_args=( -m training.logging.pretty_log --once --timestamp "$ts" )
     (( PLAIN == 1 )) && pretty_args+=( --plain )
     [[ -n "$run_tag" ]] && pretty_args+=( --run-tag "$run_tag" )
     [[ -n "$lock_line" ]] && pretty_args+=( --lock-line "$lock_line" )
@@ -195,7 +195,7 @@ fi
 if (( PRETTY == 1 )) && [[ -x "$PY" ]]; then
   live_iv="$INTERVAL"
   (( INTERVAL_SET == 0 )) && live_iv=2
-  live_args=( -m training.pretty_log --follow --interval "$live_iv" )
+  live_args=( -m training.logging.pretty_log --follow --interval "$live_iv" )
   (( PLAIN == 1 )) && live_args+=( --plain )
   follow_tag=""
   if [[ -n "$LOG" ]]; then

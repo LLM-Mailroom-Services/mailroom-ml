@@ -2,7 +2,7 @@
 # Copy generated ModernBERT reports into a local mailroom-sandbox checkout.
 #
 # Usage:
-#   ./training/sync_reports_to_sandbox.sh \
+#   ./training/train/post-train/sync_reports_to_sandbox.sh \
 #     --sandbox-root ../mailroom-sandbox \
 #     --run-tag m9a-local-20260927-014429 \
 #     --run-number 03
@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 SANDBOX=""
 RUN_TAG=""
 RUN_NUM=""
@@ -60,7 +60,7 @@ README="${DEST}/README.md"
   echo "# ModernBERT reports (synced from mailroom-ml)"
   echo ""
   echo "Generated from [\`mailroom-ml\`](https://github.com/LLM-Mailroom-Services/mailroom-ml)"
-  echo "at \`${SHA}\` (${STAMP} UTC) via \`training/sync_reports_to_sandbox.sh\`."
+  echo "at \`${SHA}\` (${STAMP} UTC) via \`training/train/post-train/sync_reports_to_sandbox.sh\`."
   echo ""
   echo "| run_tag | held-out test | training | eval JSON |"
   echo "| --- | --- | --- | --- |"

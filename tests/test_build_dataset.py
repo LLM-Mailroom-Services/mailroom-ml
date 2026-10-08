@@ -1,4 +1,4 @@
-"""CLI tests for training/build_dataset.py (stage-only default, publish guard).
+"""CLI tests for training/dataset/mailroom-dataset/build_dataset.py (stage-only default, publish guard).
 
 Hermetic: no network, no torch.  The publish path is exercised against a
 fake ``huggingface_hub`` injected into ``sys.modules`` (spies record the
@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from conftest import ROOT, fixture_rows, requires_transformers
+from conftest import ROOT, fixture_rows
 
 CLI_PATH = ROOT / "training" / "dataset" / "mailroom-dataset" / "build_dataset.py"
 
@@ -75,14 +75,23 @@ def _install_fake_hub(monkeypatch, stage_dir: Path) -> _FakeHfApi:
     return api
 
 
+def _fake_window_document(title, doc_text, *_a, **_k):
+    """Tokenizer-free stand-in for ``windows.window_document`` (one window,
+    the published v1 ``title\\n\\nbody`` shape): the core suite must never
+    need the ModernBERT tokenizer (a Hub download)."""
+    return [f"{title}\n\n{doc_text}" if title else doc_text]
+
+
 def _patch_stage(monkeypatch, tmp_path: Path) -> Path:
-    """Point the CLI at a tmp stage dir + the committed fixture rows."""
+    """Point the CLI at a tmp stage dir + the committed fixture rows (and a
+    hermetic windower, so the windows path needs no tokenizer download)."""
     import mailroom_ml.config as cfg_mod
     import mailroom_ml.dataset as dataset_mod
 
     stage_dir = tmp_path / "stage"
     monkeypatch.setattr(cfg_mod, "STAGE_DIR", stage_dir)
     monkeypatch.setattr(dataset_mod, "load_corpus_rows", fixture_rows)
+    monkeypatch.setattr(dataset_mod, "window_document", _fake_window_document)
     return stage_dir
 
 
@@ -91,8 +100,6 @@ def _documents_split(stage_dir: Path, split: str) -> pd.DataFrame:
     return pd.read_parquet(f)
 
 
-@requires_transformers
-@pytest.mark.train
 def test_stage_only_is_the_default(tmp_path, monkeypatch):
     stage_dir = _patch_stage(monkeypatch, tmp_path)
     exit_code = build_dataset.main(["--stage-only"])
@@ -122,6 +129,22 @@ def test_stage_only_never_touches_the_hub(tmp_path, monkeypatch):
     assert build_dataset.main(["--stage-only", "--no-windows"]) == 0
 
 
+def test_tokenizer_failure_is_a_clean_error_not_a_traceback(tmp_path, monkeypatch, capsys):
+    """windows.py lets a Hub/network tokenizer failure (OSError) propagate;
+    the CLI must surface it as an actionable error pointing at --no-windows."""
+    import mailroom_ml.dataset as dataset_mod
+
+    _patch_stage(monkeypatch, tmp_path)
+
+    def _no_tokenizer(*_a, **_k):
+        raise OSError("Can't load tokenizer for 'answerdotai/ModernBERT-base'")
+
+    monkeypatch.setattr(dataset_mod, "window_document", _no_tokenizer)
+    assert build_dataset.main(["--stage-only"]) == 2
+    err = capsys.readouterr().err
+    assert "windowing failed" in err and "--no-windows" in err
+
+
 def test_no_windows_flag(tmp_path, monkeypatch):
     stage_dir = _patch_stage(monkeypatch, tmp_path)
     assert build_dataset.main(["--no-windows"]) == 0
@@ -129,8 +152,6 @@ def test_no_windows_flag(tmp_path, monkeypatch):
     assert len(_documents_split(stage_dir, "test")) == 1
 
 
-@requires_transformers
-@pytest.mark.train
 def test_publish_uploads_and_byte_verifies(tmp_path, monkeypatch, capsys):
     stage_dir = _patch_stage(monkeypatch, tmp_path)
     api = _install_fake_hub(monkeypatch, stage_dir)

@@ -26,12 +26,16 @@ Behavior (mirrors the committed app):
   a local copy; the pinned ``config.TRAINING_DATA_REVISION`` is the contract and
   is validated (HfApi) plus exported as ``TRAINING_DATA_REVISION`` env before the
   trainer runs,
-- invokes ``training/train_modernbert.py`` via subprocess with the exact
+- invokes ``training/train/train_modernbert.py`` via subprocess with the exact
   documented CLI surface (--data, --output, --epochs, --batch-size, --grad-accum,
-  --lr, --seed, --push-to-hub, --eval-test),
+  --lr, --seed, --eval-test).  It does NOT pass ``--push-to-hub``: a trainer-side
+  push would publish before ONNX export/parity and even from an ungated run,
 - persists the checkpoint to the ``modernbert-checkpoints`` Volume (stable
   ``latest/`` pointer + per-run archive under ``runs/<run-id>/`` for rollback) and
-  pushes the checkpoint to the Hub when ``--push-to-hub`` is set,
+  pushes the checkpoint to the Hub (``push_to_hub`` repo) only AFTER a
+  successful ONNX export + parity AND only when the trainer's selection gate was
+  met (``summary.json`` ``checkpoint_selection.gate_met``); smoke runs and
+  resumes that trained nothing never promote or push,
 - HF_TOKEN arrives via the secret (deploy-time env or the Modal dashboard).
 
 Deploy (only HF_TOKEN is required — the training dtype is bf16-on-cuda):
@@ -55,6 +59,7 @@ launching client dying (``modal run --detach`` does not):
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -75,6 +80,13 @@ HF_CACHE_VOLUME_NAME = "mailroom-ml-hf-cache"
 CHECKPOINT_MOUNT = "/checkpoints"
 HF_CACHE_MOUNT = "/root/.cache/huggingface"
 TRAINER_SCRIPT = "/root/training/train/train_modernbert.py"
+# Hub upload hygiene (mirrors the trainer's own HUB_IGNORE_PATTERNS; 2026-09-20
+# audit R10: optimizer/scheduler/resume state doubled the repo size).  ``onnx``
+# is the serving bundle exported beside the run checkpoint: the model repo has
+# only ever carried the PyTorch checkpoint (the ONNX bundle lives under
+# ``artifacts/onnx/model`` / the checkpoint Volume), so it is not uploaded.
+HUB_IGNORE_PATTERNS = ["optimizer.pt", "scheduler.pt", "resume.json",
+                       "onnx", "onnx/*"]
 
 # GPU + timeouts — exposed as constants so the deploy test suite can assert the
 # deployed configuration offline (string GPU API, verified against 1.6.0 docs).
@@ -193,7 +205,11 @@ def _build_train_cmd(
     --grad-accum, --lr, --seed, --push-to-hub <repo>, --eval-test,
     --max-steps (pre-flight smoke cap), --log-every (smoke step cadence —
     default 0 omits the flag and the trainer's own default of 50 applies),
-    --resume <bundle dir> (continue a cut run from its last checkpoint).
+    --resume <bundle dir> (continue a cut run from its last checkpoint —
+    ``/checkpoints/runs/<run-id>``; ``latest/`` holds only the last
+    SUCCESSFUL run).  ``push_to_hub`` is part of the documented trainer
+    surface, but ``train()`` below always passes ``""`` and pushes itself
+    after export + parity.
     ``trainer_extra`` appends arbitrary trainer flags verbatim (the
     2026-09-20 audit levers: --loss-lambda-dt, --label-smoothing,
     --weight-mode, --mlp-heads, --freeze-backbone-epochs, ...).
@@ -263,13 +279,24 @@ def train(
       against the live Hub before the trainer starts so a broken pin fails
       before GPU minutes are spent, and is exported as TRAINING_DATA_REVISION
       for any training-layer revision support.
-    - checkpoint: trainer writes to /checkpoints/latest; on success the run is
-      archived to /checkpoints/runs/<run-id>/ (rollback), then the Volume is
-      committed once.
-    - resume: pass a bundle dir (e.g. /checkpoints/latest) to continue a cut
-      run from its last per-epoch checkpoint instead of starting over.
-    - smoke (max_steps > 0): writes to /checkpoints/smoke-<ts> so the cadence
+    - checkpoint: the trainer writes to /checkpoints/runs/<run-id>/ (rollback
+      archive); on success (after ONNX parity when enabled) it is promoted to
+      /checkpoints/latest, then the Volume is committed once.
+    - hub push: NOT done by the trainer.  After export + parity (and promote),
+      ``push_to_hub`` uploads the run iff the selection gate was met; an
+      ungated run (selected_epoch == 0) is never pushed but can be promoted.
+      A resume that trained nothing is neither pushed nor promoted.
+    - resume: pass a bundle dir (a cut run lives in /checkpoints/runs/<run-id>;
+      latest/ only holds the last SUCCESSFUL run) to continue it from its last
+      checkpoint instead of starting over.  A resume already at/after
+      ``epochs`` trains nothing: no export, promote or push.
+    - smoke (nonzero max_steps): writes to /checkpoints/smoke-<ts> so the cadence
       probe never clobbers the real latest/ pointer.
+
+    Returns run paths, settings, promotion/upload flags, and a skip reason.
+    Missing credentials, a mismatched data pin, or failed trainer/export/parity
+    commands raise ``RuntimeError``. Hub, artifact, and Volume errors propagate;
+    a failed upload can occur after promotion and the Volume commit.
     """
     from huggingface_hub import HfApi
 
@@ -304,8 +331,10 @@ def train(
         f"{CHECKPOINT_MOUNT}/smoke-{run_id}" if is_smoke
         else f"{CHECKPOINT_MOUNT}/runs/{run_id}"
     )
+    # push_to_hub is deliberately NOT forwarded: the trainer would upload
+    # before export/parity and even when no epoch cleared the selection gate.
     cmd = _build_train_cmd(epochs, batch_size, grad_accum, lr, seed,
-                           push_to_hub, eval_test, max_steps, log_every,
+                           "", eval_test, max_steps, log_every,
                            resume, output=output,
                            trainer_extra=trainer_extra)
     print("[mailroom-ml-train] " + " ".join(cmd), flush=True)
@@ -321,24 +350,49 @@ def train(
 
     archive_dir = ""
     onnx_dir = ""
+    pushed = False
+    promoted = False
+    skip_reason = ""
     if is_smoke:
+        skip_reason = "smoke run"
         print("[mailroom-ml-train] smoke run — skipping the runs/ archive "
               "and ONNX export (latest/ untouched)", flush=True)
     else:
-        archive_dir = output
-        if export_onnx:
-            onnx_dir = _export_onnx_and_parity(output)
-        _promote_latest(output)
-        checkpoint_vol.commit()
-        print(f"[mailroom-ml-train] archived checkpoint to {archive_dir}; "
-              f"latest/ promoted", flush=True)
+        summary = _read_summary(output)
+        if summary.get("nothing_trained"):
+            skip_reason = "nothing trained"
+            print("[mailroom-ml-train] resume was already at/after --epochs: "
+                  "nothing trained — skipping ONNX export, promotion and "
+                  "Hub push (latest/ untouched)", flush=True)
+        else:
+            archive_dir = output
+            if export_onnx:
+                onnx_dir = _export_onnx_and_parity(output)
+            _promote_latest(output)
+            promoted = True
+            checkpoint_vol.commit()
+            print(f"[mailroom-ml-train] archived checkpoint to {archive_dir}; "
+                  f"latest/ promoted", flush=True)
+            do_push, why = _push_decision(summary, push_to_hub,
+                                          parity_ok=bool(onnx_dir))
+            if do_push:
+                _push_run_to_hub(output, push_to_hub, summary, epochs=epochs)
+                pushed = True
+            else:
+                skip_reason = why
+                if push_to_hub:
+                    print(f"[mailroom-ml-train] NOT pushing to the Hub: {why}",
+                          flush=True)
 
     return {
         "returncode": result.returncode,
         "run_id": run_id,
         "archive_dir": archive_dir,
         "onnx_dir": onnx_dir,
-        "export_onnx": bool(export_onnx) and not is_smoke,
+        "export_onnx": bool(onnx_dir),
+        "promoted": promoted,
+        "pushed": pushed,
+        "skip_reason": skip_reason,
         "epochs": epochs,
         "batch_size": batch_size,
         "grad_accum": grad_accum,
@@ -347,6 +401,59 @@ def train(
         "push_to_hub": push_to_hub,
         "eval_test": eval_test,
     }
+
+
+def _read_summary(run_dir: str) -> dict:
+    """The trainer's ``summary.json`` for a finished run (fail loud if absent:
+    promote/push decisions are read from it)."""
+    path = Path(run_dir) / "summary.json"
+    if not path.is_file():
+        raise RuntimeError(
+            f"{path} missing after a successful trainer exit — cannot decide "
+            "whether to promote/push; latest/ not updated")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _push_decision(summary: dict, push_to_hub: str, *,
+                   parity_ok: bool = True) -> tuple[bool, str]:
+    """Whether to upload after a successful export + parity, and why not.
+
+    Only a run whose selection gate was met (``checkpoint_selection.gate_met``,
+    i.e. ``selected_epoch > 0``) is published: an ungated run ships the
+    UNCALIBRATED final epoch.  A resume that trained nothing is never pushed,
+    and neither is a run whose ONNX export + parity was skipped
+    (``--no-export-onnx``): publishing is gated on parity.
+    """
+    if not push_to_hub:
+        return False, "no --push-to-hub repo requested"
+    if summary.get("nothing_trained"):
+        return False, "nothing trained"
+    if not parity_ok:
+        return False, ("ONNX export + parity skipped (--no-export-onnx): "
+                       "the Hub push is gated on parity")
+    gate_met = bool(
+        (summary.get("checkpoint_selection") or {}).get("gate_met", False))
+    if not gate_met:
+        return False, ("selection gate not met (selected_epoch == 0: "
+                       "uncalibrated final-epoch weights)")
+    return True, ""
+
+
+def _push_run_to_hub(run_dir: str, repo: str, summary: dict, *,
+                     epochs: int) -> None:
+    """Upload the promoted run to ``repo`` (call only after export + parity)."""
+    from huggingface_hub import HfApi
+
+    selected = (summary.get("checkpoint_selection") or {}).get("epoch")
+    api = HfApi()
+    api.create_repo(repo, repo_type="model", exist_ok=True)
+    api.upload_folder(
+        folder_path=run_dir, repo_id=repo, repo_type="model",
+        ignore_patterns=HUB_IGNORE_PATTERNS,
+        commit_message=f"ModernBERT hierarchical classifier "
+                       f"(epochs {epochs}, selected epoch {selected})")
+    print(f"[mailroom-ml-train] pushed: https://huggingface.co/{repo}",
+          flush=True)
 
 
 def _export_onnx_and_parity(checkpoint_dir: str, *,

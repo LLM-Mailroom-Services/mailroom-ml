@@ -111,8 +111,11 @@ SUBCLASS_UNMAPPED_ROUTE = "llm"
 # Routing policy — PLACEHOLDERS until selective-risk analysis on the
 # calibration set quantifies the right thresholds (Plan §Calibration).  The
 # pipeline's existing 0.88/0.97 confidence bands are preserved as the initial
-# deployment policy; the composite route score S = p_calibrated * agreement *
-# margin must clear the fast-path gate below.
+# deployment policy.  The fast-path gate is conjunctive over the components
+# below (each must clear its own threshold, on unrounded values); the
+# composite route score S = p_calibrated * agreement * margin is REPORTED
+# (``score``) but has no threshold of its own — none has been set, so do not
+# gate on S without a calibrated value.
 # ---------------------------------------------------------------------------
 ROUTE_DOC_CONFIDENCE = 0.97        # calibrated doc_type confidence (initial)
 ROUTE_SUBCLASS_CONFIDENCE = 0.95   # calibrated subclass confidence (initial)
@@ -198,7 +201,7 @@ CUAD_FULL_REVISION = "e69afe340b48133b7173d74b8ad220fcd28a1a6e"
 # Tier-2 blind candidate source (#26): the Enron blind config is the
 # revision-pinned *text* pool.  ``assemble_tier2`` still requires scored
 # columns (doc_type_conf / subclass_conf / agreement) — produce them with
-# ``training/score_blind_pool.py`` against a checkpoint; do not invent
+# ``training/eval/score_blind_pool.py`` against a checkpoint; do not invent
 # confidences.  CLI ``--blind-pool`` defaults to this pin.
 BLIND_POOL_REPO = ENRON_DEDUP_REPO
 BLIND_POOL_REVISION = ENRON_DEDUP_REVISION

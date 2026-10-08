@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from mailroom_ml.m9a_gates import gates_all_met
+
 # ``post-train`` is a hyphenated directory (not importable as a package), so
 # the publish script is loaded by file path.
 _PUBLISH_PATH = (
@@ -121,3 +122,72 @@ def test_cli_dry_run_prints_plan(tmp_path: Path):
     )
     assert "Hub publish plan" in out
     assert "Lucius-Morningstar/mailroom-modernbert-classifier" in out
+
+
+def test_default_release_tag_layouts(tmp_path: Path):
+    tag = _publish.default_release_tag
+    assert tag(tmp_path / "runs" / "m9a-x" / "latest") == "m9a-x"
+    # Modal per-run archive /checkpoints/runs/<id>: the id, never "runs"
+    assert tag(tmp_path / "checkpoints" / "runs" / "rid-7") == "rid-7"
+    # layouts that name no run fall back to summary run_id (caller)
+    assert tag(tmp_path / "checkpoints" / "latest") == ""
+    assert tag(tmp_path / "artifacts" / "pytorch" / "model") == ""
+
+
+def test_artifact_mismatch_detects_other_weights(tmp_path: Path):
+    import hashlib
+
+    (tmp_path / "model.safetensors").write_bytes(b"weights-epoch-3")
+    good = hashlib.sha256(b"weights-epoch-3").hexdigest()
+    assert _publish.artifact_mismatch(
+        {"artifact_sha": good, "model_kind": "pytorch"}, tmp_path) is None
+    assert "artifact_sha" in _publish.artifact_mismatch(
+        {"artifact_sha": "0" * 64, "model_kind": "pytorch"}, tmp_path)
+    # ONNX evals hash the graph, not the safetensors: not comparable
+    assert _publish.artifact_mismatch(
+        {"artifact_sha": "0" * 64, "model_kind": "onnx-int8"}, tmp_path) is None
+
+
+def test_readme_only_404_counts_as_missing():
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+    class _HTTPErr(Exception):
+        def __init__(self, code):
+            super().__init__(code)
+            self.response = _Resp(code)
+
+    assert _publish._is_missing_entry(_HTTPErr(404)) is True
+    assert _publish._is_missing_entry(_HTTPErr(500)) is False
+    assert _publish._is_missing_entry(TimeoutError()) is False
+
+
+def test_invoke_check_gates_cannot_override_failing_gates(tmp_path: Path, monkeypatch):
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    eval_path = tmp_path / "eval.json"
+    eval_path.write_text(json.dumps({"doc_type_accuracy": 0.10}), encoding="utf-8")
+    monkeypatch.setattr(_publish.subprocess, "call", lambda *a, **k: 0)
+    rc = _publish.main(["--dry-run", "--invoke-check-gates", "--checkpoint",
+                        str(ckpt), "--eval-json", str(eval_path),
+                        "--release-tag", "t"])
+    assert rc == 1
+
+
+def test_cli_refuses_eval_of_other_weights(tmp_path: Path, capsys):
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "model.safetensors").write_bytes(b"w")
+    eval_path = tmp_path / "eval.json"
+    eval_path.write_text(json.dumps({
+        "doc_type_accuracy": 0.9, "window_calibration": {"ece": 0.01},
+        "per_head": {"contract": {"macro_f1": 0.3},
+                     "correspondence": {"macro_f1": 0.3}},
+        "artifact_sha": "0" * 64, "model_kind": "pytorch",
+    }), encoding="utf-8")
+    argv = ["--dry-run", "--checkpoint", str(ckpt), "--eval-json",
+            str(eval_path), "--release-tag", "t"]
+    assert _publish.main(argv) == 1
+    assert "does not describe these weights" in capsys.readouterr().err
+    assert _publish.main(argv + ["--allow-artifact-mismatch"]) == 0

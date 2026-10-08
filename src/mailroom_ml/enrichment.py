@@ -79,6 +79,8 @@ from mailroom_ml.config import (
 )
 from mailroom_ml.dataset import grouped_split
 from mailroom_ml.labels import normalize_subclass, observed_label_surfaces
+from mailroom_ml.normalize import deterministic_normalize
+from mailroom_ml.provenance import clean_sha256
 from mailroom_ml.windows import estimate_tokens
 
 __all__ = [
@@ -208,11 +210,34 @@ def _nested_field(value: Any, key: str) -> Any:
 def content_sha256(text: str) -> str:
     """Hex sha256 of the utf-8 document text — the canonical content hash.
 
-    Computed over exactly the ``doc_text`` bytes this package stores, so a
-    rebuild on identical pool content reproduces identical hashes (and the
-    same dedup decisions).
+    Enrichment rows hash the SOURCE (pre-clerk) text, exactly as canonical
+    rows carry the corpus's source-text hash while storing the clerk-
+    normalized ``doc_text``; a rebuild on identical pool content reproduces
+    identical hashes (and the same dedup decisions).  Dedup additionally
+    compares the hash of the normalized text (see ``_dedup_vs_canonical``),
+    so a whitespace-only difference can never smuggle a duplicate in.
     """
     return hashlib.sha256(str(text).encode("utf-8")).hexdigest()
+
+
+def _norm(value: Any) -> str:
+    """Intake-clerk text (``deterministic_normalize``); null -> ``""``.
+
+    Enrichment text/titles must be byte-representative of inference input
+    (the pipeline feeds the classifier the clerk's output), exactly as
+    ``dataset.build_documents`` does for canonical rows.
+    """
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    return deterministic_normalize(str(value))[0]
+
+
+def _raw_text(value: Any) -> str:
+    """Source text of a pool cell as ``str`` (null/NaN -> ``""``, never the
+    literal ``"None"``/``"nan"``)."""
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return ""
+    return str(value)
 
 
 def _truthy(value: Any) -> bool:
@@ -250,18 +275,26 @@ def _doc_record(
     lineage: str = "",
     tier: int = 1,
 ) -> dict[str, Any]:
-    """One enrichment document row (trainer schema + §5 provenance columns)."""
+    """One enrichment document row (trainer schema + §5 provenance columns).
+
+    ``doc_text`` / ``title`` are run through the intake clerk
+    (``deterministic_normalize``) so training input matches inference input;
+    ``content_sha256`` stays the hash of the SOURCE text (canonical-row
+    convention) and ``token_estimate`` counts the stored (normalized) text.
+    """
+    source_text = "" if doc_text is None else str(doc_text)
+    norm_text = _norm(doc_text)
     return {
         "filename": str(filename),
         "document_id": "",
-        "content_sha256": content_sha256(doc_text),
+        "content_sha256": content_sha256(source_text),
         "source_revision": str(source_revision),
-        "title": str(title),
-        "doc_text": str(doc_text),
+        "title": _norm(title),
+        "doc_text": norm_text,
         "doc_type": doc_type,
         "subclass": subclass,
         "corpus_split": "",
-        "token_estimate": estimate_tokens(str(doc_text)),
+        "token_estimate": estimate_tokens(norm_text),
         # Ladder rule (plan §6.1): enrichment rows are train-only.
         "split": "train",
         "source_corpus": str(source_corpus),
@@ -328,13 +361,15 @@ def _silent_other_remap(raw: Any, subclass: str, head: tuple[str, ...]) -> bool:
 
 
 def _source_matched_cap(n_train: int, cap_mult: float) -> int:
-    """Max adopted rows from a source-matched pool: ``cap_mult × TRAIN``."""
-    return max(0, int(round(float(cap_mult) * n_train)))
+    """Max NEW rows from a source-matched pool so the class ends at
+    ``cap_mult`` × its current TRAIN size (the "2x" rule: ``cap_mult − 1`` ×
+    today's mass of new rows) — the same formula as CUAD / Enron / insurance."""
+    return max(0, int(round(float(cap_mult) * n_train)) - int(n_train))
 
 
 def _dedup_within_pool(records: list[dict[str, Any]]) -> tuple[
         list[dict[str, Any]], list[dict[str, str]]]:
-    """Within-pool dedup by content_sha256 — first-occurrence by filename.
+    """Within-pool dedup by stored normalized text — first-occurrence by filename.
 
     Rows are ordered by (filename, sha) so the first occurrence wins;
     duplicates are rejected with a reason, never silently dropped.
@@ -343,7 +378,9 @@ def _dedup_within_pool(records: list[dict[str, Any]]) -> tuple[
     kept: list[dict[str, Any]] = []
     rejects: list[dict[str, str]] = []
     for r in sorted(records, key=lambda r: (str(r["filename"]), str(r["content_sha256"]))):
-        sha = str(r["content_sha256"])
+        # key on the NORMALIZED stored text so whitespace-only variants of
+        # one document dedup to the first occurrence too.
+        sha = content_sha256(str(r["doc_text"]))
         if sha in seen:
             rejects.append({
                 "filename": str(r["filename"]), "reason": "duplicate_sha",
@@ -361,21 +398,33 @@ def _reject_filename_collisions(
     """Reject rows whose filename collides with a canonical row of DIFFERENT
     content (loud — never a silent rename).  Same-name same-sha rows are the
     same document identity and are kept (the dedup_by_sha discipline).
+    Matching stored normalized text also preserves the row despite a
+    different source hash.
     Canonical rows with an EMPTY hash are opaque (same rule as
     ``dedup_by_sha`` — no collision can be proven against them)."""
     by_fn: dict[str, set[str]] = {}
     canon = canonical_docs[["filename", "content_sha256"]]
     for fn, sha in zip(canon["filename"].astype(str),
-                       canon["content_sha256"].astype(str), strict=False):
-        if not sha.strip():
+                       canon["content_sha256"].map(clean_sha256), strict=False):
+        if not sha:
             continue  # opaque hash — nothing can be proven, never dropped
-        by_fn.setdefault(fn, set()).add(str(sha))
+        by_fn.setdefault(fn, set()).add(sha)
+    # a canonical row is also identified by the hash of its stored (clerk-
+    # normalized) text: same-name rows whose normalized text matches are the
+    # same document identity.
+    text_shas: dict[str, set[str]] = {}
+    if "doc_text" in canonical_docs.columns:
+        for fn, t in zip(canonical_docs["filename"].astype(str),
+                         canonical_docs["doc_text"], strict=False):
+            if fn in by_fn:
+                text_shas.setdefault(fn, set()).add(content_sha256(str(t)))
     kept: list[dict[str, Any]] = []
     rejects: list[dict[str, str]] = []
     for r in sorted(records, key=lambda r: str(r["filename"])):
         fn = str(r["filename"])
         shas = by_fn.get(fn)
-        if shas is not None and str(r["content_sha256"]) not in shas:
+        if shas is not None and str(r["content_sha256"]) not in shas \
+                and content_sha256(str(r["doc_text"])) not in text_shas.get(fn, ()):
             rejects.append({
                 "filename": fn, "reason": "filename_collision",
                 "detail": "filename collides with a canonical row of different content",
@@ -398,10 +447,18 @@ def _dedup_vs_canonical(
     deduping a corpus against itself but wrong here: keeping it double-counts
     the document in train and, when the canonical row sits in
     validation/test, leaks it across the split (#112 finding — CMS would have
-    leaked 74 val/test rows).
+    leaked 74 val/test rows). Both source hashes and hashes of stored
+    normalized text are compared. Returns the surviving rows and rejection
+    records.
     """
-    canon_shas = set(canonical_docs["content_sha256"].astype(str)) - {"", "nan"}
-    dup_mask = rows["content_sha256"].astype(str).isin(canon_shas)
+    canon_shas = set(canonical_docs["content_sha256"].map(clean_sha256)) - {""}
+    # the corpus hashes SOURCE text while enrichment stores clerk-normalized
+    # text: also compare the hash of every canonical stored text so a
+    # whitespace-only variant of a corpus document is still a duplicate.
+    if "doc_text" in canonical_docs.columns:
+        canon_shas |= {content_sha256(str(t)) for t in canonical_docs["doc_text"]}
+    dup_mask = (rows["content_sha256"].map(clean_sha256).isin(canon_shas)
+                | rows["doc_text"].map(lambda t: content_sha256(str(t))).isin(canon_shas))
     rejects: list[dict[str, str]] = [
         {"filename": fn, "reason": "duplicate_sha_canonical",
          "detail": "content_sha256 already in corpus (same or different filename)"}
@@ -468,19 +525,24 @@ def assemble_enron_gt(
 
     Adopts ``ground_truth``-config rows that are not already in the canonical
     corpus (filename/sha-deduped).  Labels are exact GT
-    (``label_source="enron_gt"``, confidence 1.0); provenance is revision-
-    pinned.  Cap: ``cap_mult`` (default 2.0) x the current correspondence
-    train rows, cut loud when hit.  Subclass values are normalized through
+    (``label_source="enron_gt"``, confidence defaults to 1.0); provenance is
+    revision-pinned. The total class cap is ``cap_mult`` (default 2.0) times
+    the current correspondence train count. New rows are balanced across
+    subclasses and further limited to each subclass's canonical non-test
+    count; cuts are returned as rejection records. Subclass values are
+    normalized through
     the canonical correspondence surface; rows resolving outside the
     OBSERVED head are rejects (issue #75 posture — never a fabricated
     label).
 
-    ``lineage_cols``: ``None`` opts into the *weak-lineage* accept-all mode
+    ``lineage_cols``: ``None`` or an empty tuple opts into the *weak-lineage*
+    accept-all mode
     (every source-matched GT row, lineage marker ``enron_dedup_gt``).
     Necessary because the pinned enron pool exposes **no** ``aeslc_join``/
     ``llm_zero_shot`` column (#112 finding) — the plan §6.2 lineage filter
     cannot be evaluated at the pin.  A non-empty tuple that is entirely
-    absent still raises (corrupt/renamed input stays loud).
+    absent raises ``ValueError``, as do missing text or label columns in a
+    non-empty input.
     """
     if gt_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
@@ -520,8 +582,8 @@ def assemble_enron_gt(
             rejects.append({"filename": fn, "reason": "not_correspondence",
                             "detail": f"doc_type {doc_type!r} is not correspondence"})
             continue
-        text = str(r[text_col] or "")
-        if not text.strip():
+        text = _raw_text(r[text_col])
+        if not _norm(text).strip():
             rejects.append({"filename": fn, "reason": "missing_doc_text",
                             "detail": "GT row carries no document text"})
             continue
@@ -533,7 +595,7 @@ def assemble_enron_gt(
             continue
         records.append(_doc_record(
             filename=fn, doc_text=text, doc_type="correspondence",
-            subclass=subclass, title=str(r.get("subject") or ""),
+            subclass=subclass, title=_norm(r.get("subject")),
             source_corpus=source_corpus, source_revision=source_revision,
             label_source=ENRON_LABEL_SOURCE, label_confidence=label_confidence,
             lineage=lineage, tier=1))
@@ -604,15 +666,19 @@ def assemble_cuad_pool(
     canonical corpus by the common Tier-1 hygiene.
 
     **Cap policy:** contract had no tier entry, so the §6.2 source-matched
-    rule is reused — the pool may add at most ``cap_mult`` x the current
-    contract TRAIN rows in total (default 2.0 -> at most double the current
-    contract train mass).  Exceeding rows are cut loud with reason
+    rule is reused — new rows are limited to
+    ``max(0, round(cap_mult * n_train) - n_train)``, where ``n_train`` is the
+    current contract TRAIN count (default 2.0 doubles that count at most).
+    Exceeding rows are cut loud with reason
     ``cap_contract``.
 
     Titles are deliberately empty: CUAD's ``metadata.document_id`` is a
     filename-derived identifier that routinely names the family
     ("…Marketing Agreement"), which would leak the label into the model
     input (the 2026-09-20 leak-law).  Body-only windows only.
+
+    A non-empty pool missing ``id``, ``input`` or ``metadata`` raises
+    ``ValueError``. Invalid row content is returned in the rejection register.
     """
     if pool_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
@@ -628,8 +694,8 @@ def assemble_cuad_pool(
     rejects: list[dict[str, str]] = []
     for r in pool_df.sort_values("id").to_dict("records"):
         fn = str(r["id"])
-        text = str(_nested_field(r.get("input"), "doc_text") or "")
-        if not text.strip():
+        text = _raw_text(_nested_field(r.get("input"), "doc_text"))
+        if not _norm(text).strip():
             rejects.append({"filename": fn, "reason": "missing_doc_text",
                             "detail": "CUAD row carries no input.doc_text"})
             continue
@@ -660,7 +726,8 @@ def assemble_cuad_pool(
         cut = rows.iloc[cap:]
         rejects.extend({
             "filename": fn, "reason": "cap_contract",
-            "detail": f"CUAD contract cap {cap} (cap_mult={cap_mult} x "
+            "detail": f"CUAD contract cap {cap} new rows (cap_mult={cap_mult}: "
+                      f"the class may end at {cap_mult} x its "
                       f"{n_contract_train} contract train rows) exceeded",
         } for fn in cut["filename"])
         rows = rows.iloc[:cap].reset_index(drop=True)
@@ -670,9 +737,9 @@ def assemble_cuad_pool(
 def _pool_text_and_id(row: dict[str, Any]) -> tuple[str, str]:
     """Resolve ``(filename, doc_text)`` from a CUAD-like or flat pool row."""
     fn = str(row.get("id") or row.get("filename") or row.get("document_id") or "")
-    text = str(row.get("doc_text") or "")
+    text = _raw_text(row.get("doc_text"))
     if not text.strip():
-        text = str(_nested_field(row.get("input"), "doc_text") or "")
+        text = _raw_text(_nested_field(row.get("input"), "doc_text"))
     return fn, text
 
 
@@ -687,13 +754,27 @@ def _pool_subclass_raw(row: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+_SEP_RE = re.compile(r"[_\-\s]+")
+
+
+def _fold_label_text(value: Any) -> str:
+    """Lowercase with every ``_`` / ``-`` / whitespace run folded to ONE space,
+    so ``non_compete_no_solicit`` and ``Non-Compete No-Solicit`` compare equal."""
+    return _SEP_RE.sub(" ", str(value).lower()).strip()
+
+
 def _title_leaks_label(title: str, subclass: str) -> bool:
-    """True when a non-empty title carries the subclass token (leak law)."""
-    if not str(title).strip() or not subclass:
+    """True when a non-empty title carries the subclass token (leak law).
+
+    Both sides are folded (case, ``_``/``-``/whitespace -> one space) before
+    the substring test, so hyphenated/underscored/spaced forms of the same
+    token are the same leak ("All-Cash" vs ``all_cash``).
+    """
+    t = _fold_label_text(_norm(title))
+    token = _fold_label_text(subclass)
+    if not t or not token:
         return False
-    t = str(title).lower()
-    token = subclass.replace("_", " ").lower()
-    return subclass.lower() in t or token in t
+    return token in t
 
 
 def assemble_maud_pool(
@@ -711,8 +792,11 @@ def assemble_maud_pool(
     Accepts CUAD-shaped rows (``id`` / ``input.doc_text`` /
     ``metadata.consideration_type|category``) or a flat frame
     (``filename``, ``doc_text``, ``subclass``).  Titles default empty
-    (leak law); a supplied title that names the subclass is a loud
-    ``leak_title`` reject.  Cap: ``cap_mult`` × merger_agreement TRAIN rows.
+    (leak law) and accepted rows always store an empty title; a supplied
+    title that names the subclass is a loud
+    ``leak_title`` reject.  Cap: the class may end at ``cap_mult`` ×
+    its merger_agreement TRAIN rows (i.e. ``cap_mult − 1`` × new rows —
+    the same rule as CUAD / Enron / insurance).
     """
     if pool_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
@@ -730,7 +814,7 @@ def assemble_maud_pool(
         fn, text = _pool_text_and_id(r)
         if not fn:
             fn = f"maud:{content_sha256(text)[:12]}"
-        if not text.strip():
+        if not _norm(text).strip():
             rejects.append({"filename": fn, "reason": "missing_doc_text",
                             "detail": "MAUD row carries no doc_text"})
             continue
@@ -743,7 +827,7 @@ def assemble_maud_pool(
                 "detail": f"{raw!r} resolves to {subclass!r}, not on "
                           f"the observed merger_agreement head {tuple(head)}"})
             continue
-        title = str(r.get("title") or "")
+        title = _norm(r.get("title"))
         if _title_leaks_label(title, subclass):
             rejects.append({
                 "filename": fn, "reason": "leak_title",
@@ -761,7 +845,8 @@ def assemble_maud_pool(
         cut = rows.iloc[cap:]
         rejects.extend({
             "filename": fn, "reason": "cap_merger_agreement",
-            "detail": f"MAUD cap {cap} (cap_mult={cap_mult} x "
+            "detail": f"MAUD cap {cap} new rows (cap_mult={cap_mult}: the "
+                      f"class may end at {cap_mult} x its "
                       f"{n_train} merger_agreement train rows) exceeded",
         } for fn in cut["filename"])
         rows = rows.iloc[:cap].reset_index(drop=True)
@@ -781,7 +866,8 @@ def assemble_s1_pool(
     """Tier-1 S1 corporate-record pool (#16).
 
     Same hygiene as CUAD/MAUD: sha/filename dedup, observed-head check,
-    empty titles, leak-title reject, ``cap_mult`` × corporate_record TRAIN.
+    empty titles, leak-title reject; the class may end at ``cap_mult`` ×
+    its corporate_record TRAIN rows (``cap_mult − 1`` × new rows).
     """
     if pool_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
@@ -799,7 +885,7 @@ def assemble_s1_pool(
         fn, text = _pool_text_and_id(r)
         if not fn:
             fn = f"s1:{content_sha256(text)[:12]}"
-        if not text.strip():
+        if not _norm(text).strip():
             rejects.append({"filename": fn, "reason": "missing_doc_text",
                             "detail": "S1 row carries no doc_text"})
             continue
@@ -811,7 +897,7 @@ def assemble_s1_pool(
                 "detail": f"{raw!r} resolves to {subclass!r}, not on "
                           f"the observed corporate_record head {tuple(head)}"})
             continue
-        title = str(r.get("title") or "")
+        title = _norm(r.get("title"))
         if _title_leaks_label(title, subclass):
             rejects.append({
                 "filename": fn, "reason": "leak_title",
@@ -829,7 +915,8 @@ def assemble_s1_pool(
         cut = rows.iloc[cap:]
         rejects.extend({
             "filename": fn, "reason": "cap_corporate_record",
-            "detail": f"S1 cap {cap} (cap_mult={cap_mult} x "
+            "detail": f"S1 cap {cap} new rows (cap_mult={cap_mult}: the "
+                      f"class may end at {cap_mult} x its "
                       f"{n_train} corporate_record train rows) exceeded",
         } for fn in cut["filename"])
         rows = rows.iloc[:cap].reset_index(drop=True)
@@ -855,7 +942,14 @@ def _assemble_insurance_pool(
     render_required: bool = False,
     exact_subclass: bool = False,
 ) -> PoolResult:
-    """Shared Tier-1 insurance pipeline (per-pool wrappers set the policy)."""
+    """Build train-only insurance rows and return rejects and render requests.
+
+    ``adopted_subclass`` overrides row labels; ``exact_subclass`` bypasses
+    normalization but still requires an observed head label. With
+    ``render_required``, absent or blank text becomes a pending render
+    request. Otherwise, a missing text column raises ``ValueError`` and
+    blank text is rejected. Titles naming the subclass and duplicate content
+    are rejected before adoption."""
     if pool_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
     if text_col not in pool_df.columns:
@@ -878,14 +972,14 @@ def _assemble_insurance_pool(
     pending_render: list[dict[str, str]] = []
     for r in pool_df.sort_values("filename").to_dict("records"):
         fn = str(r["filename"])
-        text = str(r[text_col] or "")
-        if render_required and not text.strip():
+        text = _raw_text(r[text_col])
+        if render_required and not _norm(text).strip():
             # tabular rows need the decision-letter render step; not
             # reproducible here -> register + skip (plan §6.3).
             pending_render.append({"filename": fn, "reason": "needs_render",
                                    "detail": "tabular record requires the decision-letter render step"})
             continue
-        if not text.strip():
+        if not _norm(text).strip():
             rejects.append({"filename": fn, "reason": "missing_doc_text",
                             "detail": "pool row carries no document text"})
             continue
@@ -907,7 +1001,12 @@ def _assemble_insurance_pool(
                             "detail": f"{subclass!r} not on the insurance head "
                                       f"{tuple(head)} (never force-fit)"})
             continue
-        title = str(r[title_col] or "") if title_col else ""
+        title = _norm(r[title_col]) if title_col else ""
+        if _title_leaks_label(title, subclass):
+            rejects.append({
+                "filename": fn, "reason": "leak_title",
+                "detail": f"title {title!r} names subclass {subclass!r}"})
+            continue
         records.append(_doc_record(
             filename=fn, doc_text=text, doc_type="insurance_claim",
             subclass=subclass, title=title, source_corpus=source_corpus,
@@ -1012,26 +1111,37 @@ def combine_tier1(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Concatenate Tier-1 pool results with CROSS-POOL sha dedup.
 
+    Both source hashes and hashes of stored normalized text are compared.
+    Returns combined adopted rows and cross-pool rejection records.
     First pool in ``results`` wins on a sha collision (earlier pools are the
     closer source at the ladder step); later duplicates are rejected with a
     reason.  Deterministic: pools are processed in the given order, rows
     sorted by filename.
     """
-    seen: set[str] = set()
+    seen: dict[str, str] = {}  # sha -> the pool that adopted it first
     frames: list[pd.DataFrame] = []
     rejects: list[dict[str, str]] = []
     for pool_name, res in results:
         rows = res.rows
         if rows.empty:
             continue
-        dupe_mask = rows["content_sha256"].isin(seen)
+        # a row is a duplicate when its source sha OR the sha of its stored
+        # (normalized) text was adopted earlier
+        text_shas = rows["doc_text"].map(lambda t: content_sha256(str(t)))
+        owners = [seen.get(sha) or seen.get(tsha)
+                  for sha, tsha in zip(rows["content_sha256"], text_shas, strict=True)]
+        dupe_mask = pd.Series([o is not None for o in owners], index=rows.index)
         if dupe_mask.any():
             rejects.extend({
-                "filename": fn, "reason": "duplicate_sha_cross_pool",
-                "detail": f"content_sha256 already adopted by an earlier pool ({pool_name})",
-            } for fn in rows.loc[dupe_mask, "filename"])
+                "filename": str(fn), "reason": "duplicate_sha_cross_pool",
+                "detail": f"content_sha256 already adopted by an earlier pool ({owner})",
+            } for fn, owner in zip(rows.loc[dupe_mask, "filename"],
+                                   [o for o in owners if o is not None], strict=True))
             rows = rows[~dupe_mask]
-        seen.update(rows["content_sha256"])
+            text_shas = text_shas[~dupe_mask]
+        for sha, tsha in zip(rows["content_sha256"], text_shas, strict=True):
+            seen.setdefault(sha, pool_name)
+            seen.setdefault(tsha, pool_name)
         frames.append(rows)
     combined = pd.concat(frames, ignore_index=True) if frames \
         else _rows_frame([])
@@ -1063,11 +1173,13 @@ def apply_insurance_cap(
                        str(r["filename"])))
     kept = order[:budget]
     cut = order[budget:]
+    kept_subs = sorted({str(r["subclass"]) for r in kept})
     rejects = [{
         "filename": str(r["filename"]), "reason": "cap_insurance_class",
         "detail": f"insurance class cap {budget} new rows (cap_mult="
                   f"{class_cap_mult} x {current} train rows) exceeded; "
-                  f"tail priority kept {str(r['subclass'])}",
+                  f"cut {str(r['subclass'])!r} row, tail priority kept "
+                  f"subclasses {kept_subs}",
     } for r in cut]
     return _rows_frame(kept), _reject_frame(rejects)
 
@@ -1169,16 +1281,19 @@ def _balance_by_subclass(
     """Balanced per-subclass stratification inside a global ``budget``.
 
     Deterministic: each subclass (sorted) contributes its top rows by
-    (confidence desc, filename); every subclass gets ``budget // n`` slots,
-    the remainder goes to the subclasses with the most remaining candidates
-    (ties by subclass name).  Unpicked candidates are rejected with
+    (confidence desc, filename); slots are water-filled — every subclass
+    with candidates gets an equal share of ``budget``, slots a short
+    subclass cannot use are redistributed to the others, and a final
+    remainder goes to the subclasses with the most unplaced candidates
+    (ties by subclass name), so nothing is cut while the budget has room.
+    Unpicked candidates are rejected with
     ``reason`` (default ``pseudo_balance_cut`` for Tier-2; Tier-1 Enron
     passes its own labels via the caller).
 
-    ``subclass_universe`` optionally widens the slot denominator to the full
-    observed head (e.g. all correspondence subclasses) even when the pool
-    carries no candidates for some — the balance target is the head, not
-    merely the subclasses that happened to appear.
+    ``subclass_universe`` optionally names the full observed head (e.g. all
+    correspondence subclasses): it fixes the subclass set the balance is
+    reported over; a head subclass the pool has no candidates for simply
+    returns its slots to the others.
     """
     if budget <= 0 or not records:
         return [], [{
@@ -1192,17 +1307,31 @@ def _balance_by_subclass(
     for lst in by_sub.values():
         lst.sort(key=lambda r: (-float(r["label_confidence"]), str(r["filename"])))
     subs = sorted(by_sub)
-    base = budget // len(subs)
-    remainder = budget - base * len(subs)
-    # remainder slots -> subclasses with the most candidates, subclass name tiebreak
-    leftover_order = sorted(subs, key=lambda s: (-len(by_sub[s]), s))
-    extra = {s: 0 for s in subs}
-    for s in leftover_order[:remainder]:
-        extra[s] += 1
+    avail = {s: len(by_sub[s]) for s in subs}
+    # Water-fill: equal slots across the subclasses that still have candidates;
+    # slots a short subclass cannot use are handed back and redistributed
+    # (deterministically) to the others — a row is never cut while the budget
+    # still has room for it.  A residual smaller than the number of active
+    # subclasses goes to those with the most unplaced candidates (name tiebreak).
+    slots = {s: 0 for s in subs}
+    remaining = budget
+    active = [s for s in subs if avail[s] > 0]
+    while remaining > 0 and active:
+        share = remaining // len(active)
+        if share == 0:
+            order = sorted(active, key=lambda s: (-(avail[s] - slots[s]), s))
+            for s in order[:remaining]:
+                slots[s] += 1
+            break
+        for s in active:
+            give = min(share, avail[s] - slots[s])
+            slots[s] += give
+            remaining -= give
+        active = [s for s in active if avail[s] - slots[s] > 0]
     kept: list[dict[str, Any]] = []
     rejects: list[dict[str, str]] = []
     for s in subs:
-        slot = base + extra[s]
+        slot = slots[s]
         taken = by_sub[s][:slot]
         kept.extend(taken)
         rejects.extend({
@@ -1236,7 +1365,13 @@ def assemble_pseudo_labels(
     balance.  Candidates carry model confidences (doc_type/subclass/agreement
     columns); nothing is labeled here.  Kept rows get
     ``label_source="pseudo_enron"``, ``label_confidence`` = the joint gate
-    minimum, ``example_weight=0.5``, and land in train only."""
+    minimum, ``example_weight=0.5``, and land in train only.
+
+    Confidence thresholds are inclusive; ``max_fraction`` caps new rows
+    relative to canonical correspondence train rows. Missing configured
+    confidence or subclass columns in a non-empty input raise ``ValueError``;
+    invalid row confidences and titles naming the subclass are rejected.
+    Missing optional prediction or family columns disable their checks."""
     if candidates.empty:
         return PseudoResult(_rows_frame([]), _reject_frame([]))
     required = [doc_type_conf_col, subclass_conf_col, agreement_col,
@@ -1282,8 +1417,8 @@ def assemble_pseudo_labels(
             rejects.append({"filename": fn, "reason": "below_agreement",
                             "detail": f"agreement {ag_conf} < {agreement}"})
             continue
-        text = str(r.get("doc_text") or "")
-        if not text.strip():
+        text = _raw_text(r.get("doc_text"))
+        if not _norm(text).strip():
             rejects.append({"filename": fn, "reason": "missing_doc_text",
                             "detail": "candidate carries no text"})
             continue
@@ -1294,10 +1429,16 @@ def assemble_pseudo_labels(
                             "detail": f"{r.get(pred_subclass_col)!r} -> {subclass!r} "
                                       f"not on the observed head {tuple(head)}"})
             continue
+        title = _norm(r.get("title"))
+        if _title_leaks_label(title, subclass):
+            rejects.append({
+                "filename": fn, "reason": "leak_title",
+                "detail": f"title {title!r} names subclass {subclass!r}"})
+            continue
         label_conf = round(min(dt_conf, sc_conf, ag_conf), 4)
         records.append(_doc_record(
             filename=fn, doc_text=text, doc_type="correspondence",
-            subclass=subclass, title=str(r.get("title") or ""),
+            subclass=subclass, title=title,
             source_corpus=source_corpus, source_revision=source_revision,
             label_source=PSEUDO_LABEL_SOURCE, label_confidence=label_conf,
             example_weight=_PSEUDO_EXAMPLE_WEIGHT, lineage="pseudo_enron",
@@ -1331,9 +1472,11 @@ def assemble_pseudo_labels(
                       "correspondence train rows) exceeded",
         } for fn in cut["filename"])
         kept = order.iloc[:budget].reset_index(drop=True)
-    # balanced stratification by subclass within the cap
+    # balanced stratification by subclass within the cap (the ACTUAL cap, not
+    # the survivor count: survivors <= budget here, so rows are only cut when
+    # a subclass genuinely cannot fit, never merely because the pool is small)
     kept_records = kept.to_dict("records")
-    balanced, balance_rejects = _balance_by_subclass(kept_records, len(kept))
+    balanced, balance_rejects = _balance_by_subclass(kept_records, budget)
     rejects.extend(balance_rejects)
     return PseudoResult(_rows_frame(balanced), _reject_frame(rejects))
 
@@ -1520,12 +1663,24 @@ def apply_mixture_caps(
     per_subclass_share: float = SYNTHETIC_MAX_PER_SUBCLASS_SHARE,
     tier_caps: tuple[tuple[int, int], ...] = SYNTHETIC_TIER_CAPS,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Cut adopted synthetic rows to the §6.5 mixture caps (kept, rejected)."""
+    """Cut adopted synthetic rows to the §6.5 mixture caps (kept, rejected).
+
+    Keep input order within each subclass up to its allowance; return frames
+    sorted by filename. Rows whose subclass has no authentic-count entry
+    are rejected with ``no_authentic_support``."""
     caps = mixture_caps(authentic_counts, global_share=global_share,
                         per_subclass_share=per_subclass_share,
                         tier_caps=tier_caps)
     kept: list[dict[str, Any]] = []
     rejects: list[dict[str, str]] = []
+    known = {sc for sc in caps if not sc.startswith("__")}
+    # a row whose subclass has NO entry in authentic_counts has no support to
+    # bound it: reject loudly instead of silently dropping it.
+    rejects.extend({
+        "filename": str(r["filename"]), "reason": "no_authentic_support",
+        "detail": f"subclass {str(r['subclass'])!r} is absent from "
+                  "authentic_counts — no authentic support to bound it",
+    } for r in rows.to_dict("records") if str(r["subclass"]) not in known)
     for subclass, allowed in sorted(caps.items()):
         if subclass.startswith("__"):
             continue
@@ -1668,7 +1823,11 @@ def gate_lexical_contamination(
 
 
 def _cue_present(text: str, cue: str) -> bool:
-    """Case-insensitive cue match: word-boundary for single tokens."""
+    """Match a cue case-insensitively; blank cues never match.
+
+    Whitespace-containing cues and cues longer than 24 characters use
+    substring matching. Shorter single tokens require word boundaries
+    only at ends that are word characters."""
     cue = str(cue).strip()
     if not cue:
         return False
@@ -1676,7 +1835,11 @@ def _cue_present(text: str, cue: str) -> bool:
     c = cue.lower()
     if re.search(r"\s", c) or len(c) > 24:
         return c in t
-    return bool(re.search(rf"\b{re.escape(c)}\b", t))
+    # ``\b`` only asserts a boundary next to a WORD char: a cue that ends (or
+    # starts) in punctuation ("Re:") would never match with a trailing ``\b``.
+    lead = r"\b" if re.match(r"\w", c[0]) else ""
+    trail = r"\b" if re.match(r"\w", c[-1]) else ""
+    return bool(re.search(rf"{lead}{re.escape(c)}{trail}", t))
 
 
 def gate_rule_cues(candidate: dict[str, Any], card: LabelCard,
@@ -1707,6 +1870,12 @@ def gate_rule_cues(candidate: dict[str, Any], card: LabelCard,
                       {"positive_hits": hits})
 
 
+# A proper-noun SPAN is two or more consecutive capitalized tokens on one line
+# ("Acme Corp"); a lone capitalized word ("The", "Dear", "Agreement") is just
+# sentence/title case and would reject virtually every candidate.
+_PROPER_NOUN_SPAN_RE = re.compile(r"\b[A-Z][a-z]+(?:[^\S\n]+[A-Z][a-z]+)+\b")
+
+
 def gate_entity_overlap(
     candidate_text: str,
     corpus_texts: Iterable[str] = (),
@@ -1717,7 +1886,9 @@ def gate_entity_overlap(
     """Gate 4a (real, basic): prohibited entity overlap.  Rejects when a
     known real-world entity appears in the candidate (fictional entities are
     mandatory), or when the candidate shares a capitalized proper-noun span
-    with a corpus row (basic extractive-near-dup probe)."""
+    with a corpus row (basic extractive-near-dup probe).  Only multi-word
+    spans (2+ capitalized tokens) count as corpus overlap; the
+    ``known_entities`` check is unchanged."""
     del kwargs
     text_l = str(candidate_text).lower()
     for ent in known_entities:
@@ -1728,9 +1899,8 @@ def gate_entity_overlap(
                 {"entity": str(ent)})
     corpus_spans: set[str] = set()
     for t in corpus_texts:
-        corpus_spans |= set(re.findall(r"\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", str(t)))
-    cand_spans = set(re.findall(
-        r"\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b", str(candidate_text)))
+        corpus_spans |= set(_PROPER_NOUN_SPAN_RE.findall(str(t)))
+    cand_spans = set(_PROPER_NOUN_SPAN_RE.findall(str(candidate_text)))
     hits = {s.lower() for s in cand_spans & corpus_spans}
     hits = {h for h in hits if h not in {"ltd", "inc", "corp", "co", "llc"}}
     if hits:
@@ -1742,26 +1912,70 @@ def gate_entity_overlap(
                       "no known entities, no corpus proper-noun overlap")
 
 
+def _adjudication_of(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """The second adjudicator's verdict on a candidate, or ``None`` when the
+    candidate carries none.
+
+    Accepts the nested ``adjudication`` dict (``parent_class``/``doc_type`` +
+    ``subclass``/``label``) and/or flat ``adjudicator_parent_class`` /
+    ``adjudicator_doc_type`` / ``adjudicator_subclass`` / ``adjudicator_label``
+    keys. ``None`` and float NaN values count as absent. Otherwise, a key
+    that is PRESENT (even ``{}`` or ``""``) means an adjudicator
+    ran: the caller then requires a non-empty label.  A non-dict
+    ``adjudication`` is malformed and surfaces as an empty verdict.
+    """
+    def _has(key: str) -> bool:
+        # None / NaN (a DataFrame row missing the column) mean "no adjudicator"
+        """Return whether the candidate value is neither None nor float NaN."""
+        v = candidate.get(key)
+        return v is not None and not (isinstance(v, float) and math.isnan(v))
+
+    verdict: dict[str, Any] = {}
+    present = False
+    if _has("adjudication"):
+        present = True
+        if isinstance(candidate["adjudication"], dict):
+            verdict.update(candidate["adjudication"])
+    for flat, nested in (("adjudicator_parent_class", "parent_class"),
+                         ("adjudicator_doc_type", "doc_type"),
+                         ("adjudicator_subclass", "subclass"),
+                         ("adjudicator_label", "label")):
+        if _has(flat):
+            present = True
+            verdict.setdefault(nested, candidate[flat])
+    return verdict if present else None
+
+
 def gate_independent_adjudication(
     candidate: dict[str, Any], card: LabelCard,
     *args: Any, **kwargs: Any) -> GateResult:
     """Gate 5: a second adjudicator, never the generator (#28).
 
-    Prefers an explicit ``adjudication`` / ``adjudicator_*`` label from a
-    second model.  Otherwise applies the card's structural rules
+    Prefers an explicit ``adjudication`` dict or flat ``adjudicator_*``
+    label (``adjudicator_parent_class`` / ``adjudicator_doc_type`` /
+    ``adjudicator_subclass`` / ``adjudicator_label``) from a second model;
+    when one is present it MUST name a non-empty label (``adjudication_empty``
+    otherwise) that agrees with the card (``adjudication_mismatch``
+    otherwise).  Without any adjudication, applies the card's structural rules
     (``title_patterns``, ``required_structure``, ``prohibited_facts``) as
     an independent rule set that Gate 3 does not use.
     """
     del args
-    adj = candidate.get("adjudication")
-    if isinstance(adj, dict):
-        adj_parent = str(adj.get("parent_class") or adj.get("doc_type") or "")
-        adj_sc = str(adj.get("subclass") or adj.get("label") or "")
+    adj = _adjudication_of(candidate)
+    if adj is not None:
+        adj_parent = str(adj.get("parent_class") or adj.get("doc_type") or "").strip()
+        adj_sc = str(adj.get("subclass") or adj.get("label") or "").strip()
+        if not adj_sc:
+            # an adjudication that names no label is NOT an agreement: an
+            # empty/partial second opinion must never pass the gate.
+            return GateResult(
+                "independent_adjudication", "reject", "adjudication_empty",
+                {"adjudicator_parent": adj_parent})
         if adj_parent and adj_parent != card.parent_class:
             return GateResult(
                 "independent_adjudication", "reject", "adjudication_mismatch",
                 {"adjudicator_parent": adj_parent})
-        if adj_sc and adj_sc != card.subclass:
+        if adj_sc != card.subclass:
             return GateResult(
                 "independent_adjudication", "reject", "adjudication_mismatch",
                 {"adjudicator_subclass": adj_sc})
@@ -1821,7 +2035,8 @@ def gate_embedding_diversity(
     """
     del args
     pool = list(kwargs.get("pool_texts") or ())
-    max_sim = float(kwargs.get("max_similarity") or 0.85)
+    max_sim_kw = kwargs.get("max_similarity")
+    max_sim = 0.85 if max_sim_kw is None else float(max_sim_kw)
     n = int(kwargs.get("n_gram") or 4)
     text = str(candidate.get("doc_text") or "")
     cand = _char_ngrams(text, n)
@@ -1846,10 +2061,16 @@ def gate_model_disagreement(
 
     Requires ``model_doc_type`` and ``model_subclass`` on the candidate
     (reason ``missing_model_prediction`` when absent — no silent pass).
-    Optional ``model_doc_type_prob`` must clear ``min_prob`` (default 0.5).
+    A card may be the first positional argument or ``card`` keyword; without
+    one, only prediction presence and the probability floor are checked.
+    Optional ``model_doc_type_prob`` must be at least ``min_prob`` (default
+    0.5). NaN and unparseable probabilities become
+    ``model_prob_below_floor`` rejections; invalid ``min_prob`` conversions
+    propagate ``TypeError`` or ``ValueError``.
     """
     card = args[0] if args else kwargs.get("card")
-    min_prob = float(kwargs.get("min_prob") or 0.5)
+    min_prob_kw = kwargs.get("min_prob")
+    min_prob = 0.5 if min_prob_kw is None else float(min_prob_kw)
     model_dt = candidate.get("model_doc_type")
     model_sc = candidate.get("model_subclass")
     if model_dt is None or model_sc is None:
@@ -1862,10 +2083,17 @@ def gate_model_disagreement(
                 "model_disagreement", "reject", "model_label_mismatch",
                 {"model_doc_type": model_dt, "model_subclass": model_sc})
     prob = candidate.get("model_doc_type_prob")
-    if prob is not None and float(prob) < min_prob:
-        return GateResult(
-            "model_disagreement", "reject", "model_prob_below_floor",
-            {"prob": float(prob), "min_prob": min_prob})
+    if prob is not None:
+        try:
+            p = float(prob)
+        except (TypeError, ValueError):
+            p = float("nan")
+        # ``not (p >= floor)`` so a NaN / unparseable probability FAILS the
+        # floor (``nan < floor`` is False and used to pass it).
+        if not p >= min_prob:
+            return GateResult(
+                "model_disagreement", "reject", "model_prob_below_floor",
+                {"prob": None if math.isnan(p) else p, "min_prob": min_prob})
     return GateResult("model_disagreement", "pass", "model_agrees",
                       {"model_doc_type": model_dt, "model_subclass": model_sc})
 
@@ -1882,13 +2110,20 @@ def run_seven_gates(
 ) -> GateReport:
     """Run the ordered seven gates; short-circuit at the first non-pass.
 
-    Every gate now executes (no ``not_run`` stubs).  On failure the
-    candidate is written to ``audit`` (never fitted).  Audit records use
+    Returns the gates evaluated and the first failure, if any. When
+    ``audit`` is supplied, a summary is added for both passing and failing
+    candidates. ``pool_texts=None`` uses the corpus as the diversity pool;
+    an explicitly empty pool skips that comparison. ``n_gram`` is the
+    lexical contamination word-gram size. Audit records use
     stable reason codes from each gate (``missing_positive_cue``,
     ``near_duplicate``, ``missing_model_prediction``, …).
     """
+    # Materialize each iterable ONCE: a one-shot iterator would be exhausted by
+    # the first gate that walks it and every later gate would see nothing.
+    corpus_texts = list(corpus_texts)
+    known_entities = tuple(known_entities)
     diversity_pool = list(pool_texts) if pool_texts is not None \
-        else list(corpus_texts)
+        else corpus_texts
     gate_steps: tuple[tuple[str, Callable[[], GateResult]], ...] = (
         ("schema", lambda: gate_schema(candidate, card)),
         ("lexical_contamination", lambda: gate_lexical_contamination(
@@ -1953,13 +2188,23 @@ def build_enrichment_windows(
 ) -> pd.DataFrame:
     """Window rows for enrichment documents (the committed window schema:
     filename, window_index, n_windows, text, doc_type, subclass, split,
-    window_tokens).  ``doc_records`` must carry a ``windows`` list (already
-    produced by the pinned windower — the caller's seam; this function is
-    pure).  Enrichment windows are TRAIN-only like their documents.
+    window_tokens).  ``doc_records`` must carry a non-empty ``windows`` list
+    (already produced by the pinned windower over the NORMALIZED text — the
+    caller's seam; this function is pure) or ``ValueError`` is raised.
+    Enrichment windows are TRAIN-only like their documents.
     """
     recs: list[dict[str, Any]] = []
     for r in sorted(doc_records, key=lambda r: str(r["filename"])):
-        windows = list(r.get("windows") or [str(r.get("doc_text") or "")])
+        windows = r.get("windows")
+        if windows is None or len(windows) == 0:
+            # never fall back to one UNBOUNDED window over the whole text: a
+            # missing windows list is a caller defect (the pinned windower was
+            # not run), and an over-length window would break the context fit.
+            raise ValueError(
+                f"build_enrichment_windows: record {str(r['filename'])!r} "
+                "carries no 'windows' — run the pinned windower first "
+                "(refusing to emit one unbounded window)")
+        windows = list(windows)
         for i, text in enumerate(windows):
             recs.append({
                 "filename": str(r["filename"]),

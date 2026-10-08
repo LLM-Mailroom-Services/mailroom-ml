@@ -388,6 +388,11 @@ def _analyst_insights(report: dict, summary: dict | None) -> list[str]:
 
 
 def _per_doc_table(report: dict) -> list[str]:
+    """Return Markdown lines for per-document scores, or [] when absent.
+
+    Above ``PER_DOC_FULL_MAX``, show only doc-type or subclass errors.
+    Display at most 500 selected rows and note any remaining rows.
+    """
     per_doc = report.get("per_doc") or []
     n = len(per_doc)
     if not per_doc:
@@ -415,23 +420,29 @@ def _per_doc_table(report: dict) -> list[str]:
             f"{r.get('fast_path')} |"
         )
     if len(rows) > 500:
-        lines.append(f"| … | | | | | | | ({len(rows) - 500} more) |")
+        lines.append(f"| … ({len(rows) - 500} more) | | | | | | |")
     lines.append("")
     return lines
 
 
 def _reproduce_test(ctx: ReportContext, eval_path: str) -> list[str]:
+    """Return Markdown commands to fit validation thresholds and reproduce the
+    held-out test evaluation, gate check, and report; no commands are run.
+    """
     ckpt = ctx.checkpoint or f"data/modernbert_training/runs/{ctx.run_tag}/latest"
     return [
         "## Reproduce",
         "",
         "```bash",
-        f"uv run python training/eval_modernbert.py --checkpoint {ckpt} \\",
-        "  --stage data/modernbert_training/stage --sample 0 --selective-risk \\",
-        "  --write-routing-thresholds \"${CKPT}/routing_thresholds.json\" --json \\",
+        f"uv run python training/eval/eval_modernbert.py --checkpoint {ckpt} \\",
+        "  --stage data/modernbert_training/stage --subset validation --sample 0 \\",
+        f"  --write-routing-thresholds {ckpt}/routing_thresholds.json --json \\",
+        f"  > reports/eval_{ctx.run_tag}-validation.json",
+        f"uv run python training/eval/eval_modernbert.py --checkpoint {ckpt} \\",
+        "  --stage data/modernbert_training/stage --sample 0 --selective-risk --json \\",
         f"  > reports/eval_{ctx.run_tag}.json",
         f"uv run python training/check_m9a_gates.py {eval_path}",
-        f"uv run python training/write_eval_report.py test --run-tag {ctx.run_tag} \\",
+        f"uv run python training/eval/write_eval_report.py test --run-tag {ctx.run_tag} \\",
         f"  --eval-json {eval_path}",
         "```",
         "",
@@ -495,7 +506,7 @@ def render_test_eval_report(
         "",
         "| Parameter | Value |",
         "| --- | --- |",
-        "| Command surface | `training/eval_modernbert.py` |",
+        "| Command surface | `training/eval/eval_modernbert.py` |",
         f"| `--subset` | `{report.get('eval_subset', 'test')}` |",
         f"| Documents | **{report.get('n_docs', n)}** (`--sample 0`) |",
         "| `--max-length` | 8192 |",
@@ -535,7 +546,7 @@ def render_test_eval_report(
         f"| Release tag | `{run_tag}` |",
         f"| Eval on Hub | `eval_report_{run_tag}.json` |",
         "",
-        f"Publish via `./training/complete_run.sh --run-tag {run_tag} --publish` "
+        f"Publish via `./training/train/complete_run.sh --run-tag {run_tag} --publish` "
         "(requires all #112 gates MET, or `--force-publish`).",
         "",
     ]
@@ -589,6 +600,13 @@ def render_heldout_plus_report(
     baseline: dict | None = None,
     eval_json_name: str = "",
 ) -> str:
+    """Render held-out-plus monitoring Markdown from an evaluation report.
+
+    ``plus_filenames`` separates extension rows from canonical rows in
+    ``per_doc`` for slice metrics. ``baseline`` is currently unused; the
+    canonical slice is taken from ``report``. Return the text without writing
+    files or running evaluations.
+    """
     run_tag = ctx.run_tag
     per_doc = report.get("per_doc") or []
     canon_rows = [r for r in per_doc if str(r.get("filename")) not in plus_filenames]
@@ -611,7 +629,7 @@ def render_heldout_plus_report(
         "",
         "| Parameter | Value |",
         "| --- | --- |",
-        "| CLI | `training/eval_modernbert.py` |",
+        "| CLI | `training/eval/eval_modernbert.py` |",
         "| `--subset` | `heldout-plus` |",
         f"| Documents | **{report.get('n_docs')}** (`--sample 0`) |",
         f"| Windows | **{wc.get('n_windows')}** |",
@@ -666,16 +684,18 @@ def render_heldout_plus_report(
         "## Reproduce",
         "",
         "```bash",
-        "uv run python training/eval_modernbert.py --subset heldout-plus \\",
+        "uv run python training/eval/eval_modernbert.py --subset heldout-plus \\",
         f"  --checkpoint {ctx.checkpoint or '…'} --sample 0 --json \\",
         f"  > reports/eval_{run_tag}-heldout-plus.json",
-        f"uv run python training/write_eval_report.py heldout-plus --run-tag {run_tag} \\",
+        f"uv run python training/eval/write_eval_report.py heldout-plus --run-tag {run_tag} \\",
         f"  --eval-json reports/eval_{run_tag}-heldout-plus.json \\",
         f"  --baseline-json reports/eval_{run_tag}.json",
         "```",
         "",
         "## Artifacts",
         "",
+        "| path | role |",
+        "| --- | --- |",
         f"| `reports/eval_{run_tag}-heldout-plus.json` | canonical heldout-plus eval |",
         f"| `reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-{run_tag}.md` | this report |",
         "",
@@ -784,6 +804,10 @@ def render_compare_report(
     path_b: str,
     title: str = "",
 ) -> str:
+    """Render comparison metrics, supplied bootstrap intervals, and reproduction
+    commands as Markdown. ``path_a`` and ``path_b`` label the input artifacts;
+    this function does not read them or rerun the comparison.
+    """
     lines = [
         title or f"# compare_runs: {label_a} vs {label_b}",
         "",
@@ -818,11 +842,13 @@ def render_compare_report(
         "## Reproduce",
         "",
         "```bash",
-        f"uv run python training/compare_runs.py --a {path_a} --b {path_b}",
+        f"uv run python training/eval/compare_runs.py --a {path_a} --b {path_b}",
         "```",
         "",
         "## Artifacts",
         "",
+        "| path | role |",
+        "| --- | --- |",
         f"| `{path_a}` | eval A |",
         f"| `{path_b}` | eval B |",
         "",

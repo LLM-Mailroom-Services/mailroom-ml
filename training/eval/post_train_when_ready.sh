@@ -2,17 +2,17 @@
 # Idempotent: run complete_run.sh when a local M9a train has finished (no polling loop).
 #
 # Usage:
-#   ./training/post_train_when_ready.sh              # check canonical + GPU1 smoke tags
-#   ./training/post_train_when_ready.sh --run-tag TAG [--gpu N] [--min-epochs N]
+#   ./training/eval/post_train_when_ready.sh              # check canonical + GPU1 smoke tags
+#   ./training/eval/post_train_when_ready.sh --run-tag TAG [--gpu N] [--min-epochs N]
 #
 # Typical overnight (cron every 42m or manual after TUI shows "trainer stopped"):
-#   cd .../modernBERT && TORCH_DISABLE_NATIVE_JIT=1 ./training/post_train_when_ready.sh
+#   cd .../modernBERT && TORCH_DISABLE_NATIVE_JIT=1 ./training/eval/post_train_when_ready.sh
 #
 # Respects logs/.m9a-gpu-policy: after GPU-1 smoke complete_run once, no further GPU-1 work.
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 export TORCH_DISABLE_NATIVE_JIT="${TORCH_DISABLE_NATIVE_JIT:-1}"
 
@@ -55,7 +55,7 @@ try_complete() {
   fi
   echo "=== complete_run: $tag on GPU $gpu ==="
   local rc=0
-  CUDA_VISIBLE_DEVICES="$gpu" ./training/complete_run.sh --run-tag "$tag" || rc=$?
+  CUDA_VISIBLE_DEVICES="$gpu" ./training/train/complete_run.sh --run-tag "$tag" || rc=$?
   if [[ -f "$eval" ]]; then
     if [[ "$tag" == "$TAG_A" ]]; then
       touch "$MARKER"

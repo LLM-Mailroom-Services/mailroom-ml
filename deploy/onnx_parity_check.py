@@ -8,8 +8,9 @@ bundle, texts are hardcoded.
 Gates (max |PyTorch − ONNX| over all heads and positions):
 
     model.onnx            (fp32 export)      atol 1e-4  ← THE export contract
-    model_quantized.onnx  (int8 dynamic)     argmax agreement + drift are
-                                             measured and REPORTED; pass
+    model_quantized.onnx  (int8 dynamic)     argmax agreement + drift vs the
+                                             fp32 ONNX graph are measured and
+                                             REPORTED; pass
                                              ``--require-int8`` to fail the
                                              gate when any head's argmax flips.
                                              (int8 weight-quantization error is
@@ -68,16 +69,44 @@ except ImportError:  # CLI use without the dev extra
     pytest = None  # type: ignore[assignment]
 
 
+def _int8_vs_fp32(ort_fp32: dict, ort_int8: dict, *, require: bool,
+                  n_samples: int) -> tuple[dict[str, float], dict[str, float]]:
+    """Per-head argmax agreement + max |logit drift| of the int8 graph against
+    the fp32 ONNX graph (what ``--require-int8`` documents: the quantization
+    error alone, not the export error already gated at 1e-4).  With
+    ``require`` any argmax flip raises."""
+    import numpy as np
+
+    agree: dict[str, float] = {}
+    drift: dict[str, float] = {}
+    for head in sorted(ort_fp32):
+        ref_np, q = np.asarray(ort_fp32[head]), np.asarray(ort_int8[head])
+        agree[head] = float(np.mean(ref_np.argmax(-1) == q.argmax(-1)))
+        drift[head] = float(np.abs(ref_np - q).max())
+        if require and agree[head] < 1.0:
+            raise AssertionError(
+                f"head {head!r} int8 decision parity broken: argmax "
+                f"agreement {agree[head]:.3f} < 1.0 against the fp32 graph "
+                f"over {n_samples} samples — re-export or skip int8"
+            )
+    return agree, drift
+
+
 def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
                require_int8_agreement: bool = False,
                max_length: int = MAX_TOKENS) -> dict:
     """Compare PyTorch vs ONNX logits per head; raises AssertionError on failure.
 
     - ``model.onnx`` (fp32) must match the PyTorch reference within
-      ``tolerance`` (1e-4 default) — the export correctness contract.
+      ``tolerance`` (CLI default 1e-4) — the export correctness contract.
     - ``model_quantized.onnx`` (int8, when present) argmax agreement + logit
-      drift are measured and returned; only when ``require_int8_agreement`` is
-      set does an argmax flip fail the gate.
+      drift against the fp32 ONNX graph are measured and returned; only when
+      ``require_int8_agreement`` is set does an argmax flip fail the gate.
+
+    ``max_length`` is the token length used to pad/truncate the fixed inputs.
+    A missing fp32 graph or mismatched head set also raises ``AssertionError``;
+    model/tokenizer/session loading errors propagate. A missing int8 graph is
+    skipped even when agreement is required.
     """
     import numpy as np
     import onnxruntime as ort
@@ -137,19 +166,9 @@ def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
     quant = onnx_dir / "model_quantized.onnx"
     if quant.is_file():
         ort_int8 = _run(quant)
-        agree: dict[str, float] = {}
-        drift: dict[str, float] = {}
-        for head in sorted(ref_logits):
-            ref_np = ref_logits[head].numpy()
-            q = ort_int8[head]
-            agree[head] = float(np.mean(ref_np.argmax(-1) == q.argmax(-1)))
-            drift[head] = float(np.abs(ref_np - q).max())
-            if require_int8_agreement and agree[head] < 1.0:
-                raise AssertionError(
-                    f"head {head!r} int8 decision parity broken: argmax "
-                    f"agreement {agree[head]:.3f} < 1.0 over "
-                    f"{len(_SAMPLE_TEXTS)} samples — re-export or skip int8"
-                )
+        agree, drift = _int8_vs_fp32(ort_fp32, ort_int8,
+                                     require=require_int8_agreement,
+                                     n_samples=len(_SAMPLE_TEXTS))
         result["onnx_file"] = str(quant)
         result["argmax_agreement_int8"] = agree
         result["max_abs_diff_by_head_int8"] = drift
@@ -158,6 +177,11 @@ def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
 
 
 def main() -> int:
+    """Run the artifact parity checks, print their measurements, and return 0.
+
+    Missing checkpoint weights or the fp32 graph raise ``SystemExit``;
+    parity failures and model-loading errors propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pytorch-dir", type=Path, default=_DEFAULT_PYTORCH_DIR)
     ap.add_argument("--onnx-dir", type=Path, default=_DEFAULT_ONNX_DIR)
@@ -183,10 +207,12 @@ def main() -> int:
     for head, diff in result["max_abs_diff_by_head_fp32"].items():
         print(f"  {head:>22s}  max|pt-onnx| = {diff:.3e}")
     if result["argmax_agreement_int8"] is not None:
-        print(f"int8 decision parity PASS (argmax agreement 1.0 over "
-              f"{result['sample_texts']} samples); logit drift reported:")
+        flat = all(v == 1.0 for v in result["argmax_agreement_int8"].values())
+        print(f"int8 vs fp32 ONNX decision parity "
+              f"{'PASS (argmax agreement 1.0' if flat else 'REPORTED (argmax flips'}"
+              f" over {result['sample_texts']} samples); logit drift:")
         for head, drift in result["max_abs_diff_by_head_int8"].items():
-            print(f"  {head:>22s}  max|pt-int8| = {drift:.3e}  "
+            print(f"  {head:>22s}  max|fp32-int8| = {drift:.3e}  "
                   f"(agreement {result['argmax_agreement_int8'][head]:.3f})")
     return 0
 

@@ -40,6 +40,12 @@ Exercise:
          https://<workspace>--mailroom-ml-serve-predict.modal.run
 
 GET /health is metadata-only; POST /predict requires the bearer token.
+
+No truncation (#85): a text longer than ``SERVE_MAX_LENGTH`` tokens is rejected
+with an explicit HTTP 413 — it is never silently cut to the first 8,192
+tokens.  Long documents belong to the windowed local path
+(``mailroom_ml.windows`` / ``mailroom_ml.inference``).  Each request is padded
+to its own longest text, not to ``SERVE_MAX_LENGTH``.
 """
 from __future__ import annotations
 
@@ -144,7 +150,12 @@ def _resolve_model_dir() -> str:
 # -- runtime state -----------------------------------------------------------
 @functools.lru_cache(maxsize=1)
 def _session(model_dir: str) -> dict:
-    """Load the ONNX session + label maps + tokenizer once per container."""
+    """Load and cache ONNX state for the most recently requested model directory.
+
+    Prefers int8 weights, falling back to fp32. Disables tokenizer truncation
+    and padding so request encoding can reject overlong inputs and pad by batch.
+    Missing weights raise ``FileNotFoundError``; an unresolved pad ID raises
+    ``RuntimeError``. Artifact read/parse and runtime loading errors propagate."""
     import onnxruntime as ort
     from tokenizers import Tokenizer
 
@@ -161,7 +172,10 @@ def _session(model_dir: str) -> dict:
     sess = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
     maps = json.loads((mdir / "labels.json").read_text())
     tok = Tokenizer.from_file(str(mdir / "tokenizer.json"))
-    tok.enable_truncation(max_length=MAX_LENGTH)
+    # no silent truncation (#85) and no tokenizer-side padding: oversize input
+    # is rejected in ``_encode``; padding is per-request
+    tok.no_truncation()
+    tok.no_padding()
 
     # pad id: tokenizer_config.json pad_token -> vocab, else config.json.
     pad_id = None
@@ -188,16 +202,34 @@ def _session(model_dir: str) -> dict:
     }
 
 
+class TextTooLongError(ValueError):
+    """A request text exceeds the model's native context (no truncation)."""
+
+
 def _encode(texts: list[str], state: dict):
-    """Encode + right-pad to MAX_LENGTH; returns (ids, attention_mask) int64."""
+    """Encode + right-pad to the batch's longest text; (ids, mask) int64.
+
+    Texts over ``MAX_LENGTH`` tokens raise ``TextTooLongError`` (HTTP 413 at
+    the endpoint) rather than being silently truncated — the #85 intake
+    contract has no truncation; long documents go through the windowed path.
+    Padding is to the longest text in THIS request, not to ``MAX_LENGTH``
+    (every request used to pay a full 8,192-token forward per text).
+    """
     import numpy as np
 
     encs = state["tokenizer"].encode_batch(texts)
-    ids = np.full((len(encs), MAX_LENGTH), state["pad_id"], dtype=np.int64)
-    mask = np.zeros((len(encs), MAX_LENGTH), dtype=np.int64)
     for i, enc in enumerate(encs):
-        n = min(len(enc.ids), MAX_LENGTH)
-        ids[i, :n] = enc.ids[:n]
+        if len(enc.ids) > MAX_LENGTH:
+            raise TextTooLongError(
+                f"texts[{i}] is {len(enc.ids)} tokens, over the {MAX_LENGTH}-"
+                "token context: this endpoint does not truncate — window the "
+                "document first (mailroom_ml.windows) and send the windows")
+    width = max((len(enc.ids) for enc in encs), default=0) or 1
+    ids = np.full((len(encs), width), state["pad_id"], dtype=np.int64)
+    mask = np.zeros((len(encs), width), dtype=np.int64)
+    for i, enc in enumerate(encs):
+        n = len(enc.ids)
+        ids[i, :n] = enc.ids
         mask[i, :n] = 1
     return ids, mask
 
@@ -217,13 +249,45 @@ def _subclass_prediction(
     return _head_prediction(logits_by_head[head_key][window_index], maps, dt_label)
 
 
+def _trainable_id2label(cfg: dict, head: str) -> dict[int, str]:
+    """Label map that lines up with the head's ONNX logit columns.
+
+    Mirrors ``mailroom_ml.labels.normalize_label_maps`` (a parity test pins
+    them together) but dependency-free: that module imports pandas, which
+    this deliberately lean image does not carry.  Bundles written by the
+    trainer already carry ``trainable_id2label``; an older ``labels.json``
+    gets the legacy routing-only defaults (contract ``other``, doc_type
+    ``unknown``) applied.
+    """
+    if cfg.get("trainable_id2label"):
+        return {int(k): v for k, v in cfg["trainable_id2label"].items()}
+    labels = list(cfg.get("trainable_labels") or ())
+    if not labels:
+        routing_only = cfg.get("routing_only")
+        if routing_only is None:
+            routing_only = (["other"] if head == "contract"
+                            else ["unknown"] if head == "doc_type" else [])
+        all_labels = cfg.get("labels") or [
+            v for _, v in sorted((int(k), v)
+                                 for k, v in cfg["id2label"].items())]
+        labels = [lab for lab in all_labels if lab not in set(routing_only)]
+    return dict(enumerate(labels))
+
+
 def _head_prediction(logits, maps: dict, head: str) -> dict:
-    """argmax + per-label logits for one head using the inlined label maps."""
-    id2label = {int(k): v for k, v in maps[head]["id2label"].items()}
+    """argmax + per-label logits for one head using the inlined label maps.
+
+    The ONNX graph emits one logit per TRAINABLE label — routing-only labels
+    (doc_type ``unknown``, contract ``other``) have no output column.
+    Indexing the full ``id2label`` with those logits raised IndexError (HTTP
+    500) on every request; the trainable map is the one that lines up, and
+    the loop runs over the logits actually returned.
+    """
+    id2label = _trainable_id2label(maps[head], head)
     top = int(logits.argmax())
     return {
         "label": id2label[top],
-        "logits": {id2label[i]: float(logits[i]) for i in range(len(id2label))},
+        "logits": {id2label[i]: float(logits[i]) for i in range(len(logits))},
     }
 
 
@@ -256,9 +320,17 @@ class PredictRequest(BaseModel):
 @app.function(secrets=_serve_secrets(), timeout=120, startup_timeout=60)
 @modal.fastapi_endpoint(method="POST")
 def predict(request: PredictRequest, _: None = _auth_dep) -> dict:
-    """Run the int8 ONNX session; returns per-text head predictions + logits."""
+    """Return per-text doc_type/subclass predictions, raw logits, and model metadata.
+
+    Uses int8 weights when available, otherwise fp32. Subclass is ``None``
+    when the predicted doc_type has no usable subclass head. Inputs exceeding
+    ``MAX_LENGTH`` tokens raise HTTP 413; model loading and inference errors
+    propagate."""
     state = _session(_resolve_model_dir())
-    ids, mask = _encode(request.texts, state)
+    try:
+        ids, mask = _encode(request.texts, state)
+    except TextTooLongError as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     outs = state["session"].run(None, {"input_ids": ids, "attention_mask": mask})
     logits_by_head = dict(zip(state["output_names"], outs, strict=True))
     head_names = sorted(k for k in logits_by_head if k.startswith("logits_"))

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Operator preflight checks before Hub publish or Modal GPU spend.
 
-    uv run python training/preflight.py
-    uv run python training/preflight.py --online   # needs HF_TOKEN
+    uv run python training/train/preflight.py
+    uv run python training/train/preflight.py --online   # needs HF_TOKEN
 """
 from __future__ import annotations
 

@@ -62,8 +62,11 @@ What happens inside the container:
    `TRAINING_DATA_REVISION`.
 3. `train_modernbert.py` runs via subprocess with the exact documented flags
    (`--data <repo> --output /checkpoints/runs/<run-id> --epochs … --batch-size …
-   --grad-accum … --lr … --seed … [--push-to-hub <repo>] [--eval-test]`).
-   Smoke runs write to `/checkpoints/smoke-<ts>` and never touch `latest/`.
+   --grad-accum … --lr … --seed … [--eval-test]`). The app does **not** pass
+   `--push-to-hub`: a trainer-side push would upload before ONNX export/parity
+   and even from a run where no epoch cleared the selection gate (see
+   "`--push-to-hub` mechanics"). Smoke runs write to `/checkpoints/smoke-<ts>`
+   and never touch `latest/` or the Hub.
 4. On a successful **non-smoke** train (`#19`, default `--export-onnx`):
    1. `deploy/onnx_export.py` writes `onnx/` beside the run checkpoint
       (`torch.onnx.export`, never `optimum-cli`).
@@ -71,7 +74,14 @@ What happens inside the container:
    3. Only then is `/checkpoints/latest` promoted (copy + rename). Failed
       export/parity raises and **leaves `latest/` on the last good
       checkpoint**.
-   Skip the chain with `--no-export-onnx` on `spawn_train.py` / `modal run`.
+   4. Only then, and only if the trainer's selection gate was met
+      (`summary.json` → `checkpoint_selection.gate_met`, i.e. `selected_epoch
+      > 0`), the app uploads the run to the `--push-to-hub` repo.
+   Skip the chain with `--no-export-onnx` on `spawn_train.py` / `modal run`
+   (a run that skipped parity is **never** pushed to the Hub).
+   A `--resume` that is already at/after `--epochs` trains nothing (the
+   trainer's `summary.json` carries `nothing_trained: true`): the app skips
+   export, promotion and push for it.
 5. The run directory stays at `/checkpoints/runs/<run-id>/` on the
    **`modernbert-checkpoints`** Volume for rollback; the Volume is committed
    after a successful promote.
@@ -85,7 +95,10 @@ What happens inside the container:
   timeout (`startup_timeout` 10 min); the first boot pays ModernBERT weight +
   dataset download once (cached on the `mailroom-ml-hf-cache` Volume).
 - A smoke run costs minutes: `uv run --extra deploy python deploy/spawn_train.py --smoke`
-  (forwards `--limit 64` to the trainer on Modal; exercises the full path).
+  (a 24-micro-batch run that exercises the full path; its timing feeds the
+  budget guard, so it pins `--checkpoint-every` to the real run's cadence
+  rather than inheriting its own `--log-every 4`, which would put a checkpoint
+  save inside every 8 micro-batches of the measurement).
 
 ### Checkpoint persistence & rollback
 
@@ -94,6 +107,10 @@ What happens inside the container:
 | `/checkpoints/latest/` | stable pointer — what the export step consumes |
 | `/checkpoints/runs/<run-id>/` | per-run archive, retained forever (rollback) |
 
+- A cut run lives in `/checkpoints/runs/<run-id>/` — **not** `latest/`, which
+  only ever holds the last *successful* run. Resume it with
+  `spawn_train.py --resume /checkpoints/runs/<run-id> --epochs <original N>`;
+  resuming `latest/` re-trains nothing.
 - Rollback = point the downstream step at a previous `runs/<run-id>/`
   (`modal volume ls modernbert-checkpoints`, `modal volume get …`), or re-pull
   `CLASSIFIER_MODEL_REPO` from the Hub if the run was pushed.
@@ -108,11 +125,21 @@ modal volume get modernbert-checkpoints latest artifacts/pytorch/model
 
 ### `--push-to-hub` mechanics
 
-`HF_TOKEN` (from the deploy-time env Secret) authorizes the trainer's
-`--push-to-hub <repo>`. The trainer's own push uses the standard
-`huggingface_hub`/transformers upload — `CLASSIFIER_MODEL_REPO` in
-`src/mailroom_ml/config.py` is the operator-set publish target; the Modal app
-never assumes it, the flag is explicit per run.
+`HF_TOKEN` (from the deploy-time env Secret) authorizes the upload. On Modal
+the **app** pushes, not the trainer: `--push-to-hub <repo>` on `spawn_train.py`
+/ `modal run` is held by `train()` and uploaded after ONNX export + parity
+(and after `latest/` is promoted) — never from a smoke, never from a run whose
+selection gate was not met (the uncalibrated final epoch), never from a resume
+that trained nothing. The upload ignores `optimizer.pt`, `scheduler.pt`,
+`resume.json` and the `onnx/` bundle (the model repo has only ever carried the
+PyTorch checkpoint; the ONNX bundle stays on the Volume /
+`artifacts/onnx/model`). `CLASSIFIER_MODEL_REPO` in `src/mailroom_ml/config.py`
+is the operator-set publish target; the Modal app never assumes it, the flag is
+explicit per run.
+
+A **local** `train_modernbert.py --push-to-hub <repo>` still uploads from the
+trainer, but refuses (exit 3) when `selected_epoch == 0`; pass `--push-ungated`
+to publish such a checkpoint deliberately.
 
 ## 4. ONNX export + parity (the primary serving artifact)
 
@@ -143,6 +170,14 @@ artifacts/onnx/model/
     model_quantized.onnx   int8 dynamic-quantized (same contract)
     labels.json            label maps (self-contained serving + parity)
     tokenizer.json / tokenizer_config.json / config.json / export_meta.json
+    temperatures.json / summary.json / train_counts.json /
+    ood_probe.json / routing_thresholds.json
+                           serving sidecars, copied when the checkpoint has
+                           them — `load_bundle` on this directory reads the
+                           per-head temperatures, head-exclusion policy,
+                           authentic-support counts, OOD probe and thresholds
+                           from them (without them it loads at T=1 with no
+                           exclusions / OOD / support)
 ```
 
 **Why not `optimum-cli export onnx`?** Both optimum paths
@@ -177,7 +212,9 @@ drifted ~1.0 on logit scale with **random** heads); the int8 bundle is
 therefore gated on **argmax agreement** via `--require-int8` (production gate)
 with drift always reported — a trained checkpoint's confident margins survive
 int8, and the calibration step downstream consumes probabilities, not raw
-logits.
+logits. The int8 argmax/drift is measured against the **fp32 ONNX graph** (the
+fp32 graph is already gated against PyTorch at 1e-4, so this isolates the
+quantization error).
 
 ## 5. Fallback serving app (`mailroom-ml-serve`) — FALLBACK only
 
@@ -202,6 +239,11 @@ curl -s -H "Authorization: Bearer $SERVE_API_TOKEN" -H "Content-Type: applicatio
 
 - `model_id` is passed at deploy via `SERVE_MODEL_ID` (default:
   `CLASSIFIER_MODEL_REPO`); the label maps ship inside the artifact bundle.
+- No truncation (#85): a text over `SERVE_MAX_LENGTH` (8,192) tokens gets an
+  HTTP 413 rather than being silently cut — send already-windowed text (the
+  `mailroom_ml.windows` path). Requests are padded to their own longest text,
+  not to 8,192. Head labels come from the bundle's `trainable_id2label`
+  (routing-only labels such as doc_type `unknown` have no ONNX logit column).
 - Bearer token required on `/predict` (from the deploy-time env or the named
   `mailroom-ml-serve-token` secret) — never `unauthenticated=True` for this.
 - Rollback: redeploy the previous app version (`modal app rollback

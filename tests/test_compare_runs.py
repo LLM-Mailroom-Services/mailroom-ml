@@ -93,3 +93,30 @@ def test_cli_and_markdown_and_json_roundtrip(tmp_path: Path):
     assert "compare_runs" in md
     assert "doc_type_accuracy" in md
     assert "contract" in md
+
+
+def test_compare_reports_b_side_missing_per_doc_keys():
+    """An older B eval without sc_correct / fast_path must not KeyError."""
+    a = _eval()
+    b = _eval()
+    for row in b["per_doc"]:
+        row.pop("sc_correct")
+        row.pop("fast_path")
+    cmp = compare_reports(a, b, n_resamples=50)
+    assert "subclass_accuracy" not in cmp["paired"]
+    assert "fast_path_rate" not in cmp["paired"]
+    assert cmp["metrics"]["fast_path_rate"]["paired"] is None
+    assert cmp["metrics"]["doc_type_accuracy"]["paired"]["n_paired"] == 4
+
+
+def test_paired_ci_carries_observed_diff_on_paired_population():
+    """Headline delta is over each run's full doc set; the CI row must also
+    report the A-B difference on the paired docs it actually describes."""
+    a = _eval(n=4, acc_shift=0)
+    b = _eval(n=4, acc_shift=1)
+    b["per_doc"] = b["per_doc"][:2]  # B evaluated a different sample
+    cmp = compare_reports(a, b, n_resamples=50)
+    p = cmp["metrics"]["doc_type_accuracy"]["paired"]
+    assert p["n_paired"] == 2
+    assert p["observed_diff"] == pytest.approx(0.0)  # d0 ok/miss, d1 miss/ok
+    assert "paired Δ" in format_markdown(cmp)

@@ -6,10 +6,10 @@ EDA commit cf096fa), re-sourced to the working corpus copy
 ``Lucius-Morningstar/mailroom-finetune`` @ ``FINETUNE_REVISION``.
 
 Usage:
-    uv run python training/build_dataset.py --stage-only
-    uv run python training/build_dataset.py --publish          # create + upload + verify
-    uv run python training/build_dataset.py --publish --repo-id Lucius-Morningstar/mailroom-modernbert-training
-    uv run python training/build_dataset.py --publish --no-stage   # upload an
+    uv run python training/dataset/mailroom-dataset/build_dataset.py --stage-only
+    uv run python training/dataset/mailroom-dataset/build_dataset.py --publish          # create + upload + verify
+    uv run python training/dataset/mailroom-dataset/build_dataset.py --publish --repo-id Lucius-Morningstar/mailroom-modernbert-training
+    uv run python training/dataset/mailroom-dataset/build_dataset.py --publish --no-stage   # upload an
         # already-assembled tree (adopted enrichment): skips stage() so the
         # enrichment-inclusive labels.json / manifest.txt / dataset_info.json
         # are published as-is instead of being overwritten canonical-only.
@@ -68,7 +68,7 @@ def render_card(stats: dict, repo_id: str, enriched: bool = False) -> str:
     if enriched:
         enrichment_note = (
             "Synthetic enrichment (tier 1/2/3) is assembled by\n"
-            "`training/assemble_enrichment.py` from external pools (enron, cuad,\n"
+            "`training/dataset/mailroom-dataset/assemble_enrichment.py` from external pools (enron, cuad,\n"
             "cms, gnotheia, bdr, insurbias, blind) with per-tier caps, a 7-gate\n"
             "audit, and `example_weight`/`lineage`/`tier` columns. **This\n"
             "revision ADOPTS tier-1 source-matched enrichment** (CUAD contract\n"
@@ -82,7 +82,7 @@ def render_card(stats: dict, repo_id: str, enriched: bool = False) -> str:
     else:
         enrichment_note = (
             "Synthetic enrichment (tier 1/2/3) is assembled by\n"
-            "`training/assemble_enrichment.py` from external pools (enron, cuad,\n"
+            "`training/dataset/mailroom-dataset/assemble_enrichment.py` from external pools (enron, cuad,\n"
             "cms, gnotheia, bdr, insurbias, blind) with per-tier caps, a 7-gate\n"
             "audit, and `example_weight`/`lineage`/`tier` columns. **No\n"
             "enrichment tier is adopted into this dataset yet** — adoption is\n"
@@ -134,10 +134,10 @@ Lucius-Morningstar/mailroom-dataset      corpus (GT labels, canonical v9)
         │  (working copy, pinned)
         ▼
 Lucius-Morningstar/mailroom-finetune     corpus snapshot @ {cfg.FINETUNE_REVISION[:8]}
-        │  training/build_dataset.py (stage + verify)
+        │  training/dataset/mailroom-dataset/build_dataset.py (stage + verify)
         ▼
 THIS REPO (mailroom-modernbert-training) @ pinned revision
-        │  training/train_modernbert.py (--data <repo>)
+        │  training/train/train_modernbert.py (--data <repo>)
         ▼
 Lucius-Morningstar/mailroom-modernbert-classifier   (trained checkpoint)
 ```
@@ -205,7 +205,7 @@ horizontal collapse, edge trim). A `filename_leak_audit` gate in
 
 ## Provenance
 
-Built by `mailroom_ml` (src/) + `training/build_dataset.py` in the
+Built by `mailroom_ml` (src/) + `training/dataset/mailroom-dataset/build_dataset.py` in the
 mailroom-ml repo. `manifest.txt` carries the build facts + sha256s; rebuilds
 are byte-identical (sorted rows, seeded split, pinned tokenizer, no
 timestamps in artifacts). Publishing is operator-only (`--publish`) and
@@ -214,6 +214,14 @@ byte-verifies every sidecar against the Hub after upload.
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Stage and verify training data, optionally publishing it to Hugging Face.
+
+    ``argv=None`` reads process arguments. ``--publish`` creates or updates
+    the public dataset and verifies uploaded bytes; ``--no-stage`` uses the
+    existing tree and refreshes its dataset metadata. Returns 0 on success,
+    1 on verification failure, or 2 for handled usage, missing-snapshot and
+    windowing errors. Other staging, verification and Hub errors propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--publish", action="store_true",
                     help="create the dataset repo + upload + verify (operator-only)")
@@ -236,7 +244,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if not (cfg.STAGE_DIR / "manifest.txt").exists():
             print(f"ERROR: --no-stage: no staged tree at {cfg.STAGE_DIR} — run "
-                  "training/build_dataset.py --stage-only first", file=sys.stderr)
+                  "training/dataset/mailroom-dataset/build_dataset.py --stage-only first", file=sys.stderr)
             return 2
         # refresh dataset_info.json from the FULL tree (canonical stage() +
         # adopted enrichment parquet) before upload — assemble_enrichment.py
@@ -260,12 +268,22 @@ def main(argv: list[str] | None = None) -> int:
         except FileNotFoundError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 2
+        except (RuntimeError, OSError) as exc:
+            # windowing needs the ModernBERT tokenizer: RuntimeError when
+            # transformers is absent, OSError (or a transformers/Hub error
+            # subclass) when the tokenizer download fails.
+            if args.no_windows:
+                raise
+            print(f"ERROR: windowing failed ({type(exc).__name__}: {exc}) — "
+                  "install the train extra / make the tokenizer reachable, or "
+                  "re-run with --no-windows", file=sys.stderr)
+            return 2
         print(f"staged: {json.dumps(stats['counts'], sort_keys=True)}")
         print(f"manifest sha256: {stats['manifest_sha256']}")
         if enriched:
             print("WARNING: stage carried enrichment parquet; re-staged the "
                   "canonical sidecars over it. Run "
-                  "training/assemble_enrichment.py to regenerate, or publish "
+                  "training/dataset/mailroom-dataset/assemble_enrichment.py to regenerate, or publish "
                   "an enriched tree with --publish --no-stage.", file=sys.stderr)
 
     check = verify_stage(cfg.STAGE_DIR)

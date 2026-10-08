@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from mailroom_ml.viz import eval_charts as ec
+from mailroom_ml.viz import svgcharts as sc
 
 FIXTURE = Path(__file__).parent / "fixtures" / "eval_report_minimal.json"
 SVG = "{http://www.w3.org/2000/svg}"
@@ -67,6 +68,26 @@ def test_render_writes_every_chart_as_valid_svg():
     assert "Pick 0.90" in " ".join(_texts(charts["selective_risk.svg"]))
     legend = _texts(charts["doc_type_recall.svg"])
     assert "Run 3" in legend and "Arm B" in legend
+
+
+def test_selective_risk_pick_is_matched_by_tolerance_not_float_equality():
+    """The recommended threshold round-trips through JSON/arithmetic: a 1-ulp
+    difference must still find its row (not report 'no threshold met')."""
+    rep = _report()
+    pick = 0.6 + 0.3
+    assert pick != 0.9 and abs(pick - 0.9) < 1e-12
+    rep["selective_risk"]["recommended_threshold"] = pick
+    charts = ec.render([("Run 3", rep)])
+    sub = " ".join(_texts(charts["selective_risk.svg"]))
+    assert "Pick 0.90" in sub
+    assert "No threshold met" not in sub
+
+
+def test_lines_degenerate_explicit_y_range_does_not_divide_by_zero():
+    """y_range=(v, v) used to ZeroDivisionError in the Y() scale."""
+    svg = sc.lines("flat", [{"name": "a", "color": sc.BLUE, "x": [0, 1, 2], "y": [1.0, 1.0, 1.0]}],
+                   y_range=(1.0, 1.0))
+    assert ET.fromstring(svg).tag == f"{SVG}svg"
 
 
 def test_render_is_deterministic():

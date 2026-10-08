@@ -3,7 +3,7 @@
 
 Report-only harness (plan §11 surfaces 1-4):
 
-    .venv/bin/python training/eval_modernbert.py \\
+    .venv/bin/python training/eval/eval_modernbert.py \\
         --checkpoint artifacts/onnx/model --subset test --sample 50 --seed 42
 
 - **Data**: the held-out test split only (documents parquet from the staged
@@ -34,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(ROOT / "src") not in sys.path:
@@ -84,6 +84,7 @@ __all__ = [
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the evaluation CLI parser without parsing arguments or loading a model."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", default="",
                     help="artifact bundle dir (default: ML_MODEL_DIR env or "
@@ -92,11 +93,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="staged tree with data/documents/test "
                          "(default data/modernbert_training/stage)")
     ap.add_argument("--subset", default="test",
-                    choices=["test", "train", "all", "heldout-plus"],
-                    help="document pool: held-out test only, train+val "
-                         "(no test), full finetune corpus (all splits), or "
-                         "canonical test + heldout-plus v1 extension "
-                         "(training/build_heldout_plus.py)")
+                    choices=["test", "validation", "train", "all",
+                             "heldout-plus"],
+                    help="document pool: held-out test only, the trainer's "
+                         "validation split (the calibration set routing "
+                         "thresholds are fit on), train+val (no test), full "
+                         "finetune corpus (all splits), or canonical test + "
+                         "heldout-plus v1 extension "
+                         "(training/dataset/mailroom-dataset/build_heldout_plus.py)")
     ap.add_argument("--sample", type=int, default=50,
                     help="per-doc_type stratified sample size (0 = all)")
     ap.add_argument("--seed", type=int, default=RANDOM_STATE)
@@ -107,7 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--write-routing-thresholds", type=Path, default=None,
                     help="write routing_thresholds.json (#25) from the "
                          "selective-risk sweep (implies --selective-risk). "
-                         "PATH may be a file or a directory")
+                         "PATH may be a file or a directory. Only allowed on "
+                         "a pool without held-out test docs (--subset "
+                         "validation / train): fitting the deployment "
+                         "threshold on test would leak into every test "
+                         "metric reported against it")
     ap.add_argument("--json", action="store_true", dest="as_json",
                     help="print the report dict as JSON")
     ap.add_argument("--subclass-decode-logit-adjust", type=float, default=0.0,
@@ -115,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "decode (0 = shipped argmax). M9b tau_train=1.0: "
                          "0.5 yields effective tau 0.5 without retraining")
     ap.add_argument("--write-markdown", type=Path, default=None,
-                    help="write TEST-EVAL markdown via training/write_eval_report.py "
+                    help="write TEST-EVAL markdown via training/eval/write_eval_report.py "
                          "(requires --run-tag)")
     ap.add_argument("--run-tag", default="",
                     help="run tag for --write-markdown output paths")
@@ -197,7 +205,10 @@ HELDOUT_PLUS_DIRNAME = "heldout_plus_v1"
 
 
 def _heldout_plus_frame():
-    """heldout-plus v1 extension rows (canonical test stays untouched)."""
+    """Return the heldout-plus extension frame and the path it was loaded from.
+
+    Checks /root/data before the configured data directory. Raises
+    ``FileNotFoundError`` when neither file exists; parquet read errors propagate."""
     import pandas as pd
 
     candidates = [
@@ -210,16 +221,27 @@ def _heldout_plus_frame():
     raise FileNotFoundError(
         "heldout-plus v1 absent: expected documents.parquet under "
         f"{candidates[1]} (build it with "
-        "`uv run python training/build_heldout_plus.py --help`)"
+        "`uv run python training/dataset/mailroom-dataset/build_heldout_plus.py --help`)"
     )
 
 
+# pools that contain held-out test documents: routing thresholds are never fit
+# on these (plan §8: the deployment threshold comes from the calibration set)
+THRESHOLD_FIT_REFUSED_SUBSETS = ("test", "all", "heldout-plus")
+
+
 def _load_eval_docs(stage: Path, subset: str):
-    """Load the eval document pool (test / train / all / heldout-plus)."""
-    if subset == "test":
+    """Load the eval document pool (test / validation / train / all / heldout-plus).
+
+    Test and validation prefer staged parquet, falling back to the pinned
+    corpus. ``train`` includes train and validation; heldout-plus combines
+    canonical test with extension rows on their shared columns. Overlapping
+    filenames in that combination raise ``ValueError``. Missing extension,
+    download, and parquet errors propagate."""
+    if subset in ("test", "validation"):
         for parts in (
-            ("parquet", "documents", "test"),
-            ("data", "documents", "test"),
+            ("parquet", "documents", subset),
+            ("data", "documents", subset),
         ):
             frame = _load_parquet_split(stage, *parts)
             if frame is not None:
@@ -228,7 +250,7 @@ def _load_eval_docs(stage: Path, subset: str):
         from mailroom_ml.dataset import build_documents, load_corpus_rows
 
         docs = build_documents(load_corpus_rows())
-        return docs[docs["split"] == "test"].reset_index(drop=True)
+        return docs[docs["split"] == subset].reset_index(drop=True)
 
     _ensure_corpus_snapshot()
     from mailroom_ml.dataset import build_documents, load_corpus_rows
@@ -261,14 +283,14 @@ def _load_eval_docs(stage: Path, subset: str):
 
 def evaluate_documents(bundle, docs, *, sample: int, seed: int,
                        max_length: int, selective_risk: bool = False,
-                       doc_confidence: float = ROUTE_DOC_CONFIDENCE,
+                       doc_confidence: float | None = None,
                        ) -> dict:
-    """Run the classifier over the sampled held-out test documents.
+    """Evaluate the supplied document pool with stratified sampling.
 
     Per document: window (title + body), plurality-vote merge via
     ``classify_windows``, compare vs the document label.  Window-level
     calibration: per-window doc_type confidence/correctness across all
-    sampled windows feeds temperature fitting + ECE + (optionally) the
+    sampled windows feeds ECE + (optionally) the
     selective-risk sweep — same unit as the plan's calibration surface.
 
     Returns the report dict; ``recorded_gates`` are report-only (never
@@ -276,7 +298,38 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     doc_type being correct: a doc whose merged doc_type is ``llm_overflow``
     still contributes to its head's per-class ``support``, but records no
     ``(gt, pred)`` pair, so it is excluded from the macro-F1 denominator.
+
+    ``sample`` limits documents per doc_type; nonpositive values use all rows.
+    ``max_length`` is the window token budget. ``doc_confidence`` overrides the
+    artifact's routing threshold. ``fast_path_rate`` applies confidence,
+    agreement, margin, and available OOD checks, but omits production support,
+    catch-all, head-exclusion, and projection guards.
+
+    Tokenizer ``RuntimeError``/``OSError`` becomes ``SystemExit``. A merge
+    ``ValueError`` becomes an ``llm_overflow`` prediction; other errors propagate.
     """
+    # fast_path_rate uses the production gate's CONFIDENCE thresholds
+    # (classify_document): the artifact routing overlay (#25) when present,
+    # else the config constants, and BOTH the route and the plan's agreement
+    # floors.  An explicit ``doc_confidence`` wins over the overlay.  It is a
+    # confidence-only gate: classify_document's authentic-support, catch-all,
+    # head-exclusion and subclass-projection guards are NOT applied, so
+    # fast_path_rate is an upper bound on the production fast-path rate.
+    from mailroom_ml.inference import _bundle_route
+
+    if doc_confidence is None:
+        doc_confidence = _bundle_route(
+            bundle, "ROUTE_DOC_CONFIDENCE", ROUTE_DOC_CONFIDENCE)
+    gate = {
+        "doc_confidence": float(doc_confidence),
+        "subclass_confidence": _bundle_route(
+            bundle, "ROUTE_SUBCLASS_CONFIDENCE", ROUTE_SUBCLASS_CONFIDENCE),
+        "window_agreement": max(
+            _bundle_route(bundle, "ROUTE_WINDOW_AGREEMENT",
+                          ROUTE_WINDOW_AGREEMENT),
+            GATE_REQUIRED_AGREEMENT),
+        "margin": _bundle_route(bundle, "ROUTE_MARGIN", ROUTE_MARGIN),
+    }
     filenames = docs["filename"].astype(str).tolist()
     strata = docs["doc_type"].astype(str).tolist()
     split_counts: dict[str, int] | None = None
@@ -341,7 +394,7 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
             wins = window_document(
                 title, doc_text, max_tokens=max_length,
                 version=version, filename=filename)
-        except RuntimeError as exc:  # transformers absent
+        except (RuntimeError, OSError) as exc:  # transformers absent / tokenizer unloadable
             raise SystemExit(f"eval needs the transformers tokenizer: {exc}") from exc
         # window_document already applies the construction prefix — do not
         # re-decorate (that would double-prefix and mismatch training).
@@ -382,14 +435,19 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
                 per_head_pairs[gt_dt].append((gt_sc, sc_pred))
             if sc_ok:
                 correct_sc += 1
-        p_dt = float(merged.get("calibrated_confidence") or 0.0)
-        agree = float(merged.get("agreement") or 0.0)
-        margin = float(merged.get("margin") or 0.0)
+        # gate on the unrounded values when classify_windows exposes them
+        # (the reported fields are rounded to 4 dp: 0.969951 -> 0.97)
+        gv = merged.get("gate_values") or merged
+        p_dt = float(gv.get("calibrated_confidence") or 0.0)
+        p_sc = float(gv.get("subclass_confidence") or 0.0)
+        agree = float(gv.get("agreement") or 0.0)
+        margin = float(gv.get("margin") or 0.0)
         fast = (
             dt_pred not in ("llm_overflow", "unknown")
-            and p_dt >= doc_confidence
-            and agree >= GATE_REQUIRED_AGREEMENT
-            and margin >= ROUTE_MARGIN
+            and p_dt >= gate["doc_confidence"]
+            and (sc_pred is None or p_sc >= gate["subclass_confidence"])
+            and agree >= gate["window_agreement"]
+            and margin >= gate["margin"]
         )
         ood_flag = None
         logits = merged.get("window_doc_type_logits") or []
@@ -455,6 +513,7 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
         "per_head": _per_head_report(bundle, subclass_heads, per_head_pairs,
                                      per_head_support),
         "fast_path_rate": round(n_fast / n, 4) if n else 0.0,
+        "fast_path_gate": gate,
         "ood": {
             "probe_status": (
                 "ok" if getattr(bundle, "ood_probe", None) else "absent"),
@@ -486,7 +545,7 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
 def build_comparable_metrics(report: dict) -> dict:
     """Headline scalars for ``compare_runs.py`` / LLM sorter eval JSON pairing.
 
-    Mirrors ``training/compare_runs.py`` ``_SCALAR_KEYS`` plus per-head macro-F1,
+    Mirrors ``training/eval/compare_runs.py`` ``_SCALAR_KEYS`` plus per-head macro-F1,
     cohort agreement, and the #85 routing contract reference thresholds.
     """
     wc = report.get("window_calibration") or {}
@@ -768,7 +827,21 @@ def format_report(report: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Evaluate the selected pool, print its report, and return 0 on completion.
+
+    Optionally writes routing thresholds or invokes Markdown report generation.
+    Threshold fitting on pools containing test documents, bundle-loading
+    failures, and Markdown output without a run tag raise ``SystemExit``.
+    Data-loading, output-writing, and report subprocess errors propagate.
+    """
     args = build_parser().parse_args(argv)
+    if (args.write_routing_thresholds is not None
+            and args.subset in THRESHOLD_FIT_REFUSED_SUBSETS):
+        raise SystemExit(
+            f"--write-routing-thresholds refused on --subset {args.subset}: "
+            "the pool contains held-out test docs, so the fitted threshold "
+            "would leak into the test metrics. Fit it on the calibration set "
+            "(--subset validation) and evaluate test separately.")
     try:
         bundle = load_bundle(args.checkpoint)
     except (BundleUnavailable, BundleLoadError) as exc:
@@ -786,6 +859,7 @@ def main(argv: list[str] | None = None) -> int:
         sweep = report.get("selective_risk") or {
             "refused": True, "reason": "selective_risk not in report"}
         payload = routing_thresholds_from_sweep(sweep)
+        payload["fit_subset"] = args.subset
         dest = write_routing_thresholds(args.write_routing_thresholds, payload)
         report["routing_thresholds_path"] = str(dest)
     if args.as_json:
@@ -798,7 +872,7 @@ def main(argv: list[str] | None = None) -> int:
         import subprocess
         import tempfile
 
-        root = Path(__file__).resolve().parent.parent
+        root = ROOT
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, dir=root / "reports"
         ) as tmp:
@@ -807,7 +881,7 @@ def main(argv: list[str] | None = None) -> int:
         kind = "heldout-plus" if args.subset == "heldout-plus" else "test"
         cmd = [
             sys.executable,
-            str(root / "training" / "write_eval_report.py"),
+            str(root / "training" / "eval" / "write_eval_report.py"),
             kind,
             "--run-tag",
             args.run_tag,

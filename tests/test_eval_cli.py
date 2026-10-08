@@ -404,3 +404,37 @@ def test_eval_main_exits_when_checkpoint_missing(tmp_path):
     bad.mkdir()
     with pytest.raises(SystemExit, match="route LLM"):
         eval_main(["--checkpoint", str(bad), "--json"])
+
+
+def test_write_routing_thresholds_refused_on_test_pools(tmp_path):
+    """Plan D11: thresholds are fit on the calibration set, never on a pool
+    that contains held-out test docs (refused before any model load)."""
+    for subset in ("test", "all", "heldout-plus"):
+        with pytest.raises(SystemExit, match="refused on --subset"):
+            eval_main(["--subset", subset, "--write-routing-thresholds",
+                       str(tmp_path / "rt.json"), "--checkpoint",
+                       str(tmp_path / "missing")])
+    assert not (tmp_path / "rt.json").exists()
+    assert build_parser().parse_args(
+        ["--subset", "validation"]).subset == "validation"
+
+
+def test_fast_path_rate_honors_routing_overlay(monkeypatch):
+    """fast_path_rate mirrors the production gate: the artifact overlay
+    (#25) thresholds apply, and the applied gate is reported."""
+    import training.eval.eval_modernbert as ev
+
+    monkeypatch.setattr(ev, "window_document",
+                        lambda title, text, max_tokens, **_k: ["w1"])
+    bundle = _stub_bundle(_confident_predict)
+    base = ev.evaluate_documents(bundle, _eval_docs(), sample=0, seed=42,
+                                 max_length=8192)
+    assert base["fast_path_rate"] == 1.0
+    bundle.routing_thresholds = {"ROUTE_DOC_CONFIDENCE": 0.999999,
+                                 "ROUTE_WINDOW_AGREEMENT": 0.5}
+    tight = ev.evaluate_documents(bundle, _eval_docs(), sample=0, seed=42,
+                                  max_length=8192)
+    assert tight["fast_path_rate"] == 0.0
+    assert tight["fast_path_gate"]["doc_confidence"] == 0.999999
+    # the plan's agreement floor still applies under a looser overlay
+    assert tight["fast_path_gate"]["window_agreement"] == ev.GATE_REQUIRED_AGREEMENT

@@ -6,9 +6,9 @@ stage discipline (``dataset.stage`` layout, byte-deterministic manifest,
 #52 revision pins, #57 single-labels canon, #75 surface guardrail).
 
 Usage:
-    .venv/bin/python training/assemble_enrichment.py --stage data/modernbert_training/stage --tiers 1
-    .venv/bin/python training/assemble_enrichment.py --stage DIR --tiers 1,2 --dry-run
-    .venv/bin/python training/assemble_enrichment.py --stage DIR --tiers 1 --no-windows
+    .venv/bin/python training/dataset/mailroom-dataset/assemble_enrichment.py --stage data/modernbert_training/stage --tiers 1
+    .venv/bin/python training/dataset/mailroom-dataset/assemble_enrichment.py --stage DIR --tiers 1,2 --dry-run
+    .venv/bin/python training/dataset/mailroom-dataset/assemble_enrichment.py --stage DIR --tiers 1 --no-windows
 
 Tiers (plan §6.1 ladder — nothing is "adopted" without the ladder A/B):
   1  source-matched enrichment (Enron GT expansion + insurance pools)
@@ -83,6 +83,8 @@ from mailroom_ml.enrichment import (  # noqa: E402
     run_seven_gates,
 )
 from mailroom_ml.labels import label_maps  # noqa: E402
+from mailroom_ml.normalize import deterministic_normalize  # noqa: E402
+from mailroom_ml.provenance import atomic_write_text  # noqa: E402
 from mailroom_ml.synthetic_policy import default_enrichment_caps  # noqa: E402
 
 MANIFEST_START = "# ---- enrichment ----"
@@ -126,7 +128,9 @@ def _load_stage_docs(stage_dir: Path) -> pd.DataFrame:
 
     The stage is the source of truth for dedup, observed surfaces, caps and
     the leak audit: enrichment is measured against exactly what the trainer
-    consumes.  Missing tree -> loud error naming the build CLI.
+    consumes. A split with no parquet files raises ``FileNotFoundError``
+    naming the build CLI; parquet read errors propagate, and no remaining
+    canonical shards raises ``ValueError``.
     """
     frames = []
     for split in ("train", "validation", "test"):
@@ -134,7 +138,7 @@ def _load_stage_docs(stage_dir: Path) -> pd.DataFrame:
         if not files:
             raise FileNotFoundError(
                 f"no staged documents under {stage_dir / 'data' / 'documents' / split} "
-                f"— run training/build_dataset.py --stage-only first")
+                f"— run training/dataset/mailroom-dataset/build_dataset.py --stage-only first")
         for f in files:
             if f.name.startswith("enrichment-"):
                 continue  # replaced by this run; never double-counted
@@ -478,14 +482,16 @@ def assemble_tier3(canonical: pd.DataFrame, caps: dict[str, float],
         if not report.passed:
             continue
         n_passed += 1
-        text = str(r.get("doc_text") or "")
+        # intake-clerk text/title: training input must be byte-representative
+        # of inference input (gates ran on the raw candidate above).
+        text = deterministic_normalize(str(r.get("doc_text") or ""))[0]
         accepted_records.append({
             "filename": str(r.get("filename") or r.get("id")),
             "doc_text": text, "doc_type": card.parent_class,
             "subclass": card.subclass,
             # semantic-only title (2026-09-20 leak fix): never fall back to the
             # filename — it leaks the label and mismatches inference.
-            "title": str(r.get("title") or ""),
+            "title": deterministic_normalize(str(r.get("title") or ""))[0],
             "source_corpus": f"synthetic:{card.parent_class}/{card.subclass}",
             "source_revision": "card",
             "label_source": "synthetic_card",
@@ -519,15 +525,16 @@ def _write_parquet(df: pd.DataFrame, path: Path) -> None:
 
 def append_manifest_block(manifest_path: Path, block: str) -> None:
     """Append (or replace) the deterministic enrichment block in manifest.txt.
-    Re-running with identical inputs reproduces identical bytes (the block
-    is delimited and replaced in place; no timestamps)."""
+    Re-running with identical inputs reproduces identical bytes. An existing
+    start marker causes the entire suffix from that marker onward to be
+    replaced. File read and write errors propagate."""
     text = manifest_path.read_text(encoding="utf-8")
     block = f"\n{MANIFEST_START}\n{block.strip()}\n{MANIFEST_END}\n"
     if MANIFEST_START in text:
         head = text.split(MANIFEST_START, 1)[0].rstrip() + "\n"
-        manifest_path.write_text(head + block, encoding="utf-8")
+        atomic_write_text(manifest_path, head + block)
     else:
-        manifest_path.write_text(text.rstrip() + "\n" + block, encoding="utf-8")
+        atomic_write_text(manifest_path, text.rstrip() + "\n" + block)
 
 
 def render_report(canonical: pd.DataFrame, tier1_rows: pd.DataFrame | None,
@@ -548,6 +555,15 @@ def render_report(canonical: pd.DataFrame, tier1_rows: pd.DataFrame | None,
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Assemble selected enrichment tiers into the staged training dataset.
+
+    ``argv=None`` reads process arguments. Dry runs report results without
+    stage writes; other runs write provenance, audit records and sidecars,
+    and replace enrichment shards when rows are adopted. Returns 0 on
+    success, 1 on failed stage verification, or 2 for handled input and
+    windowing errors. Windowing failures leave the stage untouched.
+    Other loading, assembly and write errors propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--stage", type=Path, default=cfg.STAGE_DIR)
     ap.add_argument("--tiers", default="1",
@@ -629,7 +645,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"ERROR: tier 2 blind pool is missing {missing}. "
                 "The Enron blind pin is text-only — score it first:\n"
-                "  uv run python training/score_blind_pool.py "
+                "  uv run python training/eval/score_blind_pool.py "
                 "--pool <path> --checkpoint artifacts/pytorch/model "
                 "--out data/enrichment/blind_scored.parquet",
                 file=sys.stderr)
@@ -710,6 +726,23 @@ def main(argv: list[str] | None = None) -> int:
 
     merged = canonical.copy()
     if not all_rows.empty:
+        wins = None
+        if not args.no_windows:
+            # window BEFORE touching the stage: a tokenizer failure must not
+            # leave enrichment documents staged without their windows.
+            # RuntimeError = transformers absent; OSError = Hub/tokenizer
+            # download failure (windows.py lets it propagate uncached).
+            from mailroom_ml.windows import window_document  # noqa: PLC0415
+            try:
+                recs = [dict(r, windows=window_document(r["title"], r["doc_text"]))
+                        for r in all_rows.to_dict("records")]
+            except (RuntimeError, OSError) as exc:
+                print(f"ERROR: windowing failed ({type(exc).__name__}: {exc}) — "
+                      "install the train extra / make the tokenizer reachable, "
+                      "or re-run with --no-windows; stage left untouched",
+                      file=sys.stderr)
+                return 2
+            wins = build_enrichment_windows(recs)
         _replace_enrichment_files(args.stage)
         merged = pd.concat([merged, _subset_docs(all_rows)],
                            ignore_index=True)
@@ -722,14 +755,9 @@ def main(argv: list[str] | None = None) -> int:
         _write_parquet(all_rows[list(prov_cols)]
                        .sort_values("filename").reset_index(drop=True),
                        args.stage / "enrichment_provenance.parquet")
-        if not args.no_windows:
-            from mailroom_ml.windows import window_document  # noqa: PLC0415
-            recs = [dict(r, windows=window_document(r["title"], r["doc_text"]))
-                    for r in all_rows.to_dict("records")]
-            wins = build_enrichment_windows(recs)
-            if not wins.empty:
-                _write_parquet(wins, args.stage / "data" / "windows" / "train"
-                               / "enrichment-00000-of-00001.parquet")
+        if wins is not None and not wins.empty:
+            _write_parquet(wins, args.stage / "data" / "windows" / "train"
+                           / "enrichment-00000-of-00001.parquet")
     else:
         empty = pd.DataFrame(columns=("filename", "source_corpus",
                                       "source_revision", "purpose",
@@ -738,14 +766,13 @@ def main(argv: list[str] | None = None) -> int:
                              dtype=str)
         _write_parquet(empty, args.stage / "enrichment_provenance.parquet")
 
-    audit_path = args.stage / "enrichment_audit.jsonl"
-    with audit_path.open("w", encoding="utf-8") as fh:
-        for rec in audit.records:
-            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+    atomic_write_text(
+        args.stage / "enrichment_audit.jsonl",
+        "".join(json.dumps(rec, sort_keys=True) + "\n" for rec in audit.records))
 
     maps = label_maps(merged)
-    (args.stage / "labels.json").write_text(
-        json.dumps(maps, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    atomic_write_text(args.stage / "labels.json",
+                      json.dumps(maps, sort_keys=True, indent=2) + "\n")
 
     block = "\n".join([
         f"tiers        : {sorted(tiers)}",

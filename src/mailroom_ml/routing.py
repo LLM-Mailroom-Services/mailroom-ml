@@ -218,7 +218,10 @@ def build_handoff(
             "messy": bool(quality.get("messy", False)),
             "context_fit": bool(quality.get("context_fit", False)),
             "coverage": float(quality.get("coverage", 0.0)),
-            "section_map_ok": bool(quality.get("section_map_ok", True)),
+            # inference.classify_document emits both names; older callers
+            # only ``sections_ok`` — accept either (section_map_ok wins).
+            "section_map_ok": bool(quality.get(
+                "section_map_ok", quality.get("sections_ok", True))),
             "triage_vocab_ok": bool(quality.get("triage_vocab_ok", False)),
             "guard_failures": guard_failures or [],
         },
@@ -285,7 +288,8 @@ def _check_pass(handoff: dict[str, Any]) -> dict[str, tuple[bool, str]]:
     out["P3"] = (float(conf) >= thr, f"confidence={conf} threshold={thr}")
     vocab_ok = bool(q.get("triage_vocab_ok"))
     out["P4"] = (vocab_ok, f"triage_vocab_ok={vocab_ok}")
-    out["P5"] = (bool(q.get("section_map_ok")), f"section_map_ok={q.get('section_map_ok')}")
+    sec_ok = q.get("section_map_ok", q.get("sections_ok"))
+    out["P5"] = (bool(sec_ok), f"section_map_ok={sec_ok}")
     return out
 
 

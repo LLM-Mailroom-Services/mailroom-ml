@@ -5,17 +5,17 @@
 # --dry-run (prints plan only).
 #
 # Usage:
-#   ./training/publish_run_to_hub.sh --dry-run \\
+#   ./training/train/post-train/publish_run_to_hub.sh --dry-run \\
 #     --checkpoint data/modernbert_training/runs/m9a-local-.../latest \\
 #     --eval-json reports/eval_m9a-local-....json
 #
-#   HF_TOKEN=... ./training/publish_run_to_hub.sh \\
+#   HF_TOKEN=... ./training/train/post-train/publish_run_to_hub.sh \\
 #     --checkpoint .../latest --eval-json reports/eval_....json \\
 #     --release-tag m9a-local-20260927-010430
 
 set -euo pipefail
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
 PY="${ROOT}/.venv/bin/python"
 [[ -x "$PY" ]] || PY=python3
-exec "$PY" training/publish_run_to_hub.py --invoke-check-gates "$@"
+exec "$PY" training/train/post-train/publish_run_to_hub.py --invoke-check-gates "$@"

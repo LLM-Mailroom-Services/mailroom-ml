@@ -7,10 +7,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Invoke the heldout-plus report writer and return its process exit code.
+
+    Forwards a baseline only when its file exists. Process launch errors
+    propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--eval-json", type=Path, required=True)
     ap.add_argument("--baseline-json", type=Path, default=None)
@@ -20,7 +25,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd = [
         sys.executable,
-        str(ROOT / "training" / "write_eval_report.py"),
+        str(ROOT / "training" / "eval" / "write_eval_report.py"),
         "heldout-plus",
         "--run-tag",
         args.run_tag,

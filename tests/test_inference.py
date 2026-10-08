@@ -763,3 +763,177 @@ def test_classify_windows_decode_logit_adjust_changes_subclass_vote():
     res = classify_windows(b, ["one window"])
     assert res["doc_type"] == "correspondence"
     assert res["subclass"] == "email"
+
+
+# ---------------------------------------------------------------------------
+# Bug-sweep regressions: gate precision, threshold precedence, loader contract
+# ---------------------------------------------------------------------------
+
+def _doc_logit_for_confidence(p: float) -> float:
+    """doc_type winner logit whose softmax prob (4 zero rivals + e^-6) is p."""
+    return float(np.log(p / (1.0 - p) * (4.0 + np.exp(-6.0))))
+
+
+def _bundle_with_doc_p(p: float, **kw):
+    dt = [0.0, 0.0, 0.0, _doc_logit_for_confidence(p), 0.0, -6.0]
+    return _stub_bundle(
+        lambda ids, mask: _logits_like(
+            "x", {"doc_type": dt, "correspondence": [0.0, 0.0, 10.0, 0.0]}, 1),
+        support={"correspondence": {"notice": 12}}, **kw)
+
+
+def test_fast_path_gate_uses_unrounded_confidence():
+    """0.96996 reports as 0.97 (4 dp) but must NOT clear a >= 0.97 gate."""
+    b = _bundle_with_doc_p(0.96996)
+    res = classify_document(b, "T", "body", window_texts=["w"])
+    assert res["calibrated_confidence"] == 0.97  # reported value is rounded
+    assert res["route"] == "llm"
+    assert res["reason"] == "gate_fail"
+    assert any(f.startswith("doc_confidence") for f in res["guard_failures"])
+    # just above the gate still passes
+    ok = classify_document(_bundle_with_doc_p(0.9705), "T", "body",
+                           window_texts=["w"])
+    assert ok["route"] == "fast_path"
+
+
+def test_explicit_threshold_equal_to_config_constant_beats_overlay():
+    """An explicit kwarg that EQUALS the config constant is still explicit:
+    the artifact overlay (#25) only fills kwargs the caller left as None."""
+    from mailroom_ml.config import ROUTE_DOC_CONFIDENCE
+
+    overlay = {"ROUTE_DOC_CONFIDENCE": 0.5}
+    b = _bundle_with_doc_p(0.90, routing_thresholds=overlay)
+    explicit = classify_document(b, "T", "body", window_texts=["w"],
+                                 doc_confidence=ROUTE_DOC_CONFIDENCE)
+    assert explicit["route"] == "llm"
+    assert any("doc_confidence" in f for f in explicit["guard_failures"])
+    # None -> overlay applies (0.90 >= 0.5)
+    overlaid = classify_document(b, "T", "body", window_texts=["w"])
+    assert overlaid["route"] == "fast_path"
+
+
+def test_default_seam_defaults_let_overlay_apply(monkeypatch):
+    from mailroom_ml.inference import (
+        classify_document_default,
+        clear_default_bundle_cache,
+    )
+
+    clear_default_bundle_cache()
+    b = _bundle_with_doc_p(0.90, routing_thresholds={"ROUTE_DOC_CONFIDENCE": 0.5})
+    monkeypatch.setattr("mailroom_ml.inference.load_bundle", lambda *a, **k: b)
+    res = classify_document_default("body", window_texts=["w"])
+    assert res["route"] == "fast_path"
+    clear_default_bundle_cache()
+
+
+def test_quality_emits_section_map_ok_and_legacy_sections_ok():
+    res = classify_document(_confident_doc_bundle(), "T", "body",
+                            window_texts=["w"])
+    assert res["quality"]["section_map_ok"] is True
+    assert res["quality"]["sections_ok"] is True
+
+
+def test_resolve_pad_id_handles_added_token_dict(tmp_path):
+    from mailroom_ml.inference import _resolve_pad_id
+
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps(
+        {"pad_token": {"content": "[PAD]", "lstrip": False}}))
+    assert _resolve_pad_id(tmp_path, _FakeTok({"[PAD]": 7})) == 7
+    # plain string and int forms keep working
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"pad_token": "[PAD]"}))
+    assert _resolve_pad_id(tmp_path, _FakeTok({"[PAD]": 9})) == 9
+    (tmp_path / "tokenizer_config.json").write_text(
+        json.dumps({"pad_token_id": 3}))
+    assert _resolve_pad_id(tmp_path, _FakeTok({})) == 3
+
+
+def _bundle_dir(tmp_path: Path, monkeypatch, *, labels="{}", **files) -> Path:
+    """A bundle dir whose tokenizer load is stubbed (no tokenizers/Hub)."""
+    d = tmp_path / "bundle"
+    d.mkdir()
+    (d / "labels.json").write_text(labels)
+    for name, text in files.items():
+        (d / name.replace("__", ".")).write_text(text)
+    monkeypatch.setattr("mailroom_ml.inference._load_tokenizer",
+                        lambda _d: _FakeTok({}))
+    return d
+
+
+def test_load_bundle_prefer_onnx_false_does_not_load_onnx(tmp_path, monkeypatch):
+    d = _bundle_dir(tmp_path, monkeypatch, model_quantized__onnx="")
+    seen = []
+
+    def _fake_session(_d):
+        seen.append(1)
+        return "onnx-int8", object()
+
+    monkeypatch.setattr("mailroom_ml.inference._onnx_session", _fake_session)
+    with pytest.raises(BundleLoadError, match="neither ONNX"):
+        load_bundle(d, prefer_onnx=False)
+    assert seen == []  # precedence bug: `a and b or c` loaded ONNX anyway
+    b = load_bundle(d, prefer_onnx=True)
+    assert seen == [1] and b.model_kind == "onnx-int8"
+
+
+def test_load_bundle_garbage_labels_json_is_bundle_load_error(
+        tmp_path, monkeypatch):
+    d = _bundle_dir(tmp_path, monkeypatch, labels="{not json")
+    with pytest.raises(BundleLoadError):
+        load_bundle(d)
+
+
+def test_load_bundle_missing_torch_is_bundle_load_error(tmp_path, monkeypatch):
+    import sys
+
+    d = _bundle_dir(tmp_path, monkeypatch, model__safetensors="", heads__pt="")
+    monkeypatch.setitem(sys.modules, "torch", None)  # import -> ImportError
+    with pytest.raises(BundleLoadError, match="pytorch checkpoint load failed"):
+        load_bundle(d, prefer_onnx=False)
+
+
+def test_load_bundle_tolerates_garbage_sidecars(tmp_path, monkeypatch):
+    d = _bundle_dir(
+        tmp_path, monkeypatch, model__onnx="",
+        temperatures__json="[1, 2]",          # non-dict JSON
+        train_counts__json="[1]",
+        summary__json=json.dumps({"checkpoint_selection": None,
+                                  "hyperparameters": "x"}))
+    monkeypatch.setattr("mailroom_ml.inference._onnx_session",
+                        lambda _d: ("onnx-fp32", object()))
+    b = load_bundle(d)
+    assert b.temperatures == {}
+    assert b.support_counts == {}
+    assert b.head_exclusions == {} and b.exclusion_policy is None
+
+
+@pytest.mark.parametrize("summary", ['{"checkpoint_selection": null}', "[]",
+                                     '{"checkpoint_selection": 3}'])
+def test_load_head_exclusions_tolerates_null_or_non_dict(tmp_path, summary):
+    from mailroom_ml.inference import _load_head_exclusions
+
+    (tmp_path / "summary.json").write_text(summary)
+    assert _load_head_exclusions(tmp_path) == ({}, None)
+
+
+@pytest.mark.parametrize("bad", [
+    {"labels": "{not json"},
+    {"labels": "{}", "ood_probe__json": json.dumps(
+        {"threshold": 1.0, "direction": "sideways"})},
+])
+def test_classify_document_default_never_raises_on_broken_bundle(
+        tmp_path, monkeypatch, bad):
+    from mailroom_ml.inference import (
+        classify_document_default,
+        clear_default_bundle_cache,
+    )
+
+    clear_default_bundle_cache()
+    d = _bundle_dir(tmp_path, monkeypatch, model__onnx="", **bad)
+    monkeypatch.setattr("mailroom_ml.inference._onnx_session",
+                        lambda _d: ("onnx-fp32", object()))
+    monkeypatch.setenv("ML_MODEL_DIR", str(d))
+    res = classify_document_default("body", filename="a.txt",
+                                    window_texts=["w"])
+    assert res["status"] == "failure" and res["route"] == "llm"
+    clear_default_bundle_cache()

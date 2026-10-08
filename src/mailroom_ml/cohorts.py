@@ -26,6 +26,7 @@ import re
 from collections import Counter, defaultdict
 
 import numpy as np
+import pandas as pd
 
 from mailroom_ml.config import (
     BERT_INTAKE_MAX_CHARS,
@@ -71,8 +72,8 @@ def window_cohort(docs, max_tokens: int = MAX_TOKENS):
     """Adds ``window_cohort``: "single-window" / "multi-window".
 
     Uses the staged ``token_estimate`` column when present (the windower's
-    own estimate); falls back to a char heuristic (~3.8 chars/token, the
-    config's context-fit ratio).  Single-window docs have trivially 1.0
+    own estimate); falls back to a char heuristic (``CHARS_PER_TOKEN``, 4.0 chars/token,
+    the config's context-fit ratio).  Single-window docs have trivially 1.0
     agreement — the gate reduces to one probability, so they are scored
     separately from multi-window docs (#104).
     """
@@ -92,19 +93,27 @@ def stratify_counts(docs) -> dict[str, int]:
 
 
 def duplicate_groups(docs) -> dict:
-    """Near-dup families via ``content_sha256`` (group_id discipline).
+    """Exact-hash duplicate families via ``content_sha256`` (group_id discipline).
 
     Returns ``{"n_groups": ..., "n_duplicate_rows": ..., "groups": [...]}``
     where each group lists its filenames.  A dup family must count once in
     cohort stats — the report consumer decides which member is canonical.
+
+    Missing, null, blank, and literal ``nan``/``none`` hashes are ignored.
+    ``n_duplicate_rows`` counts all rows in groups of at least two, including
+    each group's first member; a missing hash column yields no groups.
     """
     if "content_sha256" not in docs.columns:
         return {"n_groups": 0, "n_duplicate_rows": 0, "groups": []}
     by_hash: dict[str, list[str]] = defaultdict(list)
+    # Read the RAW column: ``.astype(str)`` would turn NaN/None into the
+    # pseudo-hashes "nan"/"None" and group every hash-less row into one family.
     for fn, h in zip(docs["filename"].astype(str),
-                     docs["content_sha256"].astype(str), strict=True):
+                     docs["content_sha256"], strict=True):
+        if h is None or (not isinstance(h, str) and pd.isna(h)):
+            continue
         hs = str(h).strip()
-        if not hs or hs.lower() == "nan":
+        if not hs or hs.lower() in {"nan", "none"}:
             continue
         by_hash[hs].append(fn)
     groups = [sorted(fns) for fns in by_hash.values() if len(fns) > 1]

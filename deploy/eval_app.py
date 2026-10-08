@@ -1,12 +1,12 @@
 """Modal eval app for the mailroom-ml ModernBERT classifier — ``mailroom-ml-eval``.
 
-Runs the documented eval CLI (``training/eval_modernbert.py``, plan §11,
+Runs the documented eval CLI (``training/eval/eval_modernbert.py``, plan §11,
 issue #92 M7) on GPU where the trained checkpoint lives, so the selective-risk
 threshold sweep runs at deployment context (8,192 tokens) in minutes instead
 of CPU-hours.
 
     HF_TOKEN=... modal run deploy/eval_app.py --sample 50 --seed 42
-    HF_TOKEN=... modal run deploy/eval_app.py --module runs/<run-id> --json
+    HF_TOKEN=... modal run deploy/eval_app.py --module runs/<run-id> --as-json
     HF_TOKEN=... modal run deploy/eval_app.py --module runs/<run-id> --sample 0 \\
         --as-json --decode-adjust-sweep 0.25,0.5,0.75,1.0 --out reports/json
 
@@ -15,7 +15,8 @@ of CPU-hours.
 - pulls the pinned training/eval stage from the Hub at runtime (same pin as
   ``config.TRAINING_DATA_REVISION`` — never an empty local bake),
 - invokes ``eval_modernbert.py --checkpoint <vol> --stage /root/stage
-  --sample N --seed S [--selective-risk] [--json]`` inside an L4 container.
+  --sample N --seed S [--selective-risk] [--json]`` inside an L4 container
+  (the entrypoint flag that requests the JSON report is ``--as-json``).
 """
 from __future__ import annotations
 
@@ -179,6 +180,16 @@ def _parse_decode_adjust_sweep(raw: str) -> list[str]:
     return [part.strip() for part in (raw or "").split(",") if part.strip()]
 
 
+def _stdout_progress(stdout: str) -> str:
+    """The non-report part of the eval stdout: everything before the JSON
+    report's opening line (the report itself can be megabytes of per_doc)."""
+    lines = stdout.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("{"):
+            return "".join(lines[:i])
+    return stdout
+
+
 def _run_one_eval_cli(cmd: list[str]) -> dict:
     print("[mailroom-ml-eval] " + " ".join(cmd), flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -189,6 +200,17 @@ def _run_one_eval_cli(cmd: list[str]) -> dict:
             print(result.stdout[-4000:], flush=True)
         print(result.stderr[-4000:], flush=True)
         raise RuntimeError(f"eval_modernbert.py exited {result.returncode}")
+    # stdout is captured (the JSON report is parsed out of it), so without an
+    # explicit print the operator saw NOTHING from a non-JSON run (the table
+    # the eval prints) and none of the progress lines of a JSON one.
+    if "--json" in cmd:
+        progress = _stdout_progress(result.stdout)
+        if progress.strip():
+            print(progress, end="" if progress.endswith("\n") else "\n",
+                  flush=True)
+    elif result.stdout.strip():
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n",
+              flush=True)
     out: dict = {"returncode": result.returncode}
     if "--json" in cmd and result.stdout.strip():
         out["report"] = _parse_eval_report_stdout(result.stdout)
@@ -298,7 +320,8 @@ def _write_eval_json(dest: Path, report: dict, *,
                      attach_run_telemetry, experiment_record_from_report,
                      configure_tracing, eval_span, flush_tracing,
                      per_doc_trace_rows, tracer, name: str, profile,
-                     remote_wall: float, wall_total: float) -> None:
+                     remote_wall: float, wall_total: float,
+                     flush_provider: bool = True) -> None:
     attach_run_telemetry(
         report,
         remote_wall_seconds=float(remote_wall or wall_total),
@@ -323,7 +346,7 @@ def _write_eval_json(dest: Path, report: dict, *,
     )
     print(f"[mailroom-ml-eval] wrote {rec_path}", flush=True)
     trace_path = telem / "otel_spans.jsonl"
-    flush_tracing(tracer, out_path=trace_path)
+    flush_tracing(tracer, out_path=trace_path, flush_provider=flush_provider)
     manifest_path = telem / "otel_spans.manifest.json"
     if trace_path.is_file():
         manifest_path.write_text(
@@ -424,11 +447,15 @@ def main(module: str = "latest", sample: int = 50, seed: int = 42,
         out_dir = Path(out) if out else Path("reports/json")
         if out_dir.suffix == ".json":
             out_dir = out_dir.parent
+        last_d = list(meta["reports"])[-1]
         for d_str, report in meta["reports"].items():
             dest = out_dir / f"eval_{run_id}-d{d_str}.json"
             d_name = experiment_name or (
                 f"modernbert_{subset}_n{report.get('n_docs')}_d{d_str}")
-            _write_eval_json(dest, report, name=d_name, **helpers)
+            # flush + shut the OTLP provider down once, after the last d (a
+            # per-d shutdown drops every later d's spans)
+            _write_eval_json(dest, report, name=d_name,
+                             flush_provider=(d_str == last_d), **helpers)
         return
     if as_json and meta.get("report"):
         report = meta["report"]

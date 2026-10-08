@@ -31,7 +31,7 @@ from mailroom_ml.config import (  # noqa: E402
     TRAINING_DATA_REVISION,
 )
 from mailroom_ml.dataset import build_documents  # noqa: E402
-from mailroom_ml.labels import label_maps  # noqa: E402
+from mailroom_ml.labels import label_maps, normalize_label_maps  # noqa: E402
 from training.train.train_modernbert import (  # noqa: E402
     CE_IGNORE_INDEX,
     DOC_TYPE_GATE_TOL,
@@ -530,8 +530,15 @@ def test_inference_only_class_zero_support_excluded_and_default_weight():
     lab = torch.tensor([0, 1])
     assert macro_f1(lg, lab, observed_only=True) == 1.0
     assert macro_f1(lg, lab) == pytest.approx(2 / 3)
-    w = LossConfig().transform_weights(contract["weights"], ["service"])
-    assert w.item() == pytest.approx(contract["weights"]["service"], rel=1e-5)
+    # the fixture's train split only carries `consulting`: a supported label
+    # gets its stored weight; zero-support labels (absent from `weights`) fall
+    # back to the neutral default 1.0 (contract `service` here is val/test-only)
+    assert set(contract["weights"]) == {"consulting"}
+    w = LossConfig().transform_weights(contract["weights"], ["consulting"])
+    assert w.item() == pytest.approx(contract["weights"]["consulting"], rel=1e-5)
+    w0 = LossConfig().transform_weights(contract["weights"], ["service"])
+    assert "service" in contract["inference_only"]
+    assert w0.item() == pytest.approx(1.0)
 
 
 def test_ece_calibrated_matches_scaled_logits():
@@ -570,18 +577,22 @@ def test_subclass_support_threshold_remaps_and_drops():
     ]
     maps = {
         "doc_type": {"labels": ["contract", "insurance_claim"]},
-        "contract": {"labels": ["service", "license", "rare", "other"],
+        "contract": {"labels": ["service", "license", "rare", "unused",
+                                "other"],
                      "label2id": {"service": 0, "license": 1, "rare": 2,
-                                  "other": 3},
+                                  "unused": 3, "other": 4},
                      "id2label": {"0": "service", "1": "license",
-                                  "2": "rare", "3": "other"},
+                                  "2": "rare", "3": "unused", "4": "other"},
                      "weights": {"service": 1.0, "license": 1.0,
-                                 "rare": 1.0, "other": 1.0}},
+                                 "rare": 1.0}},
         "insurance_claim": {"labels": ["auto", "tiny"],
                             "label2id": {"auto": 0, "tiny": 1},
                             "id2label": {"0": "auto", "1": "tiny"},
                             "weights": {"auto": 1.0, "tiny": 1.0}},
     }
+    # as main() sees them: contract `other` is routing-only (#116)
+    maps = normalize_label_maps(maps)
+    assert maps["contract"]["routing_only"] == ["other"]
     tr, va, new_maps, info = _apply_subclass_support_threshold(
         train, val, maps, min_rows=4)
     # contract.rare (1 row) remapped to `other`; insurance_claim.tiny (1 row)
@@ -599,10 +610,23 @@ def test_subclass_support_threshold_remaps_and_drops():
     assert new_maps["insurance_claim"]["label2id"] == {"auto": 0}
     # contract.rare was remapped to `other` — zero rows remain, so it leaves
     # the head vocabulary (a zero-row class would deflate macro-F1)
-    assert new_maps["contract"]["labels"] == ["service", "license", "other"]
+    assert new_maps["contract"]["labels"] == [
+        "service", "license", "unused", "other"]
     assert "other" not in new_maps["contract"]["trainable_labels"]
+    assert new_maps["contract"]["routing_only"] == ["other"]
     # weights rebuilt over surviving rows
     assert new_maps["insurance_claim"]["weights"]["auto"] == pytest.approx(1.0)
+    # zero-support labels stay ABSENT from the rebuilt weights (not 1.0): a
+    # stored 1.0 reads as "supported at the average prior" in log_prior
+    cw = new_maps["contract"]["weights"]
+    assert "unused" not in cw
+    assert "unused" in new_maps["contract"]["inference_only"]
+    assert cw["service"] == pytest.approx(9 / (3 * 4))  # N / (K_supported * n)
+    # ... so the logit-adjust prior floors it at the SMALLEST supported prior
+    # (here the 1-row remapped `other`), instead of treating it as average
+    p3 = log_prior(cw, ["service", "other", "unused"]).exp()
+    assert p3[2] == pytest.approx(p3[1])
+    assert p3[1] < p3[0]
 
 
 def test_support_plan_mirrors_train_val_on_heldout_split():
@@ -706,9 +730,13 @@ def test_head_loss_subclass_smoothing_does_not_touch_doc_type():
         "subclass": torch.tensor([0, 1, 0, 0]),
         "filename": ["a.txt", "b.txt", "c.txt", "d.txt"],
     }
+    # NOT symmetric over the two classes: with 2 classes and a balanced
+    # [5,0]/[5,0]/[5,0]/[5,0] vs labels [0,0,1,1] the smoothed doc_type CE is
+    # EXACTLY equal to the hard one (0.8*x + 0.2*x), so the "differs from hard"
+    # asserts below could never hold
     lgs = {
-        "doc_type": torch.tensor([[5.0, 0.0], [5.0, 0.0],
-                                  [5.0, 0.0], [5.0, 0.0]]),
+        "doc_type": torch.tensor([[5.0, 0.0], [2.0, 0.0],
+                                  [5.0, 0.0], [0.0, 3.0]]),
         "contract": torch.tensor([[5.0, 0.0], [0.0, 5.0],
                                   [0.0, 0.0], [0.0, 0.0]]),
     }
@@ -929,20 +957,22 @@ def _epoch_val(dt: float, objective: float, *, ece: float = 0.01,
     }
 
 
+def _ev(epoch: int, dt: float, objective: float, **kw) -> dict:
+    """One epoch event as ``main`` hands the history to ``_select_epoch``."""
+    return {"epoch": epoch, **_epoch_val(dt, objective, **kw)}
+
+
 def test_select_epoch_prefers_better_subclass_within_doc_type_tolerance():
     """The #112 rule: a slightly lower doc_type macro-F1 (within the
     DOC_TYPE_GATE_TOL band) does not veto an epoch with a better subclass
     objective — run-3's 0.9245 -> 0.9227, 0.26 -> 0.30 case."""
-    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
-                "subclass_objective": -1.0}
-    best_doc_type = float("-inf")
+    events = [_ev(1, 0.9245, 0.26)]
     selected, best_doc_type = _select_epoch(
-        _epoch_val(0.9245, 0.26), 1, selected, best_doc_type, ["contract"],
-        select_on_subclass=True)
+        events, ["contract"], select_on_subclass=True)
     assert selected["epoch"] == 1
+    events.append(_ev(2, 0.9227, 0.30))
     selected, best_doc_type = _select_epoch(
-        _epoch_val(0.9227, 0.30), 2, selected, best_doc_type, ["contract"],
-        select_on_subclass=True)
+        events, ["contract"], select_on_subclass=True)
     assert selected["epoch"] == 2
     assert selected["subclass_objective"] == 0.30
     assert best_doc_type == 0.9245
@@ -951,33 +981,79 @@ def test_select_epoch_prefers_better_subclass_within_doc_type_tolerance():
 def test_select_epoch_rejects_doc_type_regression_beyond_tolerance():
     """A higher subclass objective cannot buy back a doc_type regression
     beyond DOC_TYPE_GATE_TOL below the ECE-eligible floor."""
-    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
-                "subclass_objective": -1.0}
-    selected, best_doc_type = _select_epoch(
-        _epoch_val(0.9245, 0.26), 1, selected, float("-inf"), ["contract"],
-        select_on_subclass=True)
     assert 0.006 > DOC_TYPE_GATE_TOL  # the regression under test is rejected
-    selected, best_doc_type = _select_epoch(
-        _epoch_val(0.9245 - 0.006, 0.40), 2, selected, best_doc_type,
-        ["contract"], select_on_subclass=True)
+    events = [_ev(1, 0.9245, 0.26), _ev(2, 0.9245 - 0.006, 0.40)]
+    selected, _ = _select_epoch(events, ["contract"], select_on_subclass=True)
     assert selected["epoch"] == 1
     assert selected["subclass_objective"] == 0.26
+
+
+def test_select_epoch_gate_is_final_best_aware():
+    """The shipped epoch must satisfy the rule written into summary.json:
+    doc_type macro-F1 >= the BEST eligible doc_type - DOC_TYPE_GATE_TOL.
+
+    Epoch 1 (dt 0.90, objective 0.50) is the right pick after epoch 1.  Epoch
+    3 then raises the best doc_type to 0.95 with a worse objective (0.30): the
+    old running-floor fold compared epoch 3 only against the best-so-far and
+    kept epoch 1 — 0.05 below the final best, violating the rule.  The
+    selection must move to epoch 3."""
+    e1, e3 = _ev(1, 0.90, 0.50), _ev(3, 0.95, 0.30)
+    sel, _ = _select_epoch([e1], ["contract"], select_on_subclass=True)
+    assert sel["epoch"] == 1
+    sel, best = _select_epoch([e1, e3], ["contract"], select_on_subclass=True)
+    assert best == 0.95
+    assert sel["epoch"] == 3
+    assert sel["macro_f1"] >= best - DOC_TYPE_GATE_TOL
+    # an intermediate epoch inside the band of the FINAL best stays eligible
+    e2 = _ev(2, 0.947, 0.45)
+    sel, _ = _select_epoch([e1, e2, e3], ["contract"],
+                           select_on_subclass=True)
+    assert sel["epoch"] == 2
+
+
+def test_select_epoch_ties_keep_the_earliest_epoch():
+    """Strict improvement only: equal objectives (or equal doc_type F1 under
+    the legacy rule) keep the earlier epoch, as the incremental rule did."""
+    events = [_ev(1, 0.90, 0.40), _ev(2, 0.90, 0.40)]
+    assert _select_epoch(events, ["contract"],
+                         select_on_subclass=True)[0]["epoch"] == 1
+    assert _select_epoch(events, ["contract"],
+                         select_on_subclass=False)[0]["epoch"] == 1
 
 
 def test_select_epoch_requires_doc_type_ece_within_budget():
     """An epoch over the calibrated doc_type ECE budget is ineligible even
     with a better subclass objective — and never raises the floor."""
-    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
-                "subclass_objective": -1.0}
+    events = [_ev(1, 0.90, 0.20),
+              _ev(2, 0.95, 0.90, ece=ECE_BUDGET + 0.01)]
     selected, best_doc_type = _select_epoch(
-        _epoch_val(0.90, 0.20), 1, selected, float("-inf"), ["contract"],
-        select_on_subclass=True)
-    selected, best_doc_type = _select_epoch(
-        _epoch_val(0.95, 0.90, ece=ECE_BUDGET + 0.01), 2, selected,
-        best_doc_type, ["contract"], select_on_subclass=True)
+        events, ["contract"], select_on_subclass=True)
     assert selected["epoch"] == 1
     assert selected["subclass_objective"] == 0.20
     assert best_doc_type == 0.90  # ineligible epoch never raises the floor
+    # nothing ECE-eligible -> the gate-not-met sentinel, open floor
+    only_bad = [_ev(1, 0.95, 0.9, ece=ECE_BUDGET + 0.01)]
+    sel, floor = _select_epoch(only_bad, ["contract"], select_on_subclass=True)
+    assert sel["epoch"] == 0 and floor == float("-inf")
+
+
+def test_select_epoch_legacy_prior_with_none_objective_does_not_crash():
+    """A resumed legacy summary records ``subclass_objective: None`` for its
+    selection; comparing it with ``>`` raised TypeError.  It competes as -1.0
+    (so any real objective beats it) and the events are never mutated."""
+    prior = {"epoch": 1, "macro_f1": 0.90, "ece": 0.02,
+             "subclass_objective": None}
+    legacy_event = {"epoch": 1, "loss": 1.0, "val_loss": 1.0}  # no sel. keys
+    new_event = _ev(2, 0.90, 0.10)
+    snapshot = dict(legacy_event)
+    sel, floor = _select_epoch([legacy_event, new_event], ["contract"],
+                               select_on_subclass=True, prior=prior)
+    assert sel["epoch"] == 2 and floor == 0.90
+    assert legacy_event == snapshot
+    # alone it still wins (nothing else eligible) and stays selectable
+    sel, _ = _select_epoch([legacy_event], ["contract"],
+                           select_on_subclass=True, prior=prior)
+    assert sel["epoch"] == 1
 
 
 def test_select_on_subclass_default_true_and_legacy_flag():
@@ -988,15 +1064,11 @@ def test_select_on_subclass_default_true_and_legacy_flag():
     assert build_parser().parse_args(
         ["--no-select-on-subclass"]).select_on_subclass is False
 
-    selected = {"epoch": 0, "macro_f1": -1.0, "ece": None,
-                "subclass_objective": -1.0}
-    selected, best_doc_type = _select_epoch(
-        _epoch_val(0.9245, 0.26), 1, selected, float("-inf"), ["contract"],
-        select_on_subclass=False)
+    events = [_ev(1, 0.9245, 0.26)]
+    selected, _ = _select_epoch(events, ["contract"], select_on_subclass=False)
     assert selected["epoch"] == 1
-    selected, best_doc_type = _select_epoch(
-        _epoch_val(0.9227, 0.30), 2, selected, best_doc_type, ["contract"],
-        select_on_subclass=False)
+    events.append(_ev(2, 0.9227, 0.30))
+    selected, _ = _select_epoch(events, ["contract"], select_on_subclass=False)
     assert selected["epoch"] == 1  # legacy rule ignores the subclass gain
     assert selected["subclass_objective"] == 0.26
 

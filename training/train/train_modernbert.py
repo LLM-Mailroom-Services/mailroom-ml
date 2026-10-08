@@ -3,9 +3,10 @@
 
 The documented training entrypoint of the mailroom-ml deploy layer:
 ``deploy/modal_app.py`` invokes this script as ``sys.executable
-/root/training/train_modernbert.py --data <repo> --output /checkpoints/latest
---epochs N --batch-size N --grad-accum N --lr F --seed N [--push-to-hub
-REPO] [--eval-test]``.
+/root/training/train/train_modernbert.py --data <repo> --output
+/checkpoints/runs/<run-id> --epochs N --batch-size N --grad-accum N --lr F
+--seed N [--eval-test]`` (it does not pass ``--push-to-hub``: the app pushes
+after ONNX export + parity).
 
 Port of the committed predecessor (``Mailroom-Corpus-EDA @ cf096fa``,
 ``modernbert/train.py``), adapted to the mailroom-ml package:
@@ -30,10 +31,13 @@ Port of the committed predecessor (``Mailroom-Corpus-EDA @ cf096fa``,
   plurality-vote metrics (the sorter's merge); hardening seam recorded in the
   printed table + ``summary.json``: lexicographic checkpoint selection
   (#112 M9a-U4, ``--select-on-subclass`` default on) — among epochs whose
-  observed doc_type macro-F1 holds and calibrated doc_type ECE <= 0.05,
-  pick the one maximizing the mean observed subclass macro-F1;
+  calibrated doc_type ECE <= 0.05 and whose observed doc_type macro-F1 is
+  within ``DOC_TYPE_GATE_TOL`` of the BEST eligible doc_type macro-F1 of the
+  whole run, pick the one maximizing the mean observed subclass macro-F1;
   ``--no-select-on-subclass`` restores the legacy doc_type-only rule
-  (both recorded, not enforced as an exit).
+  (both recorded, not enforced as an exit).  The selected epoch's weights are
+  promoted into ``--output`` BEFORE ``--eval-test``, so the test metrics
+  describe the shipped weights.
 - **Calibration (plan §8)**: per-head temperature scaling on validation
   logits (scipy ``minimize_scalar``, bounded (0.05, 10.0)); heads with < 2
   rows or < 2 unique classes in val stay at T = 1.0.
@@ -41,15 +45,17 @@ Port of the committed predecessor (``Mailroom-Corpus-EDA @ cf096fa``,
   (sidecar copy) + ``temperatures.json`` + ``train_counts.json`` (authentic
   per-(doc_type, subclass) train-row counts — the routing gate's
   ``ROUTE_MIN_AUTHENTIC_SUPPORT`` data source) + ``summary.json`` (+ optional
-  Hub push via ``--push-to-hub``).
+  Hub push via ``--push-to-hub``, refused when no epoch met the selection
+  gate unless ``--push-ungated``; the Modal app pushes after ONNX parity
+  instead).
 - **Test gate** (``--eval-test``): report-only — held-out document accuracy
   via the committed windower at eval time; the P0 thresholds (doc_type >=
   0.95 / subclass >= 0.75) belong to the eval harness, NOT this trainer:
   exit 0 unless a real error.
 
 Usage:
-    .venv/bin/python training/train_modernbert.py --epochs 5 --output data/modernbert_training/runs/run1
-    .venv/bin/python training/train_modernbert.py --push-to-hub Lucius-Morningstar/mailroom-modernbert-classifier
+    .venv/bin/python training/train/train_modernbert.py --epochs 5 --output data/modernbert_training/runs/run1
+    .venv/bin/python training/train/train_modernbert.py --push-to-hub Lucius-Morningstar/mailroom-modernbert-classifier
 """
 from __future__ import annotations
 
@@ -73,6 +79,7 @@ import torch.nn.functional as F
 from mailroom_ml.config import (
     DOC_TYPE_GATE_TOL,
     ECE_BUDGET,
+    INPUT_CONSTRUCTION_VERSION,
     MAX_TOKENS,
     MODEL_ID,
     RUNS_DIR,
@@ -344,6 +351,13 @@ def head_loss(model, batch, heads, device,
             weight = cfg.transform_weights(heads[cls]["weights"],
                                            heads[cls]["labels"],
                                            device=logits[cls].device)
+            # routing-only rows only (contract `other` -> CE_IGNORE_INDEX):
+            # nothing to learn.  Checked for BOTH reductions — the
+            # weighted-mean path used to hit 0/0 -> NaN here, which the
+            # divergence guard then turned into an aborted run.
+            n_valid = int((target != CE_IGNORE_INDEX).sum())
+            if n_valid == 0:
+                continue
             sc_logits = logits[cls][sel]
             if cfg.subclass_logit_adjust:
                 sc_logits = sc_logits + cfg.subclass_logit_adjust * log_prior(
@@ -354,9 +368,6 @@ def head_loss(model, batch, heads, device,
                     sc_logits, target, weight=weight,
                     label_smoothing=cfg.subclass_label_smoothing,
                     ignore_index=CE_IGNORE_INDEX))
-                continue
-            n_valid = int((target != CE_IGNORE_INDEX).sum())
-            if n_valid == 0:  # routing-only rows only: nothing to learn
                 continue
             sc_ces.append(F.cross_entropy(
                 sc_logits, target, weight=weight,
@@ -388,17 +399,26 @@ def _collate_batch(sel: list[dict], heads, device: torch.device,
 
 
 def _prefetch_batches(it, depth: int):
-    """Overlap CPU collate/H2D with GPU forward (pre-tokenized rows, no DataLoader)."""
+    """Overlap CPU collate/H2D with GPU forward (pre-tokenized rows, no DataLoader).
+
+    A producer exception is captured and RE-RAISED in the consumer: the old
+    ``finally: put(sentinel)`` swallowed it, so a collate failure (e.g. a
+    label missing from a head map) silently truncated the epoch and the run
+    exited 0 with a short, mis-scored epoch.
+    """
     import queue
     import threading
 
     q: queue.Queue = queue.Queue(maxsize=max(1, depth))
     _sentinel = object()
+    failure: list[BaseException] = []
 
     def _worker() -> None:
         try:
             for batch in it:
                 q.put(batch)
+        except BaseException as exc:  # noqa: BLE001 - re-raised in the consumer
+            failure.append(exc)
         finally:
             q.put(_sentinel)
 
@@ -406,12 +426,28 @@ def _prefetch_batches(it, depth: int):
     while True:
         item = q.get()
         if item is _sentinel:
+            if failure:
+                raise failure[0]
             return
         yield item
 
 
+def _epoch_shuffle_rng(seed: int, epoch: int) -> random.Random:
+    """Deterministic per-epoch shuffle stream.
+
+    The old ``random.shuffle`` drew from the process-global RNG seeded once at
+    start, so a ``--resume``d epoch k saw a different permutation than the
+    original run's epoch k (and mid-epoch ``skip_micro`` skipped the WRONG
+    rows).  Keying the stream on ``(seed, epoch)`` makes epoch k's order
+    independent of how many epochs ran before it.  A string seed is hashed
+    (sha512) by ``random.Random`` -> stable across processes.
+    """
+    return random.Random(f"{seed}:{epoch}")
+
+
 def make_batches(rows, batch_size: int, shuffle: bool, heads, device,
-                 *, prefetch_batches: int = 0, non_blocking: bool = False):
+                 *, prefetch_batches: int = 0, non_blocking: bool = False,
+                 shuffle_rng: random.Random | None = None):
     """Yield batches (rows are pre-padded to max_length by tokenize_rows).
 
     FIXED padding (not dynamic): the dynamic-padding variant (pad to the
@@ -419,10 +455,13 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device,
     near the 8,192 cap, so most shuffled batches still pad near-full — and
     the variable-length sdpa + gradient-checkpointing path hung mid-epoch-2
     on the L4 (2026-09-19). Fixed padding is the proven-stable config.
+
+    ``shuffle_rng`` (see ``_epoch_shuffle_rng``) makes the permutation a pure
+    function of (seed, epoch); without it the global RNG is used.
     """
     idx = list(range(len(rows)))
     if shuffle:
-        random.shuffle(idx)
+        (shuffle_rng or random).shuffle(idx)
 
     def _produce():
         for i in range(0, len(idx), batch_size):
@@ -593,6 +632,11 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
       multiple of ``grad_accum``, the trailing micro-batches used to
       accumulate gradients that were never optimized AND contaminated the
       next epoch's first step. A partial optimizer step now flushes them.
+    - Absolute accumulation index: the optimizer-step boundary AND the
+      trailing flush both key on the micro-batch's ABSOLUTE index in the
+      epoch (``step``), never on the post-``skip_micro`` count ``n`` — a
+      mid-epoch resume whose skip is not a multiple of ``grad_accum`` used
+      to flush at the wrong place (mis-sized accumulation windows).
     """
     cfg = loss_cfg or LossConfig()
     model.train()
@@ -601,6 +645,7 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
     window: list[float] = []
     since_log = 0
     skip_micro = max(0, int(skip_micro))
+    last_abs = 0  # absolute 1-based index of the last micro-batch trained on
     for step, batch in enumerate(batches):
         if step < skip_micro:
             continue
@@ -620,6 +665,7 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
             opt_steps += 1
         total += loss.item()
         n += 1
+        last_abs = step + 1
         since_log += 1
         window.append(loss.item())
         if len(window) > grad_accum:
@@ -646,7 +692,7 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
             break
     if progress is not None and since_log > 0:
         progress.bump_unlogged(since_log)
-    if n % grad_accum != 0:  # flush trailing accumulation (partial step)
+    if last_abs % grad_accum != 0:  # flush trailing accumulation (partial step)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         scheduler.step()
@@ -689,14 +735,20 @@ def evaluate(model, batches, heads, maps, device,
         sc_preds = {name: logits[name].argmax(-1)
                     for name in heads if name != "doc_type"}
         for name, lg in logits.items():
-            logits_by_head[name].append(lg.cpu())
             if name == "doc_type":
-                labels_by_head[name].append(batch["doc_type"].cpu())
+                lab = batch["doc_type"]
+                keep = torch.ones_like(lab, dtype=torch.bool)
             else:
                 # subclass heads are scored only on their own class's rows
-                sel = batch["doc_type"] == heads["doc_type"]["label2id"][name]
-                logits_by_head[name][-1] = lg[sel].cpu()
-                labels_by_head[name].append(batch["subclass"][sel].cpu())
+                lab = batch["subclass"]
+                keep = batch["doc_type"] == heads["doc_type"]["label2id"][name]
+            # routing-only GT rows (contract `other`) carry CE_IGNORE_INDEX:
+            # they are not scorable for a trainable head, and a -100 label
+            # would corrupt every metric (and index out of range in the
+            # temperature fit), so they leave the per-head arrays here.
+            keep = keep & (lab != CE_IGNORE_INDEX)
+            logits_by_head[name].append(lg[keep].cpu())
+            labels_by_head[name].append(lab[keep].cpu())
         for i, fn in enumerate(batch["filename"]):
             dt_p = dt_preds[i].item()
             cls = maps["doc_type"]["trainable_id2label"][str(dt_p)]
@@ -714,13 +766,17 @@ def evaluate(model, batches, heads, maps, device,
         metrics[f"{name}_macro_f1"] = round(macro_f1(lg, lab), 4)
         metrics[f"{name}_macro_f1_observed"] = round(
             macro_f1(lg, lab, observed_only=True), 4)
-    dt_correct = sc_correct = 0
+    dt_correct = sc_correct = sc_unscorable = 0
     for fn, votes in doc_votes.items():
         dt_label, sc_label = doc_labels[fn]
         dt_pred = Counter(v[0] for v in votes).most_common(1)[0][0]
         if dt_pred == dt_label:
             dt_correct += 1
-            cls = maps["doc_type"]["trainable_id2label"][str(dt_pred)]
+            if sc_label == CE_IGNORE_INDEX:
+                # routing-only GT subclass (contract `other`): the head cannot
+                # predict it, so the doc leaves the subclass denominator
+                sc_unscorable += 1
+                continue
             cond = [v[1] for v in votes if v[0] == dt_pred and v[1] is not None]
             if not cond:
                 continue
@@ -728,13 +784,28 @@ def evaluate(model, batches, heads, maps, device,
             if sc_pred == sc_label:  # both ids in head `cls`'s space
                 sc_correct += 1
     metrics["doc_type_doc_acc"] = round(dt_correct / max(1, len(doc_votes)), 4)
-    metrics["subclass_doc_acc"] = round(sc_correct / max(1, dt_correct), 4)
+    metrics["subclass_doc_acc"] = round(
+        sc_correct / max(1, dt_correct - sc_unscorable), 4)
     return metrics, logits_by_head, labels_by_head
+
+
+def _drop_ignored(logits: torch.Tensor,
+                  labels: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Drop ``CE_IGNORE_INDEX`` (routing-only) rows before any metric/fit.
+
+    A ``-100`` label is "not scorable", not "class -100": left in, it counts
+    as a miss in ECE/F1 and indexes out of range in the temperature fit.
+    """
+    keep = labels != CE_IGNORE_INDEX
+    if bool(keep.all()):
+        return logits, labels
+    return logits[keep], labels[keep]
 
 
 def _ece_from_probs(probs: torch.Tensor, labels: torch.Tensor,
                     n_bins: int = 10) -> float:
     """ECE binning over already-softmaxed probabilities (shared core)."""
+    probs, labels = _drop_ignored(probs, labels)
     conf, pred = probs.max(-1)
     correct = (pred == labels).float()
     bins = torch.linspace(0, 1, n_bins + 1)
@@ -765,6 +836,7 @@ def ece_calibrated(logits: torch.Tensor, labels: torch.Tensor,
 
 def macro_f1(logits: torch.Tensor, labels: torch.Tensor,
              observed_only: bool = False) -> float:
+    logits, labels = _drop_ignored(logits, labels)
     preds = logits.argmax(-1)
     n_classes = logits.shape[1]
     f1s = []
@@ -803,7 +875,7 @@ def _selection_snapshot(val: dict, epoch: int, subclass_heads: list[str]) -> dic
         "epoch": epoch,
         "macro_f1": val["doc_type_macro_f1_observed"],
         "ece": val["doc_type_ece_calibrated"],
-        "ece_raw": val["doc_type_ece"],
+        "ece_raw": val.get("doc_type_ece"),
         "subclass_objective": _subclass_objective(val, subclass_heads),
         "per_head_macro_f1_observed": {
             name[:-len("_macro_f1_observed")]: val[name]
@@ -816,45 +888,82 @@ def _selection_snapshot(val: dict, epoch: int, subclass_heads: list[str]) -> dic
     }
 
 
-def _select_epoch(val: dict, epoch: int, selected: dict,
-                  best_doc_type: float, subclass_heads: list[str], *,
-                  select_on_subclass: bool) -> tuple[dict, float]:
+_NO_SELECTION: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None,
+                       "subclass_objective": -1.0}
+
+
+def _select_epoch(events: list[dict], subclass_heads: list[str], *,
+                  select_on_subclass: bool,
+                  prior: dict | None = None) -> tuple[dict, float]:
     """The lexicographic checkpoint-selection decision (#112 M9a-U4).
 
-    Pure seam over the rule that was inline in ``main``: given an epoch's
-    validation metrics (``val`` — including the already-computed
-    ``subclass_objective``), the running ``selected`` snapshot and the
-    ECE-eligible ``best_doc_type`` floor, return the (possibly replaced)
-    snapshot and the updated floor.
+    Pure seam: given EVERY epoch's validation event (``events`` — each the
+    ``val`` dict plus ``epoch``, including the already-computed
+    ``subclass_objective``), return ``(selected snapshot, best_doc_type)``.
 
-    With ``select_on_subclass`` the doc_type gate is preserved — CALIBRATED
-    doc_type ECE ``<= ECE_BUDGET`` and observed doc_type macro-F1 no more
-    than ``DOC_TYPE_GATE_TOL`` below the floor — and the subclass objective
-    decides the winner.  Otherwise the legacy doc_type-only rule is used
-    verbatim.  ``val`` is never mutated.
+    The decision is recomputed over the whole history, not folded in epoch by
+    epoch.  The gate is "observed doc_type macro-F1 no more than
+    ``DOC_TYPE_GATE_TOL`` below the BEST ECE-eligible doc_type macro-F1 of the
+    run" — that is the rule written into ``summary.json``.  The previous
+    incremental fold only compared an epoch against the best seen SO FAR, so
+    a later epoch that raised the best left an earlier selection sitting
+    below ``best - DOC_TYPE_GATE_TOL`` and the shipped checkpoint violated
+    its own rule.
+
+    With ``select_on_subclass``: among epochs with CALIBRATED doc_type ECE
+    ``<= ECE_BUDGET`` and doc_type macro-F1 ``>= best - DOC_TYPE_GATE_TOL``,
+    pick the max subclass objective (ties -> the earliest epoch).  Otherwise
+    the legacy doc_type-only rule: the max doc_type macro-F1 among
+    ECE-eligible epochs (ties -> the earliest).  No ECE-eligible epoch ->
+    the ``epoch 0`` sentinel (gate not met) and a ``-inf`` floor.
+
+    ``prior`` is a resumed run's recorded selection: a legacy bundle whose
+    epoch events lack the per-epoch selection keys still competes through
+    its snapshot (a ``None`` objective counts as ``-1.0``).  ``events`` is
+    never mutated.
     """
-    ece_ok = val["doc_type_ece_calibrated"] <= ECE_BUDGET
+    cands: list[dict] = []
+    keyed_epochs: set[int] = set()
+    for ev in events:
+        if ev.get("doc_type_macro_f1_observed") is None \
+                or ev.get("doc_type_ece_calibrated") is None:
+            continue  # legacy event without selection keys
+        keyed_epochs.add(ev["epoch"])
+        if ev["doc_type_ece_calibrated"] <= ECE_BUDGET:
+            snap = _selection_snapshot(ev, ev["epoch"], subclass_heads)
+            if ev.get("subclass_objective") is not None:
+                snap["subclass_objective"] = ev["subclass_objective"]
+            cands.append(snap)
+    if prior and prior.get("epoch") and prior.get("macro_f1") is not None \
+            and prior["epoch"] not in keyed_epochs:
+        legacy = dict(prior)
+        if legacy.get("subclass_objective") is None:
+            legacy["subclass_objective"] = -1.0
+        cands.append(legacy)
+    if not cands:
+        return dict(_NO_SELECTION), float("-inf")
+    cands.sort(key=lambda c: c["epoch"])
+    best_doc_type = max(c["macro_f1"] for c in cands)
     if select_on_subclass:
-        eligible = ece_ok and (
-            val["doc_type_macro_f1_observed"]
-            >= best_doc_type - DOC_TYPE_GATE_TOL)
-        better = eligible and (val["subclass_objective"]
-                               > selected.get("subclass_objective", -1.0))
+        pool = [c for c in cands
+                if c["macro_f1"] >= best_doc_type - DOC_TYPE_GATE_TOL]
+        key = "subclass_objective"
     else:
-        better = (val["doc_type_macro_f1_observed"] > selected["macro_f1"]
-                  and ece_ok)
-    if better:
-        selected = _selection_snapshot(val, epoch, subclass_heads)
-    if ece_ok:
-        best_doc_type = max(best_doc_type, val["doc_type_macro_f1_observed"])
-    return selected, best_doc_type
+        pool = cands
+        key = "macro_f1"
+    chosen = pool[0]
+    for c in pool[1:]:
+        if c[key] > chosen[key]:
+            chosen = c
+    return chosen, best_doc_type
 
 
 def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
     """Platt-style temperature scaling: T minimizing NLL on validation."""
     from scipy.optimize import minimize_scalar
 
-    lg, lab = logits.detach().float().numpy(), labels.numpy()
+    logits, labels = _drop_ignored(logits.detach(), labels)
+    lg, lab = logits.float().numpy(), labels.numpy()
 
     def nll(t: float) -> float:
         if t <= 1e-3:
@@ -1117,6 +1226,15 @@ def _apply_subclass_support_threshold(train_rows: list[dict],
     counted in the returned info for honesty). ``maps`` is rebuilt so the
     checkpoint's labels.json reflects the reduced vocabulary and
     train_counts.json stays the authentic-support source.
+
+    ``other`` may be routing-only (contract ``other``, #116): it is in
+    ``labels`` but not in the trainable decision space, and ``_label_id``
+    maps it to ``CE_IGNORE_INDEX``.  A remap into it is intentional — the
+    rows stay in train/val for the doc_type head and the test split scores
+    them as ``subclass_unscorable`` (route-to-LLM) — so the subclass loss
+    skips them and every metric/temperature fit must tolerate
+    ``CE_IGNORE_INDEX`` labels (``_drop_ignored``).  Dropping the rows
+    instead would also erase their doc_type signal.
     """
     info: dict = {"remapped": {}, "dropped": {}, "dropped_val_rows": 0}
     if min_rows <= 0:
@@ -1165,10 +1283,14 @@ def _apply_subclass_support_threshold(train_rows: list[dict],
             "labels": keep,
             "label2id": {lab: i for i, lab in enumerate(keep)},
             "id2label": {str(i): lab for i, lab in enumerate(keep)},
+            # zero-support labels stay ABSENT from the weights, exactly as
+            # in ``label_maps`` (#116): a stored 1.0 would read as "supported
+            # at the average prior" in ``log_prior_values`` instead of the
+            # smallest-prior floor.  K counts the supported classes only,
+            # like ``class_weights``.
             "weights": {
-                lab: (total / (len(keep) * new_counts[lab]) if new_counts[lab]
-                      else 1.0)
-                for lab in keep},
+                lab: total / (len(new_counts) * new_counts[lab])
+                for lab in keep if new_counts[lab]},
             "inference_only": [lab for lab in keep if lab not in new_counts],
             "routing_only": list(cfg.get("routing_only", ())),
             "note": cfg.get("note", ""),
@@ -1232,7 +1354,14 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-length", type=int, default=MAX_TOKENS)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--push-to-hub", default="",
-                    help="model repo id to push the checkpoint to")
+                    help="model repo id to push the checkpoint to (refused "
+                         "when no epoch cleared the selection gate unless "
+                         "--push-ungated; the Modal app does not use this "
+                         "flag — it pushes after ONNX export + parity)")
+    ap.add_argument("--push-ungated", action="store_true",
+                    help="allow --push-to-hub when no epoch met the "
+                         "selection gate (selected_epoch == 0: uncalibrated "
+                         "final-epoch weights)")
     ap.add_argument("--eval-test", action="store_true",
                     help="run the held-out test split through the trained "
                          "model (report-only P0 gate)")
@@ -1258,7 +1387,9 @@ def build_parser() -> argparse.ArgumentParser:
                          "when VRAM allows; default on for 22 GB L4 @ 8192)")
     ap.add_argument("--checkpoint-every", type=int, default=0,
                     help="mid-epoch resume checkpoint every N micro-batches "
-                         "(0 = same as --log-every; writes resume.json under "
+                         "(0 = same as --log-every; rounded UP to a "
+                         "--grad-accum multiple so a resume restarts on an "
+                         "optimizer boundary; writes resume.json under "
                          "--output)")
     ap.add_argument("--model", default=MODEL_ID,
                     help="backbone model id (default: the committed pin)")
@@ -1286,8 +1417,12 @@ def build_parser() -> argparse.ArgumentParser:
                     default="v1",
                     help="window decoration version (#29). v1 = title + "
                          "blank line + body (published Hub pin). v2 = "
-                         "[FILE_NAME]/[TITLE]/[WINDOW_INDEX] prefix. Never "
-                         "mix v2 windows into the v1 Hub revision")
+                         "[FILE_NAME]/[TITLE]/[WINDOW_INDEX] prefix. The "
+                         "trainer reads PREBUILT train/validation windows, so "
+                         "it errors out unless this matches the stage's "
+                         "construction; it also drives the --eval-test "
+                         "windowing. Never mix v2 windows into the v1 Hub "
+                         "revision")
     ap.add_argument("--weight-mode", choices=["inverse", "sqrt-inverse",
                                               "none"], default="inverse",
                     help="class-weight transform: inverse (labels.json), "
@@ -1355,8 +1490,8 @@ def _fit_temperatures_from_logits(logits_by_head: dict[str, list],
     """
     temps: dict[str, float] = {}
     for name in logits_by_head:
-        lg = torch.cat(logits_by_head[name])
-        lab = torch.cat(labels_by_head[name])
+        lg, lab = _drop_ignored(torch.cat(logits_by_head[name]),
+                                torch.cat(labels_by_head[name]))
         if len(lab) < 2 or len(set(lab.tolist())) < 2:
             temps[name] = 1.0  # too few rows to fit T — leave uncalibrated
         else:
@@ -1366,7 +1501,8 @@ def _fit_temperatures_from_logits(logits_by_head: dict[str, list],
 
 def _summary(run_id: str, args, device, events: list[dict], selected: dict,
              temps: dict, wall: float, epochs_run: int,
-             test_metrics: dict | None = None) -> dict:
+             test_metrics: dict | None = None, *,
+             epochs_trained: int | None = None) -> dict:
     """Run summary — the artifact's self-describing record.
 
     Carries the FULL hyperparameter set (2026-09-20 audit R3: the artifact
@@ -1376,6 +1512,11 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
     head-exclusion policy — the deployment gate (inference.py) consumes it
     to route LLM when a subclass head's calibration never cleared the
     budget.
+
+    ``epochs_trained`` is the number of epochs THIS process trained (vs
+    ``epochs_run``, the cumulative count including resumed ones); ``0``
+    flags ``nothing_trained`` — a ``--resume`` already at/after ``--epochs``
+    — so the deploy layer does not export/promote/push it as a new run.
     """
     per_head_ece = selected.get("per_head_ece_calibrated", {})
     if not per_head_ece:
@@ -1388,6 +1529,7 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
             name[:-len("_ece_calibrated")]: round(v, 6)
             for name, v in sorted(selected.items())
             if name.endswith("_ece_calibrated")
+            and isinstance(v, int | float)  # not the nested sidecar dict itself
         }
         if per_head_ece:
             per_head_ece = {k: float(v) for k, v in per_head_ece.items()}
@@ -1398,6 +1540,8 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
         "seed": args.seed,
         "device": str(device),
         "epochs_run": epochs_run,
+        "epochs_trained_this_run": epochs_trained,
+        "nothing_trained": epochs_trained == 0,
         "epochs_requested": args.epochs,
         "training_wall_s": round(wall, 1),
         "hyperparameters": {
@@ -1407,8 +1551,9 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
         "checkpoint_selection": {
             "rule": ("lexicographic: best val subclass objective (mean of the "
                      "five observed subclass macro-F1) among epochs whose "
-                     "observed doc_type macro-F1 does not regress beyond "
-                     f"{DOC_TYPE_GATE_TOL} and whose CALIBRATED doc_type ECE "
+                     "observed doc_type macro-F1 is within "
+                     f"{DOC_TYPE_GATE_TOL} of the BEST ECE-eligible doc_type "
+                     "macro-F1 of the run and whose CALIBRATED doc_type ECE "
                      f"<= {ECE_BUDGET}"
                      if getattr(args, "select_on_subclass", False) else
                      "best val doc_type macro-F1 (observed classes) with "
@@ -1441,8 +1586,161 @@ def _summary(run_id: str, args, device, events: list[dict], selected: dict,
     }
 
 
+# Files a selected-epoch promotion copies over the final-epoch output: model
+# weights + the per-epoch calibration artifacts that were fitted on THAT
+# epoch's validation logits.  Deliberately an allowlist — logs
+# (epoch_metrics.*, train_steps.jsonl, test_steps.jsonl) and resume state
+# (optimizer.pt, scheduler.pt, resume.json, resume_manifest.json) belong to
+# the run as a whole, and the archive's copies of them are TRUNCATED/stale
+# snapshots from mid-run.
+_PROMOTE_EXACT = frozenset({
+    "heads.pt", "temperatures.json", "ood_probe.json", "train_counts.json",
+    "labels.json", "config.json", "model.safetensors.index.json",
+    "pytorch_model.bin.index.json",
+})
+_PROMOTE_GLOBS = ("*.safetensors", "pytorch_model*.bin")
+
+# Hub upload hygiene shared by every push path (the Modal app mirrors this):
+# optimizer/scheduler/resume state is training-internal (2026-09-20 audit
+# R10: it doubled repo size).
+HUB_IGNORE_PATTERNS = ["optimizer.pt", "scheduler.pt", "resume.json"]
+
+
+def _promote_epoch_files(src: Path, dst: Path) -> list[str]:
+    """Copy the selected epoch's weights + calibration artifacts into ``dst``.
+
+    Never touches logs or resume state (see ``_PROMOTE_EXACT``).  Returns the
+    copied file names (sorted) for the operator log.
+    """
+    copied: list[str] = []
+    for f in sorted(src.iterdir()):
+        if not f.is_file():
+            continue
+        if f.name in _PROMOTE_EXACT or any(f.match(g) for g in _PROMOTE_GLOBS):
+            shutil.copy2(f, dst / f.name)
+            copied.append(f.name)
+    return copied
+
+
+def _load_epoch_weights(model, src: Path, device, dtype) -> None:
+    """Load a saved epoch bundle's backbone + heads into the live ``model``.
+
+    ``--eval-test`` must score the weights that SHIP (the selected epoch), not
+    whatever the last epoch left in memory.
+    """
+    from transformers import AutoModel
+
+    base = AutoModel.from_pretrained(src, torch_dtype=dtype,
+                                     attn_implementation="sdpa")
+    model.backbone = base.to(device)
+    heads_state = torch.load(src / "heads.pt", map_location=device)
+    for name, sd in heads_state.items():
+        model.heads[name].load_state_dict(sd)
+    model.eval()
+
+
+def _apply_backbone_freeze(model, epoch: int, freeze_epochs: int) -> bool | None:
+    """Set backbone ``requires_grad`` for ``epoch``; the backbone is frozen for
+    epochs ``1..freeze_epochs`` and trains from ``freeze_epochs + 1`` on.
+
+    Applied per epoch from the epoch number (not as a one-shot at start plus
+    an ``epoch == N + 1`` edge): a ``--resume`` that starts past ``N + 1``
+    never saw the edge and trained with a frozen backbone forever.  Returns
+    the new frozen state when it CHANGED, else None.
+    """
+    if freeze_epochs <= 0:
+        return None
+    want_frozen = epoch <= freeze_epochs
+    params = list(model.backbone.parameters())
+    if not params or all(p.requires_grad == (not want_frozen) for p in params):
+        return None  # already in the wanted state
+    for p in params:
+        p.requires_grad = not want_frozen
+    return want_frozen
+
+
+def _remaining_micro_budget(max_steps: int, steps_done_micro: int) -> int | None:
+    """Micro-batches left under ``--max-steps``.
+
+    ``None`` = unlimited (flag off).  ``0`` = EXHAUSTED: ``train_epoch``
+    reads ``step_limit=0`` as "no limit", so a resume with the budget already
+    spent used to train a full unlimited epoch; the caller must stop instead.
+    """
+    if not max_steps:
+        return None
+    return max(0, max_steps - steps_done_micro)
+
+
+def _align_checkpoint_every(every: int, grad_accum: int) -> int:
+    """Round the mid-epoch checkpoint cadence UP to a ``grad_accum`` multiple.
+
+    A checkpoint between optimizer boundaries would snapshot with a
+    half-accumulated gradient that ``resume`` cannot restore (gradients are
+    not saved), so the resumed accumulation window is short.  Saving only at
+    boundaries makes the skip count whole accumulation windows.
+    """
+    if every <= 0:
+        return every
+    ga = max(1, grad_accum)
+    return -(-every // ga) * ga
+
+
+def _stage_input_construction(data: str) -> str:
+    """Input-construction version the prebuilt training WINDOWS were built with.
+
+    The trainer never re-windows train/validation: it reads the stage's
+    prebuilt parquet.  The published pin (and every local stage the repo
+    builds) is v1; a stage dir may declare otherwise via an
+    ``input_construction`` key in its ``dataset_info.json``.
+    """
+    local = Path(data)
+    info = local / "dataset_info.json"
+    if local.exists() and info.is_file():
+        try:
+            declared = json.loads(info.read_text()).get("input_construction")
+        except (OSError, ValueError):
+            declared = None
+        if declared:
+            return str(declared)
+    return INPUT_CONSTRUCTION_VERSION
+
+
+def _check_input_construction(requested: str, stage: str) -> None:
+    """Refuse to train a model for one input construction on windows built
+    with another.
+
+    ``--input-construction`` used to be recorded in ``summary.json`` and
+    nothing else, so ``--input-construction v2`` trained on v1 windows while
+    inference then decorated v2 prefixes for a v1-trained model.
+    """
+    if requested != stage:
+        raise SystemExit(
+            f"--input-construction {requested} requested but the training "
+            f"windows are prebuilt as {stage}: the trainer does not re-window "
+            "train/validation, so the model would learn one construction and "
+            f"be served another. Rebuild the stage with {requested} windows "
+            "(and a new pinned revision) first.")
+
+
+def _push_to_hub(output: Path, repo: str, *, epochs: int,
+                 selected_epoch: int) -> None:
+    from huggingface_hub import HfApi
+
+    api = HfApi()
+    api.create_repo(repo, repo_type="model", exist_ok=True)
+    api.upload_folder(
+        folder_path=str(output), repo_id=repo, repo_type="model",
+        ignore_patterns=HUB_IGNORE_PATTERNS,
+        commit_message=f"ModernBERT hierarchical classifier "
+                       f"(epochs {epochs}, selected epoch {selected_epoch})")
+    print(f"pushed: https://huggingface.co/{repo}", flush=True)
+
+
 def main() -> int:
     args = build_parser().parse_args()
+    # fail before any model/data load (and any GPU minute)
+    _check_input_construction(args.input_construction,
+                              _stage_input_construction(args.data))
 
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -1553,12 +1851,6 @@ def main() -> int:
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
-    if args.freeze_backbone_epochs > 0:
-        for p in model.backbone.parameters():
-            p.requires_grad = False
-        print(f"backbone frozen for the first {args.freeze_backbone_epochs} "
-              f"epoch(s); heads always train", flush=True)
-
     loss_cfg = LossConfig(lambda_dt=args.loss_lambda_dt,
                           label_smoothing=args.label_smoothing,
                           subclass_label_smoothing=args.subclass_label_smoothing,
@@ -1572,7 +1864,8 @@ def main() -> int:
     events: list[dict] = []
     selected: dict = {"epoch": 0, "macro_f1": -1.0, "ece": None,
                       "subclass_objective": -1.0}
-    best_doc_type = float("-inf")  # #112 doc_type gate floor
+    best_doc_type = float("-inf")  # #112 doc_type gate floor (best eligible)
+    prior_selected: dict | None = None  # a resumed run's recorded selection
     start_epoch = 1
     if args.resume:
         resume_state = _apply_resume(Path(args.resume), model, optimizer,
@@ -1588,6 +1881,7 @@ def main() -> int:
         stale = resume_state["stale"]
         temps = resume_state["temps"]
         best_doc_type = resume_state.get("best_doc_type", best_doc_type)
+        prior_selected = dict(selected) if selected.get("epoch") else None
         skip_note = (f", skip {micro_skip} micro-batches in epoch "
                      f"{start_epoch}") if micro_skip else ""
         print(f"resumed from {args.resume}: continuing at epoch "
@@ -1600,8 +1894,9 @@ def main() -> int:
         steps_done_micro = 0
         micro_skip = 0
         temps: dict[str, float] = {}
-    checkpoint_every = (args.checkpoint_every if args.checkpoint_every > 0
-                        else args.log_every)
+    checkpoint_every = _align_checkpoint_every(
+        args.checkpoint_every if args.checkpoint_every > 0 else args.log_every,
+        args.grad_accum)
     run_id = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
     if args.resume and resume_state.get("run_id"):
         # provenance: a resumed run keeps the ORIGINAL training run's identity
@@ -1637,8 +1932,13 @@ def main() -> int:
         f"mid_epoch_ckpt_every={checkpoint_every}",
         flush=True)
     last_manifest_ckpt = args.output.resolve()
+    epochs_trained = 0  # epochs trained by THIS process (0 => nothing_trained)
 
-    def _maybe_mid_epoch_checkpoint(step_in_epoch: int, n_opt: int) -> None:
+    def _maybe_mid_epoch_checkpoint(step_in_epoch: int, n_opt: int,
+                                    skipped: int) -> None:
+        # ``step_in_epoch`` is the ABSOLUTE micro-batch index in the epoch
+        # (what a later resume skips); ``skipped`` of those were trained in a
+        # previous process and are already inside ``steps_done_micro``.
         nonlocal last_manifest_ckpt
         if checkpoint_every <= 0:
             return
@@ -1646,12 +1946,12 @@ def main() -> int:
             return
         partial_summary = _summary(
             run_id, args, device, events, selected, temps,
-            time.time() - t0, len(events))
+            time.time() - t0, len(events), epochs_trained=epochs_trained)
         save_checkpoint(
             args.output, model, tokenizer, maps, heads, train_rows,
             temps, partial_summary, optimizer=optimizer, scheduler=scheduler,
             epoch=epoch, steps_done=steps_done + n_opt,
-            steps_done_micro=steps_done_micro + step_in_epoch,
+            steps_done_micro=steps_done_micro + step_in_epoch - skipped,
             step_in_epoch=step_in_epoch, epoch_complete=False)
         last_manifest_ckpt = args.output.resolve()
         print(f"[trainer] mid-epoch resume checkpoint "
@@ -1660,13 +1960,21 @@ def main() -> int:
 
     for epoch in range(start_epoch, args.epochs + 1):
         epoch_t0 = time.time()
-        if args.freeze_backbone_epochs > 0 \
-                and epoch == args.freeze_backbone_epochs + 1:
-            for p in model.backbone.parameters():
-                p.requires_grad = True
+        remaining = _remaining_micro_budget(args.max_steps, steps_done_micro)
+        if remaining == 0:
+            # budget already spent (resume of a capped run): train_epoch reads
+            # step_limit=0 as UNLIMITED, so stop here instead
+            print(f"max-steps ({args.max_steps}) already reached at resume; "
+                  "nothing to train", flush=True)
+            break
+        frozen = _apply_backbone_freeze(model, epoch,
+                                        args.freeze_backbone_epochs)
+        if frozen is True:
+            print(f"backbone frozen for the first "
+                  f"{args.freeze_backbone_epochs} epoch(s); heads always "
+                  "train", flush=True)
+        elif frozen is False:
             print(f"backbone unfrozen at epoch {epoch}", flush=True)
-        remaining = max(0, args.max_steps - steps_done_micro) \
-            if args.max_steps else 0
         prev_selected_epoch = selected.get("epoch", 0)
         epoch_skip = micro_skip if epoch == start_epoch and micro_skip else 0
         if epoch_skip:
@@ -1677,20 +1985,24 @@ def main() -> int:
                          non_blocking=(device.type == "cuda"))
 
         def _on_micro(step_in_epoch: int, n_opt_in_epoch: int,
-                      _loss: float) -> None:
-            _maybe_mid_epoch_checkpoint(step_in_epoch, n_opt_in_epoch)
+                      _loss: float, _skipped: int = epoch_skip) -> None:
+            _maybe_mid_epoch_checkpoint(step_in_epoch, n_opt_in_epoch,
+                                        _skipped)
 
         loss, loss_endpoint, n_micro, n_opt = train_epoch(
             model, make_batches(train_rows, args.batch_size, True,
-                                heads, device, **_batch_kw),
+                                heads, device, **_batch_kw,
+                                shuffle_rng=_epoch_shuffle_rng(
+                                    args.seed, epoch)),
             optimizer, scheduler, heads, device,
-            args.grad_accum, step_limit=remaining,
+            args.grad_accum, step_limit=remaining or 0,
             log_every=args.log_every, loss_cfg=loss_cfg,
             progress=progress, epoch=epoch, epochs=args.epochs,
             skip_micro=epoch_skip,
             on_micro_step=_on_micro if checkpoint_every > 0 else None)
         steps_done += n_opt
         steps_done_micro += n_micro
+        epochs_trained += 1
         val, val_logits, val_labels = evaluate(
             model, make_batches(val_rows, args.batch_size, False,
                                 heads, device), heads, maps, device,
@@ -1708,7 +2020,9 @@ def main() -> int:
         # hardening seam: lexicographic checkpoint selection (#112 M9a-U4).
         # The doc_type gate is preserved (CALIBRATED doc_type ECE <= budget;
         # observed doc_type macro-F1 not regressing beyond DOC_TYPE_GATE_TOL
-        # below the best ECE-eligible doc_type so far).  Among gate-eligible
+        # below the BEST ECE-eligible doc_type of the whole run, re-derived
+        # every epoch so a later, better epoch can retire an earlier
+        # selection that no longer satisfies the rule).  Among gate-eligible
         # epochs the subclass objective (mean of the five observed subclass
         # macro-F1) decides, so a subclass-focused epoch is no longer thrown
         # away when doc_type merely holds.  --no-select-on-subclass restores
@@ -1722,8 +2036,8 @@ def main() -> int:
         val["subclass_objective"] = round(
             _subclass_objective(val, subclass_heads), 4)
         selected, best_doc_type = _select_epoch(
-            val, epoch, selected, best_doc_type, subclass_heads,
-            select_on_subclass=args.select_on_subclass)
+            [*events, {"epoch": epoch, **val}], subclass_heads,
+            select_on_subclass=args.select_on_subclass, prior=prior_selected)
         selected_this_epoch = selected.get("epoch") == epoch
         epoch_wall_s = round(time.time() - epoch_t0, 1)
         eta_rem = progress.eta_s()
@@ -1770,7 +2084,8 @@ def main() -> int:
               flush=True)
         save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
                         temps, _summary(run_id, args, device, events, selected,
-                                        temps, time.time() - t0, epoch),
+                                        temps, time.time() - t0, epoch,
+                                        epochs_trained=epochs_trained),
                         optimizer=optimizer, scheduler=scheduler,
                         epoch=epoch, steps_done=steps_done,
                         steps_done_micro=steps_done_micro,
@@ -1825,10 +2140,55 @@ def main() -> int:
         wall += resume_state.get("prior_wall_s", 0.0)
     print(f"training wall: {wall:.1f}s", flush=True)
 
+    # selection enforcement (2026-09-20 audit R1): the shipped artifact must be
+    # the SELECTED epoch, not merely the last one.  Promotion happens BEFORE
+    # the held-out test eval so --eval-test scores the weights that actually
+    # ship (it used to score the in-memory FINAL epoch and then attach those
+    # metrics to a summary describing the selected one).
+    selected_epoch = selected["epoch"]
+    last_epoch = len(events)
+    promoted = False
+    if selected_epoch > 0 and selected_epoch != last_epoch:
+        src = runs_dir / f"{run_id}-e{selected_epoch}"
+        if src.is_dir():
+            copied = _promote_epoch_files(src, args.output)
+            sel_temps_path = src / "temperatures.json"
+            if sel_temps_path.is_file():
+                temps = json.loads(sel_temps_path.read_text(encoding="utf-8"))
+            # live model := shipped weights (the final-epoch weights in memory
+            # are not what the summary/selection describe)
+            _load_epoch_weights(model, args.output, device, dtype)
+            promoted = True
+            print(f"[trainer] promoted selected epoch {selected_epoch} "
+                  f"weights into {args.output} ({', '.join(copied)})",
+                  flush=True)
+            # optimizer.pt/scheduler.pt/resume.json in `output` still describe
+            # the FINAL epoch: point the resume manifest at its archive so a
+            # --resume never pairs them with the promoted weights.
+            final_archive = runs_dir / f"{run_id}-e{last_epoch}"
+            if final_archive.is_dir():
+                _write_resume_manifest(
+                    args.output, checkpoint_dir=final_archive,
+                    epoch=last_epoch, step_in_epoch=0, steps_done=steps_done,
+                    steps_done_micro=steps_done_micro, run_id=run_id,
+                    epoch_complete=True)
+        else:
+            print(f"[trainer] WARNING: selected epoch {selected_epoch} "
+                  f"archive missing ({src}); latest/ holds the final epoch",
+                  flush=True)
+    elif selected_epoch == 0:
+        print(f"[trainer] WARNING: selection gate NOT met by any epoch "
+              f"(calibrated doc_type ECE never <= {ECE_BUDGET}); latest/ "
+              f"holds the final epoch — treat this artifact as UNCALIBRATED",
+              flush=True)
+
     # held-out test eval BEFORE the final save so the metrics land in the
     # summary (2026-09-20 audit R2: they were stdout-only and lost).
     test_metrics: dict = {}
     if args.eval_test:
+        # eval mode: an eval-only --resume never entered the epoch loop, and
+        # freshly built heads start in train mode (live MLP-head dropout)
+        model.eval()
         test_docs = load_dataset(args.data, "test")
         if args.limit:
             test_docs = test_docs[:args.limit]
@@ -1873,7 +2233,9 @@ def main() -> int:
         for i, r in enumerate(test_docs):
             wins = window_document(r["title"], r["doc_text"],
                                    max_tokens=args.max_length,
-                                   overlap=WINDOW_OVERLAP_TOKENS)
+                                   overlap=WINDOW_OVERLAP_TOKENS,
+                                   version=args.input_construction,
+                                   filename=r.get("filename", ""))
             enc = tokenizer(wins, padding="max_length", truncation=True,
                             max_length=args.max_length, return_tensors="pt")
             with torch.no_grad():
@@ -1911,48 +2273,24 @@ def main() -> int:
         print(f"test metrics: {test_metrics}", flush=True)
 
     summary = _summary(run_id, args, device, events, selected, temps, wall,
-                       len(events), test_metrics)
+                       len(events), test_metrics,
+                       epochs_trained=epochs_trained)
 
-    # final save (reuses the last epoch's temperatures — no extra val pass)
-    save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
-                    temps, summary,
-                    optimizer=optimizer, scheduler=scheduler,
-                    epoch=len(events), steps_done=steps_done,
-                    steps_done_micro=steps_done_micro,
-                    step_in_epoch=0, epoch_complete=True)
-    _write_ood_probe(args.output, val_logits)
-
-    # selection enforcement (2026-09-20 audit R1): the pushed artifact must be
-    # the SELECTED epoch, not merely the last one. Promote the selected
-    # epoch's weights into latest/ when it differs from the final epoch.
-    selected_epoch = selected["epoch"]
-    if selected_epoch > 0 and selected_epoch != len(events):
-        src = runs_dir / f"{run_id}-e{selected_epoch}"
-        if src.is_dir():
-            for f in src.iterdir():
-                if f.is_file() and f.name != "summary.json":
-                    shutil.copy2(f, args.output / f.name)
-            sel_temps_path = src / "temperatures.json"
-            if sel_temps_path.is_file():
-                sel_temps = json.loads(sel_temps_path.read_text(encoding="utf-8"))
-            else:
-                sel_temps = temps
-            promoted_summary = _summary(
-                run_id, args, device, events, selected, sel_temps, wall,
-                len(events), test_metrics)
-            (args.output / "summary.json").write_text(
-                json.dumps(promoted_summary, sort_keys=True, indent=2))
-            print(f"[trainer] promoted selected epoch {selected_epoch} "
-                  f"weights into {args.output}", flush=True)
-        else:
-            print(f"[trainer] WARNING: selected epoch {selected_epoch} "
-                  f"archive missing ({src}); latest/ holds the final epoch",
-                  flush=True)
-    elif selected_epoch == 0:
-        print(f"[trainer] WARNING: selection gate NOT met by any epoch "
-              f"(calibrated doc_type ECE never <= {ECE_BUDGET}); latest/ "
-              f"holds the final epoch — treat this artifact as UNCALIBRATED",
-              flush=True)
+    if promoted:
+        # weights/calibration already promoted from the selected epoch's
+        # archive; only the summary (now carrying the test metrics of those
+        # weights) is rewritten — optimizer/resume state stays untouched.
+        (args.output / "summary.json").write_text(
+            json.dumps(summary, sort_keys=True, indent=2))
+    else:
+        # final save (reuses the last epoch's temperatures — no extra val pass)
+        save_checkpoint(args.output, model, tokenizer, maps, heads, train_rows,
+                        temps, summary,
+                        optimizer=optimizer, scheduler=scheduler,
+                        epoch=len(events), steps_done=steps_done,
+                        steps_done_micro=steps_done_micro,
+                        step_in_epoch=0, epoch_complete=True)
+        _write_ood_probe(args.output, val_logits)
 
     print(f"checkpoint saved: {args.output}", flush=True)
     for p in sorted(args.output.iterdir()):
@@ -1967,20 +2305,14 @@ def main() -> int:
           flush=True)
 
     if args.push_to_hub:
-        from huggingface_hub import HfApi
-
-        api = HfApi()
-        api.create_repo(args.push_to_hub, repo_type="model", exist_ok=True)
-        # optimizer/scheduler/resume state is training-internal — never push
-        # it to the model repo (2026-09-20 audit R10: it doubled repo size).
-        api.upload_folder(
-            folder_path=str(args.output), repo_id=args.push_to_hub,
-            repo_type="model",
-            ignore_patterns=["optimizer.pt", "scheduler.pt", "resume.json"],
-            commit_message=f"ModernBERT hierarchical classifier "
-                           f"(epochs {args.epochs}, selected epoch "
-                           f"{selected_epoch})")
-        print(f"pushed: https://huggingface.co/{args.push_to_hub}", flush=True)
+        if selected_epoch == 0 and not args.push_ungated:
+            print("[trainer] REFUSING --push-to-hub: no epoch met the "
+                  "selection gate (selected_epoch == 0), so the checkpoint is "
+                  "the UNCALIBRATED final epoch. Re-run with --push-ungated "
+                  "to publish it anyway.", flush=True)
+            return 3
+        _push_to_hub(args.output, args.push_to_hub, epochs=args.epochs,
+                     selected_epoch=selected_epoch)
     return 0
 
 

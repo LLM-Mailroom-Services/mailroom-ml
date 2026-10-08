@@ -36,13 +36,20 @@ def _need_modal():
 
 
 def _need_serve():
-    """Skip guard: the serving app needs the serve extra (fastapi)."""
-    _need_modal()
-    return pytest.importorskip("fastapi")
+    """Skip guard: the serving app needs the serve extra (fastapi).
+
+    Returns the ``modal`` module (the tests assert ``modal.App`` /
+    ``modal.Secret`` types) — it used to return ``fastapi`` by mistake, which
+    failed ``AttributeError: module 'fastapi' has no attribute 'App'``
+    wherever both were installed.
+    """
+    modal = _need_modal()
+    pytest.importorskip("fastapi")
+    return modal
 
 
 def _expected_train_flags() -> list[str]:
-    """The documented training/train_modernbert.py CLI surface."""
+    """The documented training/train/train_modernbert.py CLI surface."""
     return [
         "--data", "--output", "--epochs", "--batch-size",
         "--grad-accum", "--lr", "--seed", "--push-to-hub", "--eval-test",
@@ -463,12 +470,21 @@ def test_promote_latest_is_atomic(tmp_path) -> None:
 
 
 def test_train_defaults_export_onnx_on() -> None:
+    """``modal_app.train`` is a ``modal.Function`` once decorated, and
+    ``inspect.signature`` rejects it (TypeError) — read the default from the
+    source instead of any private Modal attribute."""
     _need_modal()
-    import inspect
+    import ast
 
     from deploy import modal_app
 
-    assert inspect.signature(modal_app.train).parameters["export_onnx"].default is True
+    fn = next(n for n in ast.parse(inspect.getsource(modal_app)).body
+              if isinstance(n, ast.FunctionDef) and n.name == "train")
+    args = fn.args.args + fn.args.kwonlyargs
+    defaults = [None] * (len(fn.args.args) - len(fn.args.defaults)) \
+        + list(fn.args.defaults) + list(fn.args.kw_defaults)
+    default = dict(zip((a.arg for a in args), defaults, strict=False))["export_onnx"]
+    assert isinstance(default, ast.Constant) and default.value is True
 
 
 def test_spawn_train_forwards_export_onnx() -> None:

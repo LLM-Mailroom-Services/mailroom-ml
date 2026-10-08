@@ -9,6 +9,9 @@ the serving artifact bundle:
         model_quantized.onnx   int8 dynamic-quantized (same graph contract)
         labels.json            label maps (copied, for serve/parity)
         tokenizer.json / tokenizer_config.json / config.json ...
+        temperatures.json / summary.json / train_counts.json /
+        ood_probe.json / routing_thresholds.json   serving sidecars (when the
+                               checkpoint has them; ``load_bundle`` reads them)
 
 Graph contract (stable — serve_app.py and onnx_parity_check.py depend on it):
 
@@ -74,6 +77,12 @@ ROOT = Path(__file__).resolve().parent.parent
 
 _DEFAULT_PYTORCH_DIR = ROOT / "artifacts" / "pytorch" / "model"
 _DEFAULT_OUT_DIR = ROOT / "artifacts" / "onnx" / "model"
+
+# per-checkpoint sidecars ``mailroom_ml.inference.load_bundle`` overlays when
+# present (calibration T, head-exclusion policy + input construction, authentic
+# support counts, OOD probe, #25 routing thresholds) — copied into the bundle
+SERVING_SIDECARS = ("temperatures.json", "summary.json", "train_counts.json",
+                    "ood_probe.json", "routing_thresholds.json")
 
 
 class HierarchicalClassifier(nn.Module):
@@ -174,7 +183,9 @@ def export_onnx(
     2.14 Dynamo exporter currently emits an invalid ``Split`` node for this
     architecture (module docstring). Writes ``model.onnx`` (+
     ``model_quantized.onnx`` when quantize) and copies ``labels.json`` +
-    tokenizer files so the bundle is self-contained.
+    tokenizer files so the bundle is self-contained.  The serving sidecars
+    (``SERVING_SIDECARS``: temperatures, summary, train_counts, ood_probe,
+    routing_thresholds) are copied when present.
     """
     import torch
 
@@ -241,6 +252,13 @@ def export_onnx(
     shutil.copy2(pytorch_dir / "labels.json", out_dir / "labels.json")
     for name in ("tokenizer.json", "tokenizer_config.json",
                  "special_tokens_map.json", "config.json", "vocab.txt"):
+        src = pytorch_dir / name
+        if src.is_file():
+            shutil.copy2(src, out_dir / name)
+    # serving sidecars ``load_bundle`` reads from the model dir: without them
+    # the ONNX bundle loads with T=1 (uncalibrated), no head exclusions, no
+    # OOD probe, no routing thresholds and empty authentic-support counts.
+    for name in SERVING_SIDECARS:
         src = pytorch_dir / name
         if src.is_file():
             shutil.copy2(src, out_dir / name)

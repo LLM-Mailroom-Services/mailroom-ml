@@ -131,6 +131,10 @@ HF_TOKEN=... uv run --extra deploy modal run deploy/modal_app.py --epochs 5 --pu
 #   smoke:  uv run --extra deploy python deploy/spawn_train.py --smoke
 #   after a successful non-smoke train the container exports ONNX + runs
 #   parity, then promotes /checkpoints/latest (#19). --no-export-onnx skips.
+#   --push-to-hub is NOT forwarded to the trainer: the app uploads only after
+#   export + parity pass AND the selection gate was met (smoke, nothing-trained
+#   resumes and --no-export-onnx runs never push). A local trainer
+#   --push-to-hub refuses an ungated run unless --push-ungated.
 ```
 
 The core suite is green with **no** modal/torch/onnxruntime installed — every

@@ -55,6 +55,12 @@ APP_NAME = "mailroom-ml-train"
 FUNCTION_NAME = "train"
 SMOKE_STEPS = 24          # 3 optimizer steps at grad-accum 8
 SMOKE_LOG_EVERY = 4       # step lines every 4 micro-batches during the smoke
+# A real run inherits the trainer's --log-every default (50) as its mid-epoch
+# checkpoint cadence.  The smoke's own --log-every=4 would otherwise become its
+# checkpoint cadence too (the trainer's "0 = same as --log-every" rule), so the
+# 24-micro-batch timing the budget guard extrapolates would be dominated by
+# checkpoint I/O no real run pays at that rate: pin the smoke to the real one.
+REAL_CHECKPOINT_EVERY = 50
 SMOKE_WATCH_S = 60 * 12   # generous ceiling for image pull + model download
 SMOKE_STEP_TIMEOUT_S = 60 * 4  # no step line for 4 min => starved/stuck
 
@@ -207,6 +213,11 @@ def _watch_logs(app_id: str, needle: str, timeout_s: int) -> list[str]:
     return all_lines
 
 
+def smoke_trainer_extra() -> list[str]:
+    """Trainer flags the smoke adds so its cadence matches a real run."""
+    return [f"--checkpoint-every={REAL_CHECKPOINT_EVERY}"]
+
+
 def build_parser() -> argparse.ArgumentParser:
     """CLI surface for the fire-and-forget launcher (tested offline)."""
     ap = argparse.ArgumentParser(description=__doc__)
@@ -216,7 +227,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--push-to-hub", default="",
-                    help="model repo id to push the checkpoint to")
+                    help="model repo id to push the checkpoint to — the Modal "
+                         "app pushes AFTER ONNX export + parity and only when "
+                         "the selection gate was met (never from a smoke, a "
+                         "nothing-trained resume, or an ungated run)")
     ap.add_argument("--no-eval-test", action="store_true")
     ap.add_argument("--smoke", action="store_true",
                     help="pre-flight: 24-micro-batch run, watch step cadence, "
@@ -228,10 +242,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="launch even when the estimated cost exceeds the "
                          "budget ceiling (or no smoke metrics are on file)")
     ap.add_argument("--resume", default="",
-                    help="checkpoint bundle dir on the volume (e.g. "
-                         "/checkpoints/latest) to continue a cut run from — "
-                         "the trainer resumes at the next epoch; pass the "
-                         "ORIGINAL --epochs (the trainer continues to it)")
+                    help="checkpoint bundle dir on the volume to continue a cut "
+                         "run from — normally /checkpoints/runs/<run-id> (a "
+                         "cut run lives there; latest/ only ever holds the "
+                         "last SUCCESSFUL run, so resuming it re-trains "
+                         "nothing). The trainer resumes at the next epoch; "
+                         "pass the ORIGINAL --epochs (the trainer continues "
+                         "to it). A resume that is already at/after --epochs "
+                         "trains nothing and is not exported/promoted/pushed")
     ap.add_argument("--export-onnx", action=argparse.BooleanOptionalAction,
                     default=True,
                     help="after a successful non-smoke train, export ONNX "
@@ -305,7 +323,8 @@ if __name__ == "__main__":
         max_steps=SMOKE_STEPS if args.smoke else 0,
         log_every=SMOKE_LOG_EVERY if args.smoke else 0,
         resume="" if args.smoke else args.resume,
-        trainer_extra=None if args.smoke else args.trainer_extra,
+        trainer_extra=(smoke_trainer_extra() if args.smoke
+                       else args.trainer_extra),
         export_onnx=False if args.smoke else args.export_onnx,
     )
     print(f"spawned training call: {call.object_id}")

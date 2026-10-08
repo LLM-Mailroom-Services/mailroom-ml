@@ -388,6 +388,11 @@ def _analyst_insights(report: dict, summary: dict | None) -> list[str]:
 
 
 def _per_doc_table(report: dict) -> list[str]:
+    """Return Markdown lines for per-document scores, or [] when absent.
+
+    Above ``PER_DOC_FULL_MAX``, show only doc-type or subclass errors.
+    Display at most 500 selected rows and note any remaining rows.
+    """
     per_doc = report.get("per_doc") or []
     n = len(per_doc)
     if not per_doc:
@@ -421,6 +426,9 @@ def _per_doc_table(report: dict) -> list[str]:
 
 
 def _reproduce_test(ctx: ReportContext, eval_path: str) -> list[str]:
+    """Return Markdown commands to fit validation thresholds and reproduce the
+    held-out test evaluation, gate check, and report; no commands are run.
+    """
     ckpt = ctx.checkpoint or f"data/modernbert_training/runs/{ctx.run_tag}/latest"
     return [
         "## Reproduce",
@@ -592,6 +600,13 @@ def render_heldout_plus_report(
     baseline: dict | None = None,
     eval_json_name: str = "",
 ) -> str:
+    """Render held-out-plus monitoring Markdown from an evaluation report.
+
+    ``plus_filenames`` separates extension rows from canonical rows in
+    ``per_doc`` for slice metrics. ``baseline`` is currently unused; the
+    canonical slice is taken from ``report``. Return the text without writing
+    files or running evaluations.
+    """
     run_tag = ctx.run_tag
     per_doc = report.get("per_doc") or []
     canon_rows = [r for r in per_doc if str(r.get("filename")) not in plus_filenames]
@@ -789,6 +804,10 @@ def render_compare_report(
     path_b: str,
     title: str = "",
 ) -> str:
+    """Render comparison metrics, supplied bootstrap intervals, and reproduction
+    commands as Markdown. ``path_a`` and ``path_b`` label the input artifacts;
+    this function does not read them or rerun the comparison.
+    """
     lines = [
         title or f"# compare_runs: {label_a} vs {label_b}",
         "",

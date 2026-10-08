@@ -280,18 +280,23 @@ def train(
       before GPU minutes are spent, and is exported as TRAINING_DATA_REVISION
       for any training-layer revision support.
     - checkpoint: the trainer writes to /checkpoints/runs/<run-id>/ (rollback
-      archive); on success (+ ONNX parity) it is promoted to
+      archive); on success (after ONNX parity when enabled) it is promoted to
       /checkpoints/latest, then the Volume is committed once.
     - hub push: NOT done by the trainer.  After export + parity (and promote),
       ``push_to_hub`` uploads the run iff the selection gate was met; an
-      ungated run (selected_epoch == 0) or a resume that trained nothing is
-      never pushed or promoted.
+      ungated run (selected_epoch == 0) is never pushed but can be promoted.
+      A resume that trained nothing is neither pushed nor promoted.
     - resume: pass a bundle dir (a cut run lives in /checkpoints/runs/<run-id>;
       latest/ only holds the last SUCCESSFUL run) to continue it from its last
       checkpoint instead of starting over.  A resume already at/after
       ``epochs`` trains nothing: no export, promote or push.
-    - smoke (max_steps > 0): writes to /checkpoints/smoke-<ts> so the cadence
+    - smoke (nonzero max_steps): writes to /checkpoints/smoke-<ts> so the cadence
       probe never clobbers the real latest/ pointer.
+
+    Returns run paths, settings, promotion/upload flags, and a skip reason.
+    Missing credentials, a mismatched data pin, or failed trainer/export/parity
+    commands raise ``RuntimeError``. Hub, artifact, and Volume errors propagate;
+    a failed upload can occur after promotion and the Volume commit.
     """
     from huggingface_hub import HfApi
 

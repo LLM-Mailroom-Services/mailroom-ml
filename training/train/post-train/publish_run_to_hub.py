@@ -163,6 +163,7 @@ def default_release_tag(checkpoint: Path) -> str:
 
 
 def _sha256_file(path: Path) -> str:
+    """Return the file contents' SHA-256 hex digest; file I/O errors propagate."""
     h = hashlib.sha256()
     with path.open("rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
@@ -176,6 +177,10 @@ def artifact_mismatch(report: dict, checkpoint: Path) -> str | None:
     ``eval_modernbert`` records ``artifact_sha`` = sha256 of the evaluated
     ``model.safetensors`` (pytorch bundles).  Publishing an eval of another
     epoch / run next to these weights would ship a model card that lies.
+
+    Returns None when the hash is absent, the eval is not PyTorch, or the
+    checkpoint has no ``model.safetensors`` file; these cases are unchecked.
+    Errors reading an existing weights file propagate.
     """
     want = report.get("artifact_sha")
     weights = checkpoint / "model.safetensors"
@@ -189,7 +194,7 @@ def artifact_mismatch(report: dict, checkpoint: Path) -> str | None:
 
 
 def _is_missing_entry(exc: Exception) -> bool:
-    """True only for "the repo has no README yet" (404), never other errors."""
+    """Return whether the error is a Hub missing-entry error or has HTTP status 404."""
     try:
         from huggingface_hub.errors import EntryNotFoundError
     except ImportError:  # older huggingface_hub
@@ -201,6 +206,7 @@ def _is_missing_entry(exc: Exception) -> bool:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser for checkpoint publication and upload-plan validation."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", type=Path, required=True,
                     help="directory with model weights + summary.json")
@@ -249,6 +255,17 @@ def _token_present() -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Validate a release and optionally upload its checkpoint, eval, and model card.
+
+    ``argv=None`` reads process arguments. Returns 2 for missing input paths,
+    1 for a refused gate check or artifact mismatch, and 0 for successful
+    uploads or a valid dry run. Missing credentials also select a dry run;
+    gate and artifact checks still apply.
+
+    File-read, JSON-decoding, and Hub upload errors propagate. A missing
+    README starts a new model card; other download errors propagate.
+    Tag creation failures are caught after uploads and still return 0.
+    """
     args = build_parser().parse_args(argv)
     ckpt = args.checkpoint.resolve()
     eval_path = args.eval_json.resolve()
@@ -284,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     mismatch = artifact_mismatch(report, ckpt)
 
     def _commit_msg() -> str:
+        """Describe the release using the current gate result for the upload commit."""
         return (
             f"Release {release_tag} ({released_at}): ModernBERT classifier "
             f"run_id={run_id} M9a gates={'PASS' if gates_ok else 'FAIL'}"

@@ -136,6 +136,7 @@ def load_corpus_rows() -> list[dict]:
     ``DOC_TYPES`` — a mismatch raises ``ValueError`` with the observed
     counts rather than silently training on a drifted snapshot.  A missing
     local snapshot raises ``FileNotFoundError`` naming the fetch path.
+    A missing or null joined ``doc_text`` also raises ``ValueError``.
     """
     marker = _PARQUET_DIR / "ground_truth" / "train"
     if not (marker.exists() and list(marker.glob("*.parquet"))):
@@ -255,8 +256,8 @@ def dedup_by_sha(df: pd.DataFrame, pool_df: pd.DataFrame) -> pd.DataFrame:
     """Drop ``df`` rows whose exact ``content_sha256`` already exists in ``pool_df``.
 
     The filename-set guard: a ``df`` row is a leak duplicate only when its
-    sha matches a ``pool_df`` row under a DIFFERENT filename.  A match with
-    the same filename is the same document identity (e.g. a re-export of the
+    sha exists in ``pool_df`` but its filename is absent from all pool rows
+    with that sha. A match with the same filename is the same document identity (e.g. a re-export of the
     pool row) — kept, not deduped.  Rows with an empty ``content_sha256``
     are opaque and kept (no silent drops on missing hashes).
 
@@ -277,6 +278,7 @@ def dedup_by_sha(df: pd.DataFrame, pool_df: pd.DataFrame) -> pd.DataFrame:
 
     def _is_pool_duplicate(row: pd.Series) -> bool:
         # NaN/None must read as "no hash" (kept), never as the string "nan".
+        """Return whether a known hash has no matching filename in the pool."""
         sha = clean_sha256(row["content_sha256"])
         if not sha:
             return False
@@ -299,7 +301,7 @@ def leakage_audit(df: pd.DataFrame) -> dict[str, Any]:
       ``folded_groups`` (case/separator-folded near-dups), and up to 3
       exemplar groups (title, row count, filenames);
     - ``per_class_val_share`` — validation share among non-test rows per
-      doc_type (0.0 when a class has no train+val rows);
+      doc_type (classes with no train+validation rows are omitted);
     - ``content_sha256_across_splits`` — sha -> ``{"splits", "filenames"}``
       for every non-empty ``content_sha256`` present in more than one split
       (identical CONTENT straddling splits, even under different filenames).
@@ -444,7 +446,9 @@ def build_documents(rows: list[dict]) -> pd.DataFrame:
     Columns (contract): ``filename, document_id, content_sha256,
     source_revision, title, doc_text, doc_type, subclass, corpus_split,
     token_estimate`` + ``split``.  Corpus test rows are held out entirely;
-    corpus train rows get the seeded 90/10 stratified split.
+    corpus train rows get the seeded 90/10 stratified split. Titles and body
+    text are intake-normalized; source content hashes are preserved and
+    ``token_estimate`` estimates the normalized body length.
     """
     recs = []
     for r in rows:
@@ -528,6 +532,9 @@ def stage(stage_dir: Path, rows: list[dict] | None = None,
     ``parquet/`` namespace is the server's own export format — uploading
     there made the server flatten every file into one broken ``default``
     config.)
+
+    ``rows=None`` loads the pinned local corpus. ``with_windows=False``
+    omits windows and removes any existing ``data/windows`` tree.
 
     Returns a stats dict (``counts`` per config/split + ``manifest_sha256``)
     for the publish CLI.
@@ -691,11 +698,16 @@ def verify_stage(stage_dir: Path) -> dict:
     windows checks, but a present windows dir must carry train+validation,
     never ``test``); the ``split`` column matches its directory; doc_type is
     within the 5 committed classes and every subclass within its class
-    vocabulary (a bad doc_type is reported, never a crash); NO filename AND
-    no non-empty ``content_sha256`` shared between an enrichment row and
-    another split (canonical-only straddles are reported in ``warnings``).  Every
-    shard of a split is read and counted.  Returns ``ok``,
-    ``problems``, ``rows``, ``splits`` and per-config ``counts``.
+    vocabulary (a bad doc_type is reported, never a crash); no duplicate
+    document filenames, including within a split; no filename-derived
+    titles; and no non-empty ``content_sha256`` shared between an enrichment
+    row and another split (canonical-only hash straddles are reported in
+    ``warnings``). Every shard of a split is read and counted. Returns
+    ``ok``, ``problems``, ``rows``, ``splits``, per-config ``counts``,
+    ``leak_audit``, ``warnings`` and ``content_sha256_across_splits``.
+
+    Unreadable parquet and missing required columns propagate errors; a
+    tree with no document shards raises ``ValueError``.
     """
 
     problems: list[str] = []

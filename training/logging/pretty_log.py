@@ -1200,6 +1200,12 @@ def test_steps_path_for_watch(
     jsonl_path: Path | None,
     log_path: Path | None,
 ) -> Path | None:
+    """Find an existing test_steps.jsonl for the watched run, or return ``None``.
+
+    Prefers a sibling of latest/train_steps.jsonl, then searches by run tag
+    under the current directory and repository root. A .log filename supplies
+    the tag when ``run_tag`` is absent.
+    """
     if jsonl_path and jsonl_path.is_file():
         if jsonl_path.name == "train_steps.jsonl" and jsonl_path.parent.name == "latest":
             candidate = jsonl_path.parent / "test_steps.jsonl"
@@ -1300,6 +1306,12 @@ def summary_path_for_watch(
     jsonl_path: Path | None,
     log_path: Path | None,
 ) -> Path | None:
+    """Find an existing summary.json for the watched run, or return ``None``.
+
+    Prefers a sibling of latest/train_steps.jsonl, then searches by run tag
+    under the current directory and repository root. A .log filename supplies
+    the tag when ``run_tag`` is absent.
+    """
     if jsonl_path and jsonl_path.is_file():
         if jsonl_path.name == "train_steps.jsonl" and jsonl_path.parent.name == "latest":
             candidate = jsonl_path.parent / "summary.json"
@@ -1318,6 +1330,10 @@ def summary_path_for_watch(
 
 
 def eval_report_path_for_watch(run_tag: str | None) -> Path | None:
+    """Find reports/eval_<run_tag>.json under the current directory or repo root.
+
+    Returns ``None`` when the tag is absent or neither candidate exists.
+    """
     if not run_tag:
         return None
     for base in (Path.cwd(), Path(__file__).resolve().parents[2]):
@@ -2079,6 +2095,12 @@ def follow_live(
     on: bool,
     interval: float = 2.0,
 ) -> int:
+    """Refresh the run dashboard until SIGINT or SIGTERM, then return 0.
+
+    ``interval`` is the refresh delay in seconds; ``on`` enables the alternate
+    terminal screen and styling. Restores signal handlers and terminal state
+    when the refresh loop exits.
+    """
     tick = 0
     jsonl_pos = jsonl_path.stat().st_size if jsonl_path and jsonl_path.is_file() else 0
     epoch_pos = epoch_path.stat().st_size if epoch_path and epoch_path.is_file() else 0

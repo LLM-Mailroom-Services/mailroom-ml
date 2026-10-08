@@ -67,6 +67,9 @@ def atomic_write_text(path: Path, text: str) -> None:
     A crash/interrupt mid-write must never leave a truncated sidecar
     (``labels.json`` / ``manifest.txt`` ...) where a good one used to be: the
     bytes land in a sibling temp file first and replace the target atomically.
+
+    The parent directory must exist. Encoding and filesystem errors propagate;
+    temporary-file cleanup is attempted on completion or failure.
     """
     path = Path(path)
     tmp = path.with_name(f".{path.name}.tmp")

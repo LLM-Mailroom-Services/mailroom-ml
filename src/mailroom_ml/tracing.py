@@ -204,7 +204,7 @@ def build_ml_triage_span(
 
 
 def record_failure(span: dict[str, Any], exc: BaseException, *, where: str) -> dict[str, Any]:
-    """Attach a machine-readable failure record to a span (fail-open, D10).
+    """Return a copy of the span with a machine-readable failure record (D10).
 
     The trace keeps the exception type + message, the span-owner location
     and (when the exception was raised) the innermost stack frame of the

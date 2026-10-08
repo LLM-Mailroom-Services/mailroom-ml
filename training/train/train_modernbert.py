@@ -326,11 +326,17 @@ def _label_id(head: dict, label: str) -> int:
 
 def head_loss(model, batch, heads, device,
               cfg: LossConfig | None = None) -> tuple[torch.Tensor, dict]:
-    """doc_type CE on every row + subclass CE on each class's own rows.
+    """doc_type CE on scorable rows + subclass CE on each class's own rows.
 
     Subclass heads are taken from the ``heads`` config (built from
     ``labels.json`` — the data-driven single source of truth), so each class
     head contributes only through its own rows: 0 contribution elsewhere.
+
+    Targets equal to ``CE_IGNORE_INDEX`` are excluded from cross-entropy.
+    Subclass heads with no scorable rows contribute nothing; if none
+    contribute, the loss is the unscaled doc_type loss. Returns
+    ``(loss, logits_by_head)``; logit adjustment affects the loss only,
+    so the returned logits are the raw model outputs.
     """
     cfg = cfg or LossConfig()
     logits = model(batch["input_ids"], batch["attention_mask"])
@@ -414,6 +420,7 @@ def _prefetch_batches(it, depth: int):
     failure: list[BaseException] = []
 
     def _worker() -> None:
+        """Queue batches and retain producer failures for the consumer to raise."""
         try:
             for batch in it:
                 q.put(batch)
@@ -456,8 +463,10 @@ def make_batches(rows, batch_size: int, shuffle: bool, heads, device,
     the variable-length sdpa + gradient-checkpointing path hung mid-epoch-2
     on the L4 (2026-09-19). Fixed padding is the proven-stable config.
 
-    ``shuffle_rng`` (see ``_epoch_shuffle_rng``) makes the permutation a pure
-    function of (seed, epoch); without it the global RNG is used.
+    When shuffling, ``shuffle_rng`` supplies the random stream; callers can
+    use ``_epoch_shuffle_rng`` for a reproducible stream per epoch. Without
+    it, the global RNG is used. Collation errors, including ``KeyError`` for
+    labels absent from a head map, propagate even when prefetching.
     """
     idx = list(range(len(rows)))
     if shuffle:
@@ -637,6 +646,14 @@ def train_epoch(model, batches, optimizer, scheduler, heads, device,
       epoch (``step``), never on the post-``skip_micro`` count ``n`` — a
       mid-epoch resume whose skip is not a multiple of ``grad_accum`` used
       to flush at the wrong place (mis-sized accumulation windows).
+
+    ``skip_micro`` skips already processed batches; ``step_limit=0`` means
+    unlimited, and a positive limit counts newly processed batches. The
+    returned counts exclude skipped batches. ``on_micro_step`` receives the
+    absolute one-based micro-batch index, optimizer steps taken in this call,
+    and the unscaled loss; it runs before any trailing partial step.
+    Raises ``RuntimeError`` on non-finite loss; batch producer and callback
+    errors propagate.
     """
     cfg = loss_cfg or LossConfig()
     model.train()
@@ -718,6 +735,11 @@ def evaluate(model, batches, heads, maps, device,
     temperature fitting so the selection gate can use the CALIBRATED ECE
     (the old gate compared raw T=1 ECE, which no overconfident head can
     pass — the gate was structurally unreachable).
+
+    Routing-only targets are omitted from the per-head arrays and metrics.
+    ``subclass_doc_acc`` is conditional on a correct doc_type prediction and
+    a scorable subclass target. The returned head dictionaries contain lists
+    of CPU tensors, one per batch. Leaves the model in evaluation mode.
     """
     cfg = loss_cfg or LossConfig()
     model.eval()
@@ -804,7 +826,10 @@ def _drop_ignored(logits: torch.Tensor,
 
 def _ece_from_probs(probs: torch.Tensor, labels: torch.Tensor,
                     n_bins: int = 10) -> float:
-    """ECE binning over already-softmaxed probabilities (shared core)."""
+    """Return equal-width-bin ECE from class probabilities, ignoring routing-only rows.
+
+    Bins include their lower boundary; confidence 1 belongs to the final
+    bin. Returns 0.0 when no scorable rows remain."""
     probs, labels = _drop_ignored(probs, labels)
     conf, pred = probs.max(-1)
     correct = (pred == labels).float()
@@ -836,6 +861,12 @@ def ece_calibrated(logits: torch.Tensor, labels: torch.Tensor,
 
 def macro_f1(logits: torch.Tensor, labels: torch.Tensor,
              observed_only: bool = False) -> float:
+    """Return mean per-class F1 after excluding ``CE_IGNORE_INDEX`` targets.
+
+    By default, average over every logit column, including zero-support
+    classes. ``observed_only`` restricts the mean to classes present in the
+    remaining targets. Undefined class scores and an empty mean return 0.0.
+    """
     logits, labels = _drop_ignored(logits, labels)
     preds = logits.argmax(-1)
     n_classes = logits.shape[1]
@@ -959,7 +990,10 @@ def _select_epoch(events: list[dict], subclass_heads: list[str], *,
 
 
 def fit_temperature(logits: torch.Tensor, labels: torch.Tensor) -> float:
-    """Platt-style temperature scaling: T minimizing NLL on validation."""
+    """Fit a temperature in [0.05, 10.0] by minimizing validation NLL.
+
+    Excludes ``CE_IGNORE_INDEX`` targets. Inputs must be CPU tensors for
+    NumPy conversion; callers handle insufficient scorable validation data."""
     from scipy.optimize import minimize_scalar
 
     logits, labels = _drop_ignored(logits.detach(), labels)
@@ -1216,7 +1250,7 @@ def _scheduler_plan(n_rows: int, batch_size: int, grad_accum: int,
 def _apply_subclass_support_threshold(train_rows: list[dict],
                                       val_rows: list[dict], maps: dict,
                                       min_rows: int) -> tuple[list, list, dict, dict]:
-    """Drop/merge subclass classes with < ``min_rows`` train windows.
+    """Drop/merge observed subclass classes with < ``min_rows`` train windows.
 
     Data-side diagnosis (2026-09-20): contract/correspondence heads carry
     3-doc classes and val cells of n=1 — macro-F1 there is coin-flip noise.
@@ -1235,6 +1269,11 @@ def _apply_subclass_support_threshold(train_rows: list[dict],
     skips them and every metric/temperature fit must tolerate
     ``CE_IGNORE_INDEX`` labels (``_drop_ignored``).  Dropping the rows
     instead would also erase their doc_type signal.
+
+    Remapping mutates row dictionaries and updates ``maps`` in place. Returns
+    ``(train_rows, val_rows, maps, info)``; dropping creates filtered lists.
+    ``other`` and classes absent from training are never removal sources.
+    A nonpositive threshold returns the inputs unchanged.
     """
     info: dict = {"remapped": {}, "dropped": {}, "dropped_val_rows": 0}
     if min_rows <= 0:
@@ -1342,6 +1381,7 @@ def _subclass_label(heads: dict, cls: str, subclass: str) -> int | None:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser for training, resuming, evaluation, and optional Hub upload."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--data", default=DEFAULT_DATA,
                     help="HF repo id or local stage dir")
@@ -1485,7 +1525,8 @@ def _fit_temperatures_from_logits(logits_by_head: dict[str, list],
     """Per-head temperature scaling on validation logits (plan §8).
 
     Fits from the logits already collected by ``evaluate`` — no second
-    forward pass. Heads with < 2 rows or < 2 unique labels stay at T = 1.0
+    forward pass. After excluding ``CE_IGNORE_INDEX`` targets, heads with
+    < 2 rows or < 2 unique labels stay at T = 1.0
     (uncalibratable).
     """
     temps: dict[str, float] = {}
@@ -1651,6 +1692,8 @@ def _apply_backbone_freeze(model, epoch: int, freeze_epochs: int) -> bool | None
     an ``epoch == N + 1`` edge): a ``--resume`` that starts past ``N + 1``
     never saw the edge and trained with a frozen backbone forever.  Returns
     the new frozen state when it CHANGED, else None.
+
+    A nonpositive ``freeze_epochs`` leaves existing gradient flags unchanged.
     """
     if freeze_epochs <= 0:
         return None
@@ -1696,6 +1739,9 @@ def _stage_input_construction(data: str) -> str:
     prebuilt parquet.  The published pin (and every local stage the repo
     builds) is v1; a stage dir may declare otherwise via an
     ``input_construction`` key in its ``dataset_info.json``.
+
+    Missing declarations and caught file-read or JSON-decoding errors fall
+    back to ``INPUT_CONSTRUCTION_VERSION``.
     """
     local = Path(data)
     info = local / "dataset_info.json"
@@ -1716,6 +1762,8 @@ def _check_input_construction(requested: str, stage: str) -> None:
     ``--input-construction`` used to be recorded in ``summary.json`` and
     nothing else, so ``--input-construction v2`` trained on v1 windows while
     inference then decorated v2 prefixes for a v1-trained model.
+
+    Raises ``SystemExit`` when the requested and staged versions differ.
     """
     if requested != stage:
         raise SystemExit(
@@ -1728,6 +1776,12 @@ def _check_input_construction(requested: str, stage: str) -> None:
 
 def _push_to_hub(output: Path, repo: str, *, epochs: int,
                  selected_epoch: int) -> None:
+    """Create the model repository if needed and upload the checkpoint folder.
+
+    Excludes ``HUB_IGNORE_PATTERNS``; the caller enforces selection policy.
+    ``epochs`` and ``selected_epoch`` annotate the upload commit message.
+    Hub API failures propagate.
+    """
     from huggingface_hub import HfApi
 
     api = HfApi()
@@ -1741,6 +1795,17 @@ def _push_to_hub(output: Path, repo: str, *, epochs: int,
 
 
 def main() -> int:
+    """Run CLI training or resume, write checkpoint artifacts, and return an exit code.
+
+    Optionally evaluates held-out documents and uploads to the Hub. Promotes
+    a selected epoch before test evaluation when its archive is available;
+    otherwise retains the final weights. Returns 3 when an ungated upload
+    is refused and 0 on normal completion.
+
+    Raises ``SystemExit`` for incompatible input construction or missing
+    required resume files. Training, data/model loading, and artifact I/O
+    errors propagate.
+    """
     args = build_parser().parse_args()
     # fail before any model/data load (and any GPU minute)
     _check_input_construction(args.input_construction,
@@ -1943,6 +2008,12 @@ def main() -> int:
         # ``step_in_epoch`` is the ABSOLUTE micro-batch index in the epoch
         # (what a later resume skips); ``skipped`` of those were trained in a
         # previous process and are already inside ``steps_done_micro``.
+        """Save resumable state when the absolute micro-batch index reaches the cadence.
+
+        ``n_opt`` counts optimizer steps in this call to ``train_epoch``;
+        ``skipped`` counts micro-batches already included in the resumed totals.
+        Checkpoint write errors propagate.
+        """
         nonlocal last_manifest_ckpt
         if checkpoint_every <= 0:
             return
@@ -1990,6 +2061,7 @@ def main() -> int:
 
         def _on_micro(step_in_epoch: int, n_opt_in_epoch: int,
                       _loss: float, _skipped: int = epoch_skip) -> None:
+            """Check the checkpoint cadence using the epoch's captured resume skip count."""
             _maybe_mid_epoch_checkpoint(step_in_epoch, n_opt_in_epoch,
                                         _skipped)
 

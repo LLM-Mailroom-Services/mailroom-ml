@@ -165,8 +165,8 @@ def _load_support_counts(model_dir: Path) -> dict[str, dict[str, int]]:
     """Per-head authentic train counts (``train_counts.json`` sidecar).
 
     The ROUTE_MIN_AUTHENTIC_SUPPORT gate (fast path requires >= 5 real
-    training rows per label) reads this sidecar; absent -> empty map -> the
-    gate fails open to the LLM path (support unknown is not a fast path).
+    training rows per label) reads this sidecar; absent, unreadable, or
+    non-object JSON -> empty map -> the gate fails open to the LLM path (support unknown is not a fast path).
     """
     p = model_dir / "train_counts.json"
     if not p.is_file():
@@ -230,6 +230,13 @@ def _load_tokenizer(model_dir: Path):
 
 
 def _resolve_pad_id(model_dir: Path, tok) -> int | None:
+    """Resolve padding from tokenizer_config.json, then config.json.
+
+    Accept a numeric ID, token string, or AddedToken ``content`` field; return
+    None if neither file supplies a usable token. Missing, unreadable, or
+    invalid JSON files are skipped. A parsed non-object configuration raises
+    AttributeError, and tokenizer lookup errors propagate.
+    """
     for name in ("tokenizer_config.json", "config.json"):
         p = model_dir / name
         if not p.is_file():
@@ -317,7 +324,19 @@ def _pytorch_predict(model: Any, head_modules: dict[str, Any], device: Any):
 
 def load_bundle(model_dir: str | Path | None = None,
                 *, prefer_onnx: bool = True) -> ModelBundle:
-    """Load one artifact bundle; raises BundleUnavailable/BundleLoadError."""
+    """Load a resolved artifact bundle and its serving sidecars.
+
+    ``ML_MODEL_DIR`` takes precedence over ``model_dir`` and artifact defaults.
+    With ``prefer_onnx=True``, prefer an available ONNX graph (fp32 before
+    int8); otherwise require a PyTorch checkpoint. A failed ONNX load does
+    not fall back to PyTorch.
+
+    Raise ``BundleUnavailable`` when no directory with labels resolves and
+    ``BundleLoadError`` for label, tokenizer, model, or rejected OOD probe
+    loads. Missing or unreadable optional sidecars use their loader defaults;
+    invalid OOD direction or non-positive/NaN temperature becomes
+    ``BundleLoadError``. Other malformed OOD values can propagate
+    ``TypeError`` from numeric conversion."""
     resolved = resolve_model_dir(model_dir)
     if resolved is None:
         raise BundleUnavailable(
@@ -463,7 +482,9 @@ def predict(bundle: ModelBundle,
 
 def _load_input_construction(mdir: Path) -> str:
     """Read the construction version from summary.json (explicit key or
-    hyperparameters).  Missing sidecar -> v1 (published Hub pin)."""
+    hyperparameters). Missing, unreadable, or non-object sidecars, or an
+    absent/empty version, use ``INPUT_CONSTRUCTION_VERSION`` (v1 at the
+    published Hub pin)."""
     summary = mdir / "summary.json"
     if not summary.is_file():
         return INPUT_CONSTRUCTION_VERSION
@@ -580,6 +601,14 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
 
     Returns the composite route score S = p_calibrated × agreement × margin
     (plan D4) with agreement/margin/runner-up and per-head calibration.
+
+    ``temperatures=None`` uses bundle calibration; an explicit mapping
+    replaces it, with 1.0 for omitted heads. ``max_length`` limits each
+    encoded window including special tokens. Reported confidences, agreement,
+    margin, and score are rounded to four decimals; ``gate_values`` retains
+    unrounded values for routing. Raise ``ValueError`` for an empty window
+    list or an encoded window exceeding the limit; encoding, prediction, and
+    calibration errors propagate.
     """
     if not window_texts:
         raise ValueError("classify_windows needs >= 1 window")
@@ -784,16 +813,17 @@ def classify_document_default(
     The graph lane (``agents/bert_intake.py``) calls ``classify_document(
     doc_text, filename=...)`` — that signature never existed; the real one
     requires a loaded ``ModelBundle`` + title. This seam is the single
-    adapter: it resolves the DEFAULT bundle (env ``ML_MODEL_DIR`` > caller
-    override > artifact defaults, cached per process), derives the title
-    from ``filename``'s stem, and forwards to :func:`classify_document`.
+    adapter: it resolves the DEFAULT bundle (env ``ML_MODEL_DIR`` >
+    artifact defaults, cached per process), derives the title
+    from ``filename``'s stem (``"untitled"`` when absent), and forwards to
+    :func:`classify_document`.
 
-    Fail-open by construction, same contract as the full entrypoint: a
-    missing/unloadable bundle NEVER raises — the result carries a failure
+    ``BundleUnavailable`` and ``BundleLoadError`` become a failure result
     (``route="llm"``) with the machine-readable reason the lane's
     missing-model markers understand (``no_model`` / ``bundle_missing`` /
-    ``model_missing``). Any classifier exception is likewise wrapped inside
-    ``classify_document`` itself.
+    ``model_missing``). Other bundle-loading errors propagate.
+    Classification failures caught by ``classify_document`` are returned
+    through its failure result.
     """
     global _DEFAULT_BUNDLE_CACHE
     if _DEFAULT_BUNDLE_CACHE is None:
@@ -867,17 +897,26 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
     """Full fast-path inference on one document (windows + merge + gate).
 
     Steps (plan §4): context-fit gate (chars/tokens — oversize routes LLM,
-    never truncate), windowing (title + slide, 512 overlap; tests may hand
-    prebuilt ``window_texts`` to skip the transformers windower), merge,
-    composite score, gate.  Any ML exception is wrapped into the result as a
-    failure (route "llm") — fail-open, never a raise to the caller.
+    never truncate), windowing (title + slide, ``overlap`` tokens; callers may
+    supply prebuilt body ``window_texts`` to skip the transformers windower), merge,
+    composite score, gate. Exceptions during windowing, prediction, and gating
+    become a failure result (``route="llm"``, ``reason="bert_error"``). Bundle access and
+    threshold resolution occur before that exception handler.
 
     The fast path requires ALL of: supported doc_type (not ``unknown``),
-    calibrated doc_type confidence >= ``ROUTE_DOC_CONFIDENCE``,
-    subclass confidence >= ``ROUTE_SUBCLASS_CONFIDENCE`` when a subclass
-    label is predicted (``subclass`` non-null), window agreement >=
-    ``ROUTE_WINDOW_AGREEMENT``, margin >= ``ROUTE_MARGIN``, authentic support
-    >= ``ROUTE_MIN_AUTHENTIC_SUPPORT``, no OOD flag, no guard failures.
+    calibrated doc_type confidence >= ``doc_confidence``, subclass confidence
+    >= ``subclass_confidence`` when a subclass label is predicted, window
+    agreement >= both ``window_agreement`` and ``agreement_gate``, margin
+    >= ``margin_gate``, and authentic subclass support >=
+    ``min_authentic_support`` when a subclass is predicted. Excluded heads,
+    unmapped/catch-all subclasses,
+    and an OOD flag route to the LLM. An absent OOD probe is reported but
+    does not itself block the fast path.
+
+    Confidence, agreement, and margin thresholds left as None use artifact
+    overlays, then config defaults; explicit values take precedence. Gates
+    use unrounded values. ``max_chars`` caps the whole document, while
+    ``max_tokens`` caps each decorated window including special tokens.
     """
     import traceback as _tb
 

@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> rep
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Invoke the heldout-plus report writer and return its process exit code.
+
+    Forwards a baseline only when its file exists. Process launch errors
+    propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--eval-json", type=Path, required=True)
     ap.add_argument("--baseline-json", type=Path, default=None)

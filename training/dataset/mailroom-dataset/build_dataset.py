@@ -214,6 +214,14 @@ byte-verifies every sidecar against the Hub after upload.
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Stage and verify training data, optionally publishing it to Hugging Face.
+
+    ``argv=None`` reads process arguments. ``--publish`` creates or updates
+    the public dataset and verifies uploaded bytes; ``--no-stage`` uses the
+    existing tree and refreshes its dataset metadata. Returns 0 on success,
+    1 on verification failure, or 2 for handled usage, missing-snapshot and
+    windowing errors. Other staging, verification and Hub errors propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--publish", action="store_true",
                     help="create the dataset repo + upload + verify (operator-only)")

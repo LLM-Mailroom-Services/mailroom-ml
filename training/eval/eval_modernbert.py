@@ -84,6 +84,7 @@ __all__ = [
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the evaluation CLI parser without parsing arguments or loading a model."""
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--checkpoint", default="",
                     help="artifact bundle dir (default: ML_MODEL_DIR env or "
@@ -204,7 +205,10 @@ HELDOUT_PLUS_DIRNAME = "heldout_plus_v1"
 
 
 def _heldout_plus_frame():
-    """heldout-plus v1 extension rows (canonical test stays untouched)."""
+    """Return the heldout-plus extension frame and the path it was loaded from.
+
+    Checks /root/data before the configured data directory. Raises
+    ``FileNotFoundError`` when neither file exists; parquet read errors propagate."""
     import pandas as pd
 
     candidates = [
@@ -227,7 +231,13 @@ THRESHOLD_FIT_REFUSED_SUBSETS = ("test", "all", "heldout-plus")
 
 
 def _load_eval_docs(stage: Path, subset: str):
-    """Load the eval document pool (test / validation / train / all / heldout-plus)."""
+    """Load the eval document pool (test / validation / train / all / heldout-plus).
+
+    Test and validation prefer staged parquet, falling back to the pinned
+    corpus. ``train`` includes train and validation; heldout-plus combines
+    canonical test with extension rows on their shared columns. Overlapping
+    filenames in that combination raise ``ValueError``. Missing extension,
+    download, and parquet errors propagate."""
     if subset in ("test", "validation"):
         for parts in (
             ("parquet", "documents", subset),
@@ -275,12 +285,12 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
                        max_length: int, selective_risk: bool = False,
                        doc_confidence: float | None = None,
                        ) -> dict:
-    """Run the classifier over the sampled held-out test documents.
+    """Evaluate the supplied document pool with stratified sampling.
 
     Per document: window (title + body), plurality-vote merge via
     ``classify_windows``, compare vs the document label.  Window-level
     calibration: per-window doc_type confidence/correctness across all
-    sampled windows feeds temperature fitting + ECE + (optionally) the
+    sampled windows feeds ECE + (optionally) the
     selective-risk sweep — same unit as the plan's calibration surface.
 
     Returns the report dict; ``recorded_gates`` are report-only (never
@@ -288,6 +298,15 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     doc_type being correct: a doc whose merged doc_type is ``llm_overflow``
     still contributes to its head's per-class ``support``, but records no
     ``(gt, pred)`` pair, so it is excluded from the macro-F1 denominator.
+
+    ``sample`` limits documents per doc_type; nonpositive values use all rows.
+    ``max_length`` is the window token budget. ``doc_confidence`` overrides the
+    artifact's routing threshold. ``fast_path_rate`` applies confidence,
+    agreement, margin, and available OOD checks, but omits production support,
+    catch-all, head-exclusion, and projection guards.
+
+    Tokenizer ``RuntimeError``/``OSError`` becomes ``SystemExit``. A merge
+    ``ValueError`` becomes an ``llm_overflow`` prediction; other errors propagate.
     """
     # fast_path_rate uses the production gate's CONFIDENCE thresholds
     # (classify_document): the artifact routing overlay (#25) when present,
@@ -808,6 +827,13 @@ def format_report(report: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Evaluate the selected pool, print its report, and return 0 on completion.
+
+    Optionally writes routing thresholds or invokes Markdown report generation.
+    Threshold fitting on pools containing test documents, bundle-loading
+    failures, and Markdown output without a run tag raise ``SystemExit``.
+    Data-loading, output-writing, and report subprocess errors propagate.
+    """
     args = build_parser().parse_args(argv)
     if (args.write_routing_thresholds is not None
             and args.subset in THRESHOLD_FIT_REFUSED_SUBSETS):

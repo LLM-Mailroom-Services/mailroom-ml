@@ -143,7 +143,13 @@ def compare_reports(
     seed: int = RANDOM_STATE,
     cohort: str = "",
 ) -> dict:
-    """Headline scalars + paired bootstrap where document IDs align."""
+    """Headline scalars + paired bootstrap where document IDs align.
+
+    Deltas are A minus B. Paired intervals and ``observed_diff`` use shared
+    filenames with the metric key present on both sides; headline deltas can
+    cover different populations. ``cohort`` filters pairs using A's window
+    counts and selects cohort doc_type accuracy/ECE when supplied. Without
+    shared filenames, returns headline comparisons without paired estimates."""
     idx_a = _per_doc_index(report_a)
     idx_b = _per_doc_index(report_b)
     shared = sorted(set(idx_a) & set(idx_b))
@@ -186,9 +192,11 @@ def compare_reports(
     def _both_have(key: str) -> bool:
         # a per-doc key must exist on BOTH sides (older eval JSONs lack
         # sc_correct / fast_path) — never index B on A's schema
+        """Return whether every shared document has the metric key in both reports."""
         return all(key in idx_a[k] and key in idx_b[k] for k in shared)
 
     def _pair(key: str) -> dict:
+        """Return a bootstrap interval and observed A-minus-B mean for shared documents."""
         xa = [1.0 if idx_a[k].get(key) else 0.0 for k in shared]
         xb = [1.0 if idx_b[k].get(key) else 0.0 for k in shared]
         out = paired_bootstrap(xa, xb, n_resamples=n_resamples, seed=seed)
@@ -229,6 +237,7 @@ def compare_reports(
 
 def format_markdown(cmp: dict, *, label_a: str = "A",
                     label_b: str = "B") -> str:
+    """Render comparison scalars, paired intervals, and per-head deltas as Markdown."""
     lines = [
         f"# compare_runs: {label_a} vs {label_b}",
         "",

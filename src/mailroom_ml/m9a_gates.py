@@ -49,6 +49,10 @@ def gate_status(actual: float | None, thr: float, how: str) -> str:
 def gates_all_met(report: dict) -> bool:
     # one rule for the boolean and the per-row display: a gate passes only
     # when gate_status says MET
+    """Return whether all four M9a gates meet their inclusive thresholds.
+
+    Missing, nonnumeric, or nonfinite metric values fail the gate.
+    """
     return all(gate_status(actual, thr, how) == "MET"
                for _name, actual, thr, how in m9a_gate_rows(report))
 

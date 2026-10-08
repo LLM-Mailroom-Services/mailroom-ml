@@ -186,6 +186,11 @@ def export_onnx(
     tokenizer files so the bundle is self-contained.  The serving sidecars
     (``SERVING_SIDECARS``: temperatures, summary, train_counts, ood_probe,
     routing_thresholds) are copied when present.
+
+    ``dummy_seq_len`` is the tracing input length in tokens; ``max_seq_len``
+    is recorded as metadata and does not constrain the exported dynamic axis.
+    Returns the output directory, head order, and ONNX file sizes in bytes.
+    Export, quantization, and file I/O errors propagate.
     """
     import torch
 

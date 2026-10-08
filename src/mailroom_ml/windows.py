@@ -142,9 +142,10 @@ def _slide_windows(tok, ids: list[int], *, body_budget: int, max_tokens: int,
     """Slide over ``ids`` so every token lands in some window (no truncation).
 
     Each chunk is ``body_budget`` ids wide (the room left AFTER the title /
-    tagged prefix and the 2 specials), then clamped and trimmed so the
-    DECORATED window fits ``max_tokens`` with specials.  The decode->re-encode
-    clamp and the tail trim can both shorten a chunk, so the next window
+    tagged prefix and the 2 specials), then clamped and trimmed toward the
+    ``max_tokens`` budget including specials. A window can remain over budget
+    when at most eight body tokens remain; the caller must validate its
+    length. The decode->re-encode clamp and the tail trim can both shorten a chunk, so the next window
     starts from the REAL covered end minus ``overlap`` (never from a nominal
     ``start + max_tokens``): the cut tail is re-covered, not dropped, and the
     overlap can never go negative.  Always advances >= 1 id, so it
@@ -203,6 +204,10 @@ def _window_document_v1(tok, title: str, doc_text: str,
     docs are unchanged (bar the 2-token boundary above); the first window of
     a long doc is the same, later windows start at different offsets.  A
     training-set rebuild with this windower needs a new pinned revision.
+
+    If the title leaves a body budget no greater than ``max(overlap, 0)``,
+    return the full text in one potentially over-context window for the
+    caller to reject. Tokenizer errors propagate.
     """
     full = f"{title}\n\n{doc_text}" if title else doc_text
     ids = tok(full, add_special_tokens=False)["input_ids"]
@@ -235,6 +240,10 @@ def _window_document_v2(tok, title: str, doc_text: str,
     Same coverage fix as v1: the single-window shortcut uses the
     with-specials budget and the slide follows the real body budget / covered
     end (see :func:`_window_document_v1`).
+
+    If the tagged prefix leaves a body budget no greater than
+    ``max(overlap, 0)``, return one full decorated window, even if it exceeds
+    the context limit. Tokenizer errors propagate.
     """
     ids = tok(doc_text, add_special_tokens=False)["input_ids"]
     full = decorate_window(title, doc_text, version="v2",

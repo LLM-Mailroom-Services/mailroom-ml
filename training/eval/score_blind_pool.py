@@ -61,6 +61,13 @@ def _read_pool(path: Path) -> pd.DataFrame:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Score a candidate pool and write parquet or JSONL with scoring status.
+
+    Per-row classifier errors are retained as unscored rows with zero scores.
+    Returns 2 for bundle-loading failure, 3 after writing a nonempty pool with
+    no scored rows, otherwise 0 (including an empty pool). Unsupported input
+    suffixes raise ``SystemExit``; pool read/write errors propagate.
+    """
     args = build_parser().parse_args(argv)
     try:
         bundle = load_bundle(args.checkpoint)

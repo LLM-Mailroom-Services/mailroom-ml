@@ -128,7 +128,9 @@ def _load_stage_docs(stage_dir: Path) -> pd.DataFrame:
 
     The stage is the source of truth for dedup, observed surfaces, caps and
     the leak audit: enrichment is measured against exactly what the trainer
-    consumes.  Missing tree -> loud error naming the build CLI.
+    consumes. A split with no parquet files raises ``FileNotFoundError``
+    naming the build CLI; parquet read errors propagate, and no remaining
+    canonical shards raises ``ValueError``.
     """
     frames = []
     for split in ("train", "validation", "test"):
@@ -523,8 +525,9 @@ def _write_parquet(df: pd.DataFrame, path: Path) -> None:
 
 def append_manifest_block(manifest_path: Path, block: str) -> None:
     """Append (or replace) the deterministic enrichment block in manifest.txt.
-    Re-running with identical inputs reproduces identical bytes (the block
-    is delimited and replaced in place; no timestamps)."""
+    Re-running with identical inputs reproduces identical bytes. An existing
+    start marker causes the entire suffix from that marker onward to be
+    replaced. File read and write errors propagate."""
     text = manifest_path.read_text(encoding="utf-8")
     block = f"\n{MANIFEST_START}\n{block.strip()}\n{MANIFEST_END}\n"
     if MANIFEST_START in text:
@@ -552,6 +555,15 @@ def render_report(canonical: pd.DataFrame, tier1_rows: pd.DataFrame | None,
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Assemble selected enrichment tiers into the staged training dataset.
+
+    ``argv=None`` reads process arguments. Dry runs report results without
+    stage writes; other runs write provenance, audit records and sidecars,
+    and replace enrichment shards when rows are adopted. Returns 0 on
+    success, 1 on failed stage verification, or 2 for handled input and
+    windowing errors. Windowing failures leave the stage untouched.
+    Other loading, assembly and write errors propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--stage", type=Path, default=cfg.STAGE_DIR)
     ap.add_argument("--tiers", default="1",

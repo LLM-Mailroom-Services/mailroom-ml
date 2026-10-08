@@ -93,11 +93,15 @@ def stratify_counts(docs) -> dict[str, int]:
 
 
 def duplicate_groups(docs) -> dict:
-    """Near-dup families via ``content_sha256`` (group_id discipline).
+    """Exact-hash duplicate families via ``content_sha256`` (group_id discipline).
 
     Returns ``{"n_groups": ..., "n_duplicate_rows": ..., "groups": [...]}``
     where each group lists its filenames.  A dup family must count once in
     cohort stats — the report consumer decides which member is canonical.
+
+    Missing, null, blank, and literal ``nan``/``none`` hashes are ignored.
+    ``n_duplicate_rows`` counts all rows in groups of at least two, including
+    each group's first member; a missing hash column yields no groups.
     """
     if "content_sha256" not in docs.columns:
         return {"n_groups": 0, "n_duplicate_rows": 0, "groups": []}

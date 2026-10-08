@@ -369,7 +369,7 @@ def _source_matched_cap(n_train: int, cap_mult: float) -> int:
 
 def _dedup_within_pool(records: list[dict[str, Any]]) -> tuple[
         list[dict[str, Any]], list[dict[str, str]]]:
-    """Within-pool dedup by content_sha256 — first-occurrence by filename.
+    """Within-pool dedup by stored normalized text — first-occurrence by filename.
 
     Rows are ordered by (filename, sha) so the first occurrence wins;
     duplicates are rejected with a reason, never silently dropped.
@@ -398,6 +398,8 @@ def _reject_filename_collisions(
     """Reject rows whose filename collides with a canonical row of DIFFERENT
     content (loud — never a silent rename).  Same-name same-sha rows are the
     same document identity and are kept (the dedup_by_sha discipline).
+    Matching stored normalized text also preserves the row despite a
+    different source hash.
     Canonical rows with an EMPTY hash are opaque (same rule as
     ``dedup_by_sha`` — no collision can be proven against them)."""
     by_fn: dict[str, set[str]] = {}
@@ -445,7 +447,9 @@ def _dedup_vs_canonical(
     deduping a corpus against itself but wrong here: keeping it double-counts
     the document in train and, when the canonical row sits in
     validation/test, leaks it across the split (#112 finding — CMS would have
-    leaked 74 val/test rows).
+    leaked 74 val/test rows). Both source hashes and hashes of stored
+    normalized text are compared. Returns the surviving rows and rejection
+    records.
     """
     canon_shas = set(canonical_docs["content_sha256"].map(clean_sha256)) - {""}
     # the corpus hashes SOURCE text while enrichment stores clerk-normalized
@@ -521,19 +525,24 @@ def assemble_enron_gt(
 
     Adopts ``ground_truth``-config rows that are not already in the canonical
     corpus (filename/sha-deduped).  Labels are exact GT
-    (``label_source="enron_gt"``, confidence 1.0); provenance is revision-
-    pinned.  Cap: ``cap_mult`` (default 2.0) x the current correspondence
-    train rows, cut loud when hit.  Subclass values are normalized through
+    (``label_source="enron_gt"``, confidence defaults to 1.0); provenance is
+    revision-pinned. The total class cap is ``cap_mult`` (default 2.0) times
+    the current correspondence train count. New rows are balanced across
+    subclasses and further limited to each subclass's canonical non-test
+    count; cuts are returned as rejection records. Subclass values are
+    normalized through
     the canonical correspondence surface; rows resolving outside the
     OBSERVED head are rejects (issue #75 posture — never a fabricated
     label).
 
-    ``lineage_cols``: ``None`` opts into the *weak-lineage* accept-all mode
+    ``lineage_cols``: ``None`` or an empty tuple opts into the *weak-lineage*
+    accept-all mode
     (every source-matched GT row, lineage marker ``enron_dedup_gt``).
     Necessary because the pinned enron pool exposes **no** ``aeslc_join``/
     ``llm_zero_shot`` column (#112 finding) — the plan §6.2 lineage filter
     cannot be evaluated at the pin.  A non-empty tuple that is entirely
-    absent still raises (corrupt/renamed input stays loud).
+    absent raises ``ValueError``, as do missing text or label columns in a
+    non-empty input.
     """
     if gt_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
@@ -657,15 +666,19 @@ def assemble_cuad_pool(
     canonical corpus by the common Tier-1 hygiene.
 
     **Cap policy:** contract had no tier entry, so the §6.2 source-matched
-    rule is reused — the pool may add at most ``cap_mult`` x the current
-    contract TRAIN rows in total (default 2.0 -> at most double the current
-    contract train mass).  Exceeding rows are cut loud with reason
+    rule is reused — new rows are limited to
+    ``max(0, round(cap_mult * n_train) - n_train)``, where ``n_train`` is the
+    current contract TRAIN count (default 2.0 doubles that count at most).
+    Exceeding rows are cut loud with reason
     ``cap_contract``.
 
     Titles are deliberately empty: CUAD's ``metadata.document_id`` is a
     filename-derived identifier that routinely names the family
     ("…Marketing Agreement"), which would leak the label into the model
     input (the 2026-09-20 leak-law).  Body-only windows only.
+
+    A non-empty pool missing ``id``, ``input`` or ``metadata`` raises
+    ``ValueError``. Invalid row content is returned in the rejection register.
     """
     if pool_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
@@ -746,7 +759,7 @@ _SEP_RE = re.compile(r"[_\-\s]+")
 
 def _fold_label_text(value: Any) -> str:
     """Lowercase with every ``_`` / ``-`` / whitespace run folded to ONE space,
-    so ``non_compete_no_solicit`` and ``Non-Compete / No-Solicit`` compare equal."""
+    so ``non_compete_no_solicit`` and ``Non-Compete No-Solicit`` compare equal."""
     return _SEP_RE.sub(" ", str(value).lower()).strip()
 
 
@@ -779,7 +792,8 @@ def assemble_maud_pool(
     Accepts CUAD-shaped rows (``id`` / ``input.doc_text`` /
     ``metadata.consideration_type|category``) or a flat frame
     (``filename``, ``doc_text``, ``subclass``).  Titles default empty
-    (leak law); a supplied title that names the subclass is a loud
+    (leak law) and accepted rows always store an empty title; a supplied
+    title that names the subclass is a loud
     ``leak_title`` reject.  Cap: the class may end at ``cap_mult`` ×
     its merger_agreement TRAIN rows (i.e. ``cap_mult − 1`` × new rows —
     the same rule as CUAD / Enron / insurance).
@@ -928,7 +942,14 @@ def _assemble_insurance_pool(
     render_required: bool = False,
     exact_subclass: bool = False,
 ) -> PoolResult:
-    """Shared Tier-1 insurance pipeline (per-pool wrappers set the policy)."""
+    """Build train-only insurance rows and return rejects and render requests.
+
+    ``adopted_subclass`` overrides row labels; ``exact_subclass`` bypasses
+    normalization but still requires an observed head label. With
+    ``render_required``, absent or blank text becomes a pending render
+    request. Otherwise, a missing text column raises ``ValueError`` and
+    blank text is rejected. Titles naming the subclass and duplicate content
+    are rejected before adoption."""
     if pool_df.empty:
         return PoolResult(_rows_frame([]), _reject_frame([]), _reject_frame([]))
     if text_col not in pool_df.columns:
@@ -1090,6 +1111,8 @@ def combine_tier1(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Concatenate Tier-1 pool results with CROSS-POOL sha dedup.
 
+    Both source hashes and hashes of stored normalized text are compared.
+    Returns combined adopted rows and cross-pool rejection records.
     First pool in ``results`` wins on a sha collision (earlier pools are the
     closer source at the ladder step); later duplicates are rejected with a
     reason.  Deterministic: pools are processed in the given order, rows
@@ -1342,7 +1365,13 @@ def assemble_pseudo_labels(
     balance.  Candidates carry model confidences (doc_type/subclass/agreement
     columns); nothing is labeled here.  Kept rows get
     ``label_source="pseudo_enron"``, ``label_confidence`` = the joint gate
-    minimum, ``example_weight=0.5``, and land in train only."""
+    minimum, ``example_weight=0.5``, and land in train only.
+
+    Confidence thresholds are inclusive; ``max_fraction`` caps new rows
+    relative to canonical correspondence train rows. Missing configured
+    confidence or subclass columns in a non-empty input raise ``ValueError``;
+    invalid row confidences and titles naming the subclass are rejected.
+    Missing optional prediction or family columns disable their checks."""
     if candidates.empty:
         return PseudoResult(_rows_frame([]), _reject_frame([]))
     required = [doc_type_conf_col, subclass_conf_col, agreement_col,
@@ -1634,7 +1663,11 @@ def apply_mixture_caps(
     per_subclass_share: float = SYNTHETIC_MAX_PER_SUBCLASS_SHARE,
     tier_caps: tuple[tuple[int, int], ...] = SYNTHETIC_TIER_CAPS,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Cut adopted synthetic rows to the §6.5 mixture caps (kept, rejected)."""
+    """Cut adopted synthetic rows to the §6.5 mixture caps (kept, rejected).
+
+    Keep input order within each subclass up to its allowance; return frames
+    sorted by filename. Rows whose subclass has no authentic-count entry
+    are rejected with ``no_authentic_support``."""
     caps = mixture_caps(authentic_counts, global_share=global_share,
                         per_subclass_share=per_subclass_share,
                         tier_caps=tier_caps)
@@ -1790,7 +1823,11 @@ def gate_lexical_contamination(
 
 
 def _cue_present(text: str, cue: str) -> bool:
-    """Case-insensitive cue match: word-boundary for single tokens."""
+    """Match a cue case-insensitively; blank cues never match.
+
+    Whitespace-containing cues and cues longer than 24 characters use
+    substring matching. Shorter single tokens require word boundaries
+    only at ends that are word characters."""
     cue = str(cue).strip()
     if not cue:
         return False
@@ -1882,12 +1919,14 @@ def _adjudication_of(candidate: dict[str, Any]) -> dict[str, Any] | None:
     Accepts the nested ``adjudication`` dict (``parent_class``/``doc_type`` +
     ``subclass``/``label``) and/or flat ``adjudicator_parent_class`` /
     ``adjudicator_doc_type`` / ``adjudicator_subclass`` / ``adjudicator_label``
-    keys.  A key that is PRESENT (even ``{}`` or ``""``) means an adjudicator
+    keys. ``None`` and float NaN values count as absent. Otherwise, a key
+    that is PRESENT (even ``{}`` or ``""``) means an adjudicator
     ran: the caller then requires a non-empty label.  A non-dict
     ``adjudication`` is malformed and surfaces as an empty verdict.
     """
     def _has(key: str) -> bool:
         # None / NaN (a DataFrame row missing the column) mean "no adjudicator"
+        """Return whether the candidate value is neither None nor float NaN."""
         v = candidate.get(key)
         return v is not None and not (isinstance(v, float) and math.isnan(v))
 
@@ -2022,7 +2061,12 @@ def gate_model_disagreement(
 
     Requires ``model_doc_type`` and ``model_subclass`` on the candidate
     (reason ``missing_model_prediction`` when absent — no silent pass).
-    Optional ``model_doc_type_prob`` must clear ``min_prob`` (default 0.5).
+    A card may be the first positional argument or ``card`` keyword; without
+    one, only prediction presence and the probability floor are checked.
+    Optional ``model_doc_type_prob`` must be at least ``min_prob`` (default
+    0.5). NaN and unparseable probabilities become
+    ``model_prob_below_floor`` rejections; invalid ``min_prob`` conversions
+    propagate ``TypeError`` or ``ValueError``.
     """
     card = args[0] if args else kwargs.get("card")
     min_prob_kw = kwargs.get("min_prob")
@@ -2066,8 +2110,11 @@ def run_seven_gates(
 ) -> GateReport:
     """Run the ordered seven gates; short-circuit at the first non-pass.
 
-    Every gate now executes (no ``not_run`` stubs).  On failure the
-    candidate is written to ``audit`` (never fitted).  Audit records use
+    Returns the gates evaluated and the first failure, if any. When
+    ``audit`` is supplied, a summary is added for both passing and failing
+    candidates. ``pool_texts=None`` uses the corpus as the diversity pool;
+    an explicitly empty pool skips that comparison. ``n_gram`` is the
+    lexical contamination word-gram size. Audit records use
     stable reason codes from each gate (``missing_positive_cue``,
     ``near_duplicate``, ``missing_model_prediction``, …).
     """

@@ -98,10 +98,15 @@ def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
     """Compare PyTorch vs ONNX logits per head; raises AssertionError on failure.
 
     - ``model.onnx`` (fp32) must match the PyTorch reference within
-      ``tolerance`` (1e-4 default) — the export correctness contract.
+      ``tolerance`` (CLI default 1e-4) — the export correctness contract.
     - ``model_quantized.onnx`` (int8, when present) argmax agreement + logit
       drift against the fp32 ONNX graph are measured and returned; only when
       ``require_int8_agreement`` is set does an argmax flip fail the gate.
+
+    ``max_length`` is the token length used to pad/truncate the fixed inputs.
+    A missing fp32 graph or mismatched head set also raises ``AssertionError``;
+    model/tokenizer/session loading errors propagate. A missing int8 graph is
+    skipped even when agreement is required.
     """
     import numpy as np
     import onnxruntime as ort
@@ -172,6 +177,11 @@ def run_parity(pytorch_dir: Path, onnx_dir: Path, *, tolerance: float,
 
 
 def main() -> int:
+    """Run the artifact parity checks, print their measurements, and return 0.
+
+    Missing checkpoint weights or the fp32 graph raise ``SystemExit``;
+    parity failures and model-loading errors propagate.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--pytorch-dir", type=Path, default=_DEFAULT_PYTORCH_DIR)
     ap.add_argument("--onnx-dir", type=Path, default=_DEFAULT_ONNX_DIR)

@@ -191,6 +191,12 @@ def _stdout_progress(stdout: str) -> str:
 
 
 def _run_one_eval_cli(cmd: list[str]) -> dict:
+    """Run one eval command and return its exit code and optional parsed report.
+
+    With ``--json``, nonempty stdout must contain an eval report or
+    ``ValueError`` propagates. A nonzero process exit raises ``RuntimeError``;
+    process launch errors propagate.
+    """
     print("[mailroom-ml-eval] " + " ".join(cmd), flush=True)
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.stderr.strip():
@@ -322,6 +328,12 @@ def _write_eval_json(dest: Path, report: dict, *,
                      per_doc_trace_rows, tracer, name: str, profile,
                      remote_wall: float, wall_total: float,
                      flush_provider: bool = True) -> None:
+    """Add telemetry to ``report`` in place and write it with trace sidecars.
+
+    Durations are in seconds. ``flush_provider=False`` defers provider flush
+    and shutdown so a sweep can share it across reports. Directory creation,
+    serialization, and file write errors propagate.
+    """
     attach_run_telemetry(
         report,
         remote_wall_seconds=float(remote_wall or wall_total),
@@ -389,6 +401,14 @@ def main(module: str = "latest", sample: int = 50, seed: int = 42,
          subclass_decode_logit_adjust: float = 0.0,
          eval_extra: str = "",
          decode_adjust_sweep: str = "") -> None:
+    """Run remote evaluation and print or save reports with local telemetry.
+
+    ``module`` names a checkpoint under the remote checkpoint mount. With
+    ``as_json``, a single report is written to ``out`` or printed if unset;
+    a comma-separated ``decode_adjust_sweep`` writes one file per value in
+    ``out`` (its parent if it ends in .json), defaulting to reports/json.
+    Remote evaluation and local report-writing errors propagate.
+    """
     (
         attach_run_telemetry,
         experiment_record_from_report,

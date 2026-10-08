@@ -34,7 +34,11 @@ __all__ = [
 
 
 def energy_score(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
-    """Per-row energy ``-logsumexp(logits / T)``.  Higher = more unusual."""
+    """Per-row energy ``-logsumexp(logits / T)``.  Higher = more unusual.
+
+    A one-dimensional logit vector returns a one-element score array.
+    ``temperature=None`` uses 1.0. Zero, negative, or NaN temperatures raise
+    ``ValueError``; numeric conversion errors propagate."""
     arr = np.asarray(logits, dtype=np.float64)
     if arr.ndim == 1:
         arr = arr[None, :]
@@ -109,6 +113,12 @@ def score_ood(
     ``status`` is ``absent`` when no probe is supplied (flag is None —
     callers must NOT treat that as "in-distribution").  ``ok`` when the
     probe scored the row.
+
+    The score is the mean energy across logit rows. Flag values strictly
+    above the threshold by default, or strictly below it for
+    ``direction="below"``; equality is not flagged. An unknown direction or
+    non-positive/NaN temperature raises ``ValueError``. A nonempty probe
+    without a threshold raises ``KeyError``; numeric conversion errors propagate.
     """
     if not probe:
         return None, None, "absent"
@@ -121,10 +131,12 @@ def score_ood(
 
 
 def load_ood_probe(model_dir: str | Path) -> dict[str, Any] | None:
-    """Load the sidecar; None when absent/unreadable.
+    """Load the sidecar; None when absent, unreadable, invalid JSON, non-object,
+    or missing a threshold.
 
     Raises ``ValueError`` for a probe that parses but carries an unknown
-    ``direction`` or a non-positive ``temperature`` (never guessed around).
+    ``direction`` or a non-positive/NaN ``temperature`` (never guessed around).
+    Temperature conversion errors propagate; the threshold value is not validated here.
     """
     path = Path(model_dir) / OOD_PROBE_FILENAME
     if not path.is_file():

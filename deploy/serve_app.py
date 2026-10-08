@@ -150,7 +150,12 @@ def _resolve_model_dir() -> str:
 # -- runtime state -----------------------------------------------------------
 @functools.lru_cache(maxsize=1)
 def _session(model_dir: str) -> dict:
-    """Load the ONNX session + label maps + tokenizer once per container."""
+    """Load and cache ONNX state for the most recently requested model directory.
+
+    Prefers int8 weights, falling back to fp32. Disables tokenizer truncation
+    and padding so request encoding can reject overlong inputs and pad by batch.
+    Missing weights raise ``FileNotFoundError``; an unresolved pad ID raises
+    ``RuntimeError``. Artifact read/parse and runtime loading errors propagate."""
     import onnxruntime as ort
     from tokenizers import Tokenizer
 
@@ -315,7 +320,12 @@ class PredictRequest(BaseModel):
 @app.function(secrets=_serve_secrets(), timeout=120, startup_timeout=60)
 @modal.fastapi_endpoint(method="POST")
 def predict(request: PredictRequest, _: None = _auth_dep) -> dict:
-    """Run the int8 ONNX session; returns per-text head predictions + logits."""
+    """Return per-text doc_type/subclass predictions, raw logits, and model metadata.
+
+    Uses int8 weights when available, otherwise fp32. Subclass is ``None``
+    when the predicted doc_type has no usable subclass head. Inputs exceeding
+    ``MAX_LENGTH`` tokens raise HTTP 413; model loading and inference errors
+    propagate."""
     state = _session(_resolve_model_dir())
     try:
         ids, mask = _encode(request.texts, state)

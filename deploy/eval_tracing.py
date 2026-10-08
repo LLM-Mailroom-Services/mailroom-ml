@@ -124,6 +124,7 @@ class _FileSpan:
 
 
 def _tracer_resource(tracer: Any) -> dict[str, str]:
+    """Return stringified resource attributes, or an empty mapping if absent."""
     attrs = getattr(getattr(tracer, "resource", None), "attributes", None)
     return {str(k): str(v) for k, v in dict(attrs or {}).items()}
 
@@ -136,6 +137,10 @@ def eval_span(tracer: Any, name: str, **attrs: str) -> Iterator[Any]:
     sinks) ALSO mirrors the span into the local JSONL archive: that flag used
     to be set and never read, so ``otel_spans.jsonl`` came out empty whenever
     Phoenix was reachable.
+
+    Yields the active span, or ``None`` when no tracer is supplied. Attribute
+    assignment errors are ignored; errors in the context body propagate,
+    with the local mirror still recorded when enabled.
     """
     if tracer is None:
         yield None
@@ -167,6 +172,10 @@ def flush_tracing(tracer: Any, *, out_path: Path | None = None,
     ``flush_provider=False`` only (re)writes the archive: a caller writing
     several archives (the decode-adjust sweep) flushes + shuts the provider
     down ONCE, on the last call, instead of per archive.
+
+    Returns ``out_path`` after writing the archive and its manifest, or
+    ``None`` when no path is supplied. Provider flush/shutdown errors are
+    ignored; file-writing errors propagate.
     """
     if flush_provider and tracer is not None \
             and hasattr(tracer, "sandbox_provider"):

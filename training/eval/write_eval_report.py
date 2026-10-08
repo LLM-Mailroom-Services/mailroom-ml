@@ -18,10 +18,10 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "training"))
+sys.path.insert(0, str(ROOT / "training" / "eval"))
 
 from mailroom_ml.eval_report_md import (  # noqa: E402
     ReportContext,

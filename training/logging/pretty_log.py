@@ -1210,7 +1210,7 @@ def test_steps_path_for_watch(
         tag = log_path.stem
     if not tag:
         return None
-    for base in (Path.cwd(), Path(__file__).resolve().parent.parent):
+    for base in (Path.cwd(), Path(__file__).resolve().parents[2]):
         candidate = base / "data/modernbert_training/runs" / tag / "latest/test_steps.jsonl"
         if candidate.is_file():
             return candidate
@@ -1310,7 +1310,7 @@ def summary_path_for_watch(
         tag = log_path.stem
     if not tag:
         return None
-    for base in (Path.cwd(), Path(__file__).resolve().parent.parent):
+    for base in (Path.cwd(), Path(__file__).resolve().parents[2]):
         candidate = base / "data/modernbert_training/runs" / tag / "latest/summary.json"
         if candidate.is_file():
             return candidate
@@ -1320,7 +1320,7 @@ def summary_path_for_watch(
 def eval_report_path_for_watch(run_tag: str | None) -> Path | None:
     if not run_tag:
         return None
-    for base in (Path.cwd(), Path(__file__).resolve().parent.parent):
+    for base in (Path.cwd(), Path(__file__).resolve().parents[2]):
         candidate = base / "reports" / f"eval_{run_tag}.json"
         if candidate.is_file():
             return candidate
@@ -1623,7 +1623,7 @@ def discover_trainer_lines(run_tag: str | None) -> list[str]:
                     timeout=3,
                 )
                 args = ps.stdout.strip()
-                if "training/train_modernbert.py" in args:
+                if "train_modernbert.py" in args:
                     out.append(f"{pid} {args}")
             except Exception:
                 continue
@@ -2176,7 +2176,7 @@ def follow_live(
                             timeout=3,
                         )
                         args = ps.stdout.strip()
-                        if "training/train_modernbert.py" in args:
+                        if "train_modernbert.py" in args:
                             trainer_lines.append(f"{pid} {args}")
                     except Exception:
                         continue

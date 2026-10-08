@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -20,7 +20,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cmd = [
         sys.executable,
-        str(ROOT / "training" / "write_eval_report.py"),
+        str(ROOT / "training" / "eval" / "write_eval_report.py"),
         "heldout-plus",
         "--run-tag",
         args.run_tag,

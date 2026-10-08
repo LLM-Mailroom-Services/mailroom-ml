@@ -5,10 +5,10 @@
 # ready (no summary.json), prints status and exits without touching a GPU.
 #
 # Usage:
-#   ./training/complete_run.sh --run-tag m9a-local-20260927-014429
-#   ./training/complete_run.sh --run-tag m9a-local-20260927-014429 --publish
-#   ./training/complete_run.sh --run-tag m9a-local-20260927-014429 --publish --dry-run
-#   ./training/complete_run.sh --run-tag m9a-local-20260927-014429 --publish --force-publish
+#   ./training/train/complete_run.sh --run-tag m9a-local-20260927-014429
+#   ./training/train/complete_run.sh --run-tag m9a-local-20260927-014429 --publish
+#   ./training/train/complete_run.sh --run-tag m9a-local-20260927-014429 --publish --dry-run
+#   ./training/train/complete_run.sh --run-tag m9a-local-20260927-014429 --publish --force-publish
 #
 # Steps (idempotent):
 #   1. Verify data/modernbert_training/runs/<tag>/latest/summary.json exists
@@ -23,7 +23,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 PY="${ROOT}/.venv/bin/python"
-[[ -x "$PY" ]] || { echo "missing Linux venv at .venv" >&2; exit 1; }
 
 hf_hub_token_ready() {
   [[ -n "${HF_TOKEN:-}${HUGGING_FACE_HUB_TOKEN:-}" ]] && return 0
@@ -71,9 +70,13 @@ echo "eval       -> ${EVAL_JSON}"
 
 if [[ ! -f "$SUMMARY" ]]; then
   echo "WAIT: ${SUMMARY} missing — training not finished or wrong --run-tag." >&2
-  echo "Monitor only: ./training/watch_m9a_run.sh --log logs/${RUN_TAG}.log --agent" >&2
+  echo "Monitor only: ./training/logging/watch_m9a_run.sh --log logs/${RUN_TAG}.log --agent" >&2
   exit 4
 fi
+
+# venv check only once real work starts, so --help and the read-only WAIT
+# status work without a venv
+[[ -x "$PY" ]] || { echo "missing Linux venv at .venv" >&2; exit 1; }
 
 trainer_on_ckpt=0
 for pid in $(pgrep -f 'train_modernbert\.py' 2>/dev/null || true); do
@@ -82,7 +85,7 @@ for pid in $(pgrep -f 'train_modernbert\.py' 2>/dev/null || true); do
     trainer_on_ckpt=1
     echo "WAIT: train_modernbert still running for this run (PID ${pid})." >&2
     echo "Re-run complete_run after training exits; this script will not stop it." >&2
-    echo "Monitor (42m polls): ./training/watch_m9a_run.sh --log logs/${RUN_TAG}.log --agent" >&2
+    echo "Monitor (42m polls): ./training/logging/watch_m9a_run.sh --log logs/${RUN_TAG}.log --agent" >&2
     exit 5
   fi
 done
@@ -117,7 +120,7 @@ if [[ ! -f "$EVAL_JSON" ]]; then
   fi
   echo "=== held-out eval + calibration (GPU ${GPU_IDX}) ==="
   mkdir -p reports
-  CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval_modernbert.py \
+  CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval/eval_modernbert.py \
     --checkpoint "$CKPT" \
     --stage data/modernbert_training/stage \
     --sample 0 \
@@ -135,7 +138,7 @@ GATE_RC=0
 
 echo "=== TEST-EVAL markdown (artifact-driven) ==="
 WRITE_ARGS=(
-  "$PY" training/write_eval_report.py test
+  "$PY" training/eval/write_eval_report.py test
   --run-tag "$RUN_TAG"
   --eval-json "$EVAL_JSON"
   --summary-json "$SUMMARY"
@@ -155,7 +158,7 @@ if (( PUBLISH == 0 )); then
 fi
 
 PUBLISH_ARGS=(
-  ./training/publish_run_to_hub.sh
+  ./training/train/post-train/publish_run_to_hub.sh
   --checkpoint "$CKPT"
   --eval-json "$EVAL_JSON"
   --release-tag "$RUN_TAG"

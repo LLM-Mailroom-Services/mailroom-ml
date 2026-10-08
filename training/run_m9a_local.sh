@@ -9,8 +9,8 @@
 #   ./training/run_m9a_local.sh                  # dry-run / status only
 #   ./training/run_m9a_local.sh --i-authorize-gpu # foreground: train (tee) + post-run eval
 #   ./training/run_m9a_local.sh --i-authorize-gpu --background  # train only via nohup; watch separately
-#   ./training/watch_m9a_run.sh --follow --pretty  # kawaii TTY monitor (plain if piped / NO_COLOR)
-#   ./training/complete_run.sh --run-tag <RUN_TAG> [--publish]  # after train: eval + #112 gates + Hub
+#   ./training/logging/watch_m9a_run.sh --follow --pretty  # kawaii TTY monitor (plain if piped / NO_COLOR)
+#   ./training/train/complete_run.sh --run-tag <RUN_TAG> [--publish]  # after train: eval + #112 gates + Hub
 #   ./training/run_m9a_local.sh --i-authorize-gpu --publish-to-hub  # + Hub release if gates pass
 #   CUDA_VISIBLE_DEVICES=0 ./training/run_m9a_local.sh --i-authorize-gpu
 #   ./training/run_m9a_local.sh --i-authorize-gpu --arm=m9b  # head-LR + logit-adjust arm (#43)
@@ -36,7 +36,7 @@
 #   reports/eval_<run_tag>.json        — held-out eval (post-train)
 #
 # Resume (after kill or crash — reuse the SAME hyperparameters as the run):
-#   CUDA_VISIBLE_DEVICES=<gpu> .venv/bin/python training/train_modernbert.py \
+#   CUDA_VISIBLE_DEVICES=<gpu> .venv/bin/python training/train/train_modernbert.py \
 #     --data data/modernbert_training/stage \
 #     --output data/modernbert_training/runs/<run_tag>/latest \
 #     --resume data/modernbert_training/runs/<run_tag>/latest \
@@ -77,7 +77,7 @@ trainer_pids() {
   local pid args
   for pid in $(pgrep -f 'train_modernbert\.py' 2>/dev/null || true); do
     args="$(ps -o args= -p "$pid" 2>/dev/null || true)"
-    if [[ "$args" == *python*training/train_modernbert.py* ]]; then
+    if [[ "$args" == *python*train_modernbert.py* ]]; then
       echo "$pid"
     fi
   done
@@ -88,7 +88,7 @@ refuse_if_training_active() {
   existing="$(trainer_pids)"
   if [[ -n "$existing" ]]; then
     echo "Refusing launch: train_modernbert already running (PIDs: $(echo "$existing" | tr '\n' ' '))." >&2
-    echo "Use ./training/watch_m9a_run.sh --follow — monitors only; does not start jobs." >&2
+    echo "Use ./training/logging/watch_m9a_run.sh --follow — monitors only; does not start jobs." >&2
     exit 3
   fi
   if [[ -f "$LOCK_FILE" ]]; then
@@ -190,7 +190,7 @@ else
 fi
 
 CMD=(
-  "$PY" training/train_modernbert.py
+  "$PY" training/train/train_modernbert.py
   --data data/modernbert_training/stage
   --output "$OUT"
   --epochs "$EPOCHS"
@@ -278,8 +278,8 @@ if (( BACKGROUND == 1 )); then
   echo "Background train started (wrapper PID $LAUNCHER_PID)."
   echo "log            -> $LOG"
   echo "out (latest)   -> $OUT"
-  echo "Monitor (read-only): ./training/watch_m9a_run.sh --log $LOG --jsonl $OUT/train_steps.jsonl --follow"
-  echo "Post-train: ./training/complete_run.sh --run-tag ${RUN_TAG} [--publish]"
+  echo "Monitor (read-only): ./training/logging/watch_m9a_run.sh --log $LOG --jsonl $OUT/train_steps.jsonl --follow"
+  echo "Post-train: ./training/train/complete_run.sh --run-tag ${RUN_TAG} [--publish]"
   exit 0
 fi
 
@@ -293,7 +293,7 @@ set -o pipefail
 echo "=== train finished; running held-out eval + calibration surfaces ==="
 EVAL_JSON="reports/eval_${RUN_TAG}.json"
 mkdir -p reports
-CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval_modernbert.py \
+CUDA_VISIBLE_DEVICES="$GPU_IDX" "$PY" training/eval/eval_modernbert.py \
   --checkpoint "$OUT" \
   --stage data/modernbert_training/stage \
   --sample 0 \
@@ -311,7 +311,7 @@ echo "  train_steps=$OUT/train_steps.jsonl"
 echo "  eval=$EVAL_JSON"
 
 PUBLISH_CMD=(
-  "$PY" training/publish_run_to_hub.py
+  "$PY" training/train/post-train/publish_run_to_hub.py
   --checkpoint "$OUT"
   --eval-json "$EVAL_JSON"
   --release-tag "$RUN_TAG"

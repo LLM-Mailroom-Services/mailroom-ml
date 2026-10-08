@@ -18,7 +18,7 @@ import argparse
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 sys.path.insert(0, str(ROOT / "src"))
 
 import pandas as pd  # noqa: E402

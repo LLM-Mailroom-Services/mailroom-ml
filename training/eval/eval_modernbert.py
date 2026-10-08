@@ -34,7 +34,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 if str(ROOT / "src") not in sys.path:
@@ -798,7 +798,7 @@ def main(argv: list[str] | None = None) -> int:
         import subprocess
         import tempfile
 
-        root = Path(__file__).resolve().parent.parent
+        root = ROOT
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False, dir=root / "reports"
         ) as tmp:
@@ -807,7 +807,7 @@ def main(argv: list[str] | None = None) -> int:
         kind = "heldout-plus" if args.subset == "heldout-plus" else "test"
         cmd = [
             sys.executable,
-            str(root / "training" / "write_eval_report.py"),
+            str(root / "training" / "eval" / "write_eval_report.py"),
             kind,
             "--run-tag",
             args.run_tag,

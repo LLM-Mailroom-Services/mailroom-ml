@@ -7,12 +7,12 @@ import json
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]  # training/<area>/<script>.py -> repo root
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
-sys.path.insert(0, str(ROOT / "training"))
+sys.path.insert(0, str(ROOT / "training" / "eval"))
 
-# eval CLI lives in training/
+# eval CLI lives in training/eval/
 from eval_modernbert import _load_eval_docs  # noqa: E402
 
 from mailroom_ml.config import MAX_TOKENS, STAGE_DIR  # noqa: E402

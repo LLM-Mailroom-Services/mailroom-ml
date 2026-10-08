@@ -77,16 +77,16 @@ PY
     return 0
   fi
   echo "[heldout-plus] building pool (CPU only)…" >&2
-  uv run python training/fetch_corpus.py
-  uv run python training/fetch_enron_heldout_inputs.py
-  uv run python training/build_heldout_plus.py \
+  uv run python training/dataset/mailroom-dataset/fetch_corpus.py
+  uv run python training/dataset/enron/fetch_enron_heldout_inputs.py
+  uv run python training/dataset/mailroom-dataset/build_heldout_plus.py \
     --enron-gt data/enrichment/enron_heldout/ground_truth/test.jsonl \
     --enron-blind data/enrichment/enron_heldout/blind/test.jsonl \
     --n 1000 --seed 42 --out "${PLUS_DIR}"
 }
 
 preflight_window_contract() {
-  uv run python training/preflight_heldout_plus.py --plus-dir "${PLUS_DIR}"
+  uv run python training/train/preflight_heldout_plus.py --plus-dir "${PLUS_DIR}"
 }
 
 ensure_plus_pool
@@ -124,7 +124,7 @@ if n != 1323:
 print(f"GPU eval OK: n_docs={n} windows={r.get('window_calibration', {}).get('n_windows')}", flush=True)
 PY
 
-uv run python training/interpret_heldout_plus_eval.py \
+uv run python training/eval/interpret_heldout_plus_eval.py \
   --eval-json "${OUT_JSON}" \
   --baseline-json "${BASELINE_JSON}" \
   --run-tag "${RUN_TAG}" \

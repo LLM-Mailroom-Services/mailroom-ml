@@ -2,14 +2,14 @@
 # Eval + gates per run when train finishes; Hub publish only after BOTH runs are done.
 #
 # Usage (manual or cron / agent loop every 45m):
-#   cd .../modernBERT && TORCH_DISABLE_NATIVE_JIT=1 ./training/post_train_hub_when_ready.sh
+#   cd .../modernBERT && TORCH_DISABLE_NATIVE_JIT=1 ./training/train/post-train/post_train_hub_when_ready.sh
 #
 # Requires HF_TOKEN or HUGGING_FACE_HUB_TOKEN for real uploads (.env in repo root is sourced).
 # Markers: logs/.m9a-hub-published-<run-tag>.done
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 cd "$ROOT"
 export TORCH_DISABLE_NATIVE_JIT="${TORCH_DISABLE_NATIVE_JIT:-1}"
 
@@ -74,7 +74,7 @@ echo "primary: $TAG_B (min epochs $MIN_B)"
 echo "smoke:   $TAG_A (min epochs $MIN_A)"
 
 # Eval + gates only (no Hub yet); respects GPU policy / smoke marker.
-./training/post_train_when_ready.sh
+./training/eval/post_train_when_ready.sh
 
 if ! train_done "$TAG_A" "$MIN_A"; then
   write_goal_status "wait smoke train/eval"
@@ -105,7 +105,7 @@ for tag in "$TAG_A" "$TAG_B"; do
     pub_args+=(--force-publish)
   fi
   rc=0
-  ./training/complete_run.sh "${pub_args[@]}" || rc=$?
+  ./training/train/complete_run.sh "${pub_args[@]}" || rc=$?
   if [[ -f "$marker" ]]; then
     continue
   fi

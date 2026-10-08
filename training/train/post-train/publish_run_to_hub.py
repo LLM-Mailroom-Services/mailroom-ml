@@ -250,7 +250,8 @@ def main(argv: list[str] | None = None) -> int:
     print(metrics_md)
 
     if args.invoke_check_gates:
-        gate_script = Path(__file__).resolve().parent / "check_m9a_gates.py"
+        # training/train/post-train/ -> training/check_m9a_gates.py
+        gate_script = Path(__file__).resolve().parents[2] / "check_m9a_gates.py"
         rc = subprocess.call(
             [sys.executable, str(gate_script), str(eval_path), str(summary_path)]
             if summary_path.is_file()

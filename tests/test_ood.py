@@ -1,9 +1,11 @@
 """OOD probe + routing-threshold artifact tests (#18 / #25)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from mailroom_ml.calibration import (
     load_routing_thresholds,
@@ -119,3 +121,43 @@ def test_classify_document_uses_artifact_thresholds():
     }
     res2 = classify_document(b, "T", "body", window_texts=["w"])
     assert res2["route"] == "fast_path"
+
+
+def test_energy_score_rejects_non_positive_temperature():
+    logits = np.array([[3.0, 0.0, 0.0]])
+    for bad in (0, 0.0, -1.0, float("nan")):
+        with pytest.raises(ValueError):
+            energy_score(logits, bad)
+    # None still means "default 1.0"
+    assert energy_score(logits, None)[0] == energy_score(logits, 1.0)[0]
+
+
+def test_score_ood_rejects_zero_temperature_probe():
+    probe = {"threshold": 0.0, "temperature": 0}
+    with pytest.raises(ValueError):
+        score_ood(np.zeros((1, 3)), probe)
+
+
+def test_score_ood_honors_direction_below():
+    peaked = np.array([[10.0, 0.0, 0.0]])  # energy ~ -10
+    above = {"threshold": -5.0, "direction": "above"}
+    below = {"threshold": -5.0, "direction": "below"}
+    assert score_ood(peaked, above)[1] is False
+    assert score_ood(peaked, below)[1] is True
+    assert score_ood(peaked, {"threshold": -5.0})[1] is False  # default above
+
+
+def test_score_ood_rejects_unknown_direction():
+    with pytest.raises(ValueError, match="direction"):
+        score_ood(np.zeros((1, 3)), {"threshold": 0.0, "direction": "sideways"})
+
+
+def test_load_ood_probe_rejects_unknown_direction(tmp_path: Path):
+    bad = {"threshold": 0.0, "direction": "sideways"}
+    (tmp_path / OOD_PROBE_FILENAME).write_text(json.dumps(bad))
+    with pytest.raises(ValueError, match="direction"):
+        load_ood_probe(tmp_path)
+    (tmp_path / OOD_PROBE_FILENAME).write_text(
+        json.dumps({"threshold": 0.0, "temperature": -2}))
+    with pytest.raises(ValueError):
+        load_ood_probe(tmp_path)

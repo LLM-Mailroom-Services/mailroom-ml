@@ -249,8 +249,10 @@ def selective_risk_sweep(
     whose selective risk is within budget AND band ECE within 0.05 — lower
     thresholds maximize coverage, so the sweep picks the most permissive
     threshold that still meets the error budget (initial budget 0.02 per
-    ``FAST_PATH_ERROR_BUDGET``).  Deterministic: thresholds sort ascending,
-    ties prefer the higher threshold.
+    ``FAST_PATH_ERROR_BUDGET``).  Deterministic: thresholds sort ascending
+    and the FIRST (lowest) one that passes wins; when two thresholds select
+    exactly the same items (a tie on coverage / risk / ECE) the lower one is
+    kept — the pick is never moved up to the higher of the pair.
 
     Returns the report dict (``calibration:classify``-shaped):
     ``rows`` (per-threshold), ``recommended_threshold``, ``selective_risk``,

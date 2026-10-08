@@ -3,7 +3,7 @@
 Hermetic math over synthetic logits: temperature recovery, ECE
 hand-computations, band ECE, reliability tables and the deterministic
 selective-risk sweep (deployment threshold = lowest meeting the error
-budget; ties prefer the higher threshold).
+budget; ties keep the lower threshold).
 """
 from __future__ import annotations
 
@@ -132,6 +132,19 @@ def test_selective_risk_sweep_deterministic_and_picks_lowest_safe():
     assert a["coverage"] == picked[0]["coverage"]
     assert a["selective_risk"] == picked[0]["selective_risk"]
     assert a["coverage"] > a["rows"][-1]["coverage"]
+
+
+def test_selective_risk_sweep_tie_keeps_lower_threshold():
+    """Thresholds selecting the identical set tie on coverage/risk/ECE: the
+    pick is the LOWEST (code + docstring agree — no "prefer higher")."""
+    conf = np.full(500, 0.995)
+    correct = np.ones(500)
+    out = selective_risk_sweep(conf, correct, thresholds=[0.9, 0.7, 0.8])
+    assert [r["threshold"] for r in out["rows"]] == [0.7, 0.8, 0.9]
+    assert len({r["coverage"] for r in out["rows"]}) == 1  # a true tie
+    assert out["recommended_threshold"] == 0.7
+    doc = selective_risk_sweep.__doc__
+    assert "prefer the higher" not in doc
 
 
 def test_selective_risk_sweep_budget_unmet():

@@ -175,7 +175,7 @@ def _load_support_counts(model_dir: Path) -> dict[str, dict[str, int]]:
         data = json.loads(p.read_text(encoding="utf-8"))
         return {k: {str(c): int(n) for c, n in v.items()}
                 for k, v in data.items() if isinstance(v, dict)}
-    except (ValueError, TypeError, OSError):
+    except (ValueError, TypeError, OSError, AttributeError):  # non-dict JSON
         return {}
 
 
@@ -191,9 +191,12 @@ def _load_head_exclusions(model_dir: Path) -> tuple[dict[str, str], dict | None]
     if not p.is_file():
         return {}, None
     try:
-        sel = json.loads(p.read_text(encoding="utf-8")).get(
-            "checkpoint_selection", {})
+        summary = json.loads(p.read_text(encoding="utf-8"))
     except (ValueError, OSError):
+        return {}, None
+    # null / non-dict summary or checkpoint_selection -> no exclusions
+    sel = summary.get("checkpoint_selection") if isinstance(summary, dict) else None
+    if not isinstance(sel, dict):
         return {}, None
     policy = sel.get("head_exclusion_policy")
     if not isinstance(policy, dict):
@@ -240,6 +243,10 @@ def _resolve_pad_id(model_dir: Path, tok) -> int | None:
             continue
         if isinstance(pad, int):
             return pad
+        if isinstance(pad, dict):  # AddedToken form: {"content": "[PAD]", ...}
+            pad = pad.get("content")
+        if not isinstance(pad, str):
+            continue
         pid = tok.token_to_id(pad)
         if pid is not None:
             return pid
@@ -322,7 +329,11 @@ def load_bundle(model_dir: str | Path | None = None,
     if not labels.is_file():
         raise BundleLoadError(f"bundle {mdir} missing labels.json")
 
-    maps = normalize_label_maps(json.loads(labels.read_text(encoding="utf-8")))
+    try:
+        maps = normalize_label_maps(
+            json.loads(labels.read_text(encoding="utf-8")))
+    except Exception as exc:  # noqa: BLE001 — garbage labels.json -> fail-open
+        raise BundleLoadError(f"bundle {mdir} labels.json unreadable: {exc}") from exc
     try:
         tok = _load_tokenizer(mdir)
         pad_id = _resolve_pad_id(mdir, tok) or 0
@@ -333,15 +344,15 @@ def load_bundle(model_dir: str | Path | None = None,
     if tp.is_file():
         try:
             temps = {k: float(v) for k, v in json.loads(tp.read_text()).items()}
-        except (ValueError, TypeError, OSError):
+        except (ValueError, TypeError, OSError, AttributeError):  # non-dict JSON
             temps = {}
 
     kind = ""
     artifact_sha: str | None = None
     predict_fn: Callable[[np.ndarray, np.ndarray], dict[str, np.ndarray]] | None = None
 
-    if prefer_onnx and (mdir / "model.onnx").is_file() \
-            or (mdir / "model_quantized.onnx").is_file():
+    if prefer_onnx and ((mdir / "model.onnx").is_file()
+                        or (mdir / "model_quantized.onnx").is_file()):
         kind = "onnx"
         try:
             kind, sess = _onnx_session(mdir)
@@ -362,10 +373,10 @@ def load_bundle(model_dir: str | Path | None = None,
         artifact_sha = _sha256(modelfile)
     elif (mdir / "model.safetensors").is_file() and (mdir / "heads.pt").is_file():
         kind = "pytorch"
-        import torch
-        from transformers import AutoModel
-
         try:
+            import torch
+            from transformers import AutoModel
+
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             # Trainer semantics: bf16+sdpa on CUDA, fp32 on CPU; heads stay
             # fp32 (the trainer casts pooled -> float before the heads) —
@@ -396,7 +407,10 @@ def load_bundle(model_dir: str | Path | None = None,
     from mailroom_ml.ood import load_ood_probe
 
     routing = load_routing_thresholds(mdir) or {}
-    ood = load_ood_probe(mdir)
+    try:
+        ood = load_ood_probe(mdir)
+    except ValueError as exc:  # probe we cannot honor -> loud, fail-open
+        raise BundleLoadError(f"ood_probe.json unusable: {exc}") from exc
     input_construction = _load_input_construction(mdir)
     return ModelBundle(
         model_dir=mdir, maps=maps, temperatures=temps,
@@ -457,9 +471,12 @@ def _load_input_construction(mdir: Path) -> str:
         data = json.loads(summary.read_text(encoding="utf-8"))
     except (OSError, ValueError, TypeError):
         return INPUT_CONSTRUCTION_VERSION
+    if not isinstance(data, dict):
+        return INPUT_CONSTRUCTION_VERSION
     version = data.get("input_construction")
     if not version:
-        version = (data.get("hyperparameters") or {}).get("input_construction")
+        hyper = data.get("hyperparameters")
+        version = hyper.get("input_construction") if isinstance(hyper, dict) else None
     return str(version or INPUT_CONSTRUCTION_VERSION)
 
 
@@ -686,6 +703,15 @@ def classify_windows(bundle: ModelBundle, window_texts: list[str],
         "n_class_windows": n_scored,
         "calibrated_confidence": float(round(float(mean_p), 4)),
         "subclass_confidence": float(round(sc_conf, 4)),
+        # UNROUNDED gate inputs: the fast-path gate must compare these, not
+        # the 4-decimal reported fields (0.969951 reports as 0.97 and would
+        # otherwise clear a >= 0.97 gate).
+        "gate_values": {
+            "calibrated_confidence": float(mean_p),
+            "subclass_confidence": float(sc_conf),
+            "agreement": float(agreement),
+            "margin": float(margin),
+        },
         "per_head": per_head,
         "guard_failures": [],
         "window_doc_type_probs": doc_probs,
@@ -747,10 +773,10 @@ def classify_document_default(
     overlap: int = WINDOW_OVERLAP_TOKENS,
     window_texts: list[str] | None = None,
     min_authentic_support: int = ROUTE_MIN_AUTHENTIC_SUPPORT,
-    doc_confidence: float = ROUTE_DOC_CONFIDENCE,
-    subclass_confidence: float = ROUTE_SUBCLASS_CONFIDENCE,
-    window_agreement: float = ROUTE_WINDOW_AGREEMENT,
-    margin_gate: float = ROUTE_MARGIN,
+    doc_confidence: float | None = None,
+    subclass_confidence: float | None = None,
+    window_agreement: float | None = None,
+    margin_gate: float | None = None,
     agreement_gate: float = GATE_REQUIRED_AGREEMENT,
 ) -> dict[str, Any]:
     """Default-bundle convenience entrypoint (M6a lane seam, #102/#103).
@@ -861,29 +887,21 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
         "failure": None, "artifact_sha": bundle.artifact_sha,
         "ood_score": None, "ood_flag": None, "ood_probe_status": "absent",
     }
-    doc_confidence = (
-        ROUTE_DOC_CONFIDENCE if doc_confidence is None
-        else doc_confidence)
-    subclass_confidence = (
-        ROUTE_SUBCLASS_CONFIDENCE if subclass_confidence is None
-        else subclass_confidence)
-    window_agreement = (
-        ROUTE_WINDOW_AGREEMENT if window_agreement is None
-        else window_agreement)
-    margin_gate = ROUTE_MARGIN if margin_gate is None else margin_gate
-    # Artifact overlay wins over config constants when the caller did not
-    # pass an explicit override (None).  Explicit kwargs still win.
-    if doc_confidence == ROUTE_DOC_CONFIDENCE:
+    # Artifact overlay (#25) wins over config constants ONLY for kwargs the
+    # caller left as None.  An explicit kwarg always wins — even when its
+    # value happens to equal the config constant — so record which were None
+    # BEFORE defaulting (value comparison cannot tell the two apart).
+    if doc_confidence is None:
         doc_confidence = _bundle_route(
-            bundle, "ROUTE_DOC_CONFIDENCE", doc_confidence)
-    if subclass_confidence == ROUTE_SUBCLASS_CONFIDENCE:
+            bundle, "ROUTE_DOC_CONFIDENCE", ROUTE_DOC_CONFIDENCE)
+    if subclass_confidence is None:
         subclass_confidence = _bundle_route(
-            bundle, "ROUTE_SUBCLASS_CONFIDENCE", subclass_confidence)
-    if window_agreement == ROUTE_WINDOW_AGREEMENT:
+            bundle, "ROUTE_SUBCLASS_CONFIDENCE", ROUTE_SUBCLASS_CONFIDENCE)
+    if window_agreement is None:
         window_agreement = _bundle_route(
-            bundle, "ROUTE_WINDOW_AGREEMENT", window_agreement)
-    if margin_gate == ROUTE_MARGIN:
-        margin_gate = _bundle_route(bundle, "ROUTE_MARGIN", margin_gate)
+            bundle, "ROUTE_WINDOW_AGREEMENT", ROUTE_WINDOW_AGREEMENT)
+    if margin_gate is None:
+        margin_gate = _bundle_route(bundle, "ROUTE_MARGIN", ROUTE_MARGIN)
     try:
         chars = len(doc_text)
         context_fit = chars <= max_chars
@@ -976,10 +994,12 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
                 f"for {dt}/{sub}")
             return result
 
-        p_dt = merged["calibrated_confidence"]
-        p_sc = merged["subclass_confidence"]
-        agree = merged["agreement"]
-        margin = merged["margin"]
+        # gate on the unrounded values; the rounded fields are report-only
+        gv = merged.get("gate_values") or {}
+        p_dt = gv.get("calibrated_confidence", merged["calibrated_confidence"])
+        p_sc = gv.get("subclass_confidence", merged["subclass_confidence"])
+        agree = gv.get("agreement", merged["agreement"])
+        margin = gv.get("margin", merged["margin"])
         need_subclass = sub is not None
         from mailroom_ml.ood import score_ood
 
@@ -1013,19 +1033,20 @@ def classify_document(bundle: ModelBundle, title: str, doc_text: str, *,
         result["reason"] = "fast_path" if fast_path else "gate_fail"
         result["quality"].update({
             "sections_ok": True,  # short forms: empty-by-design (P5)
+            "section_map_ok": True,  # name routing.build_handoff reads
             "triage_vocab_ok": vocab_ok,
             "coverage": 1.0,  # no truncation — encode raises on overflow
         })
         if not fast_path:
             failures = []
             if p_dt < doc_confidence:
-                failures.append(f"doc_confidence {p_dt} < {doc_confidence}")
+                failures.append(f"doc_confidence {p_dt:.6f} < {doc_confidence}")
             if need_subclass and p_sc < subclass_confidence:
-                failures.append(f"subclass_confidence {p_sc} < {subclass_confidence}")
+                failures.append(f"subclass_confidence {p_sc:.6f} < {subclass_confidence}")
             if agree < max(window_agreement, agreement_gate):
-                failures.append(f"agreement {agree} < {max(window_agreement, agreement_gate)}")
+                failures.append(f"agreement {agree:.6f} < {max(window_agreement, agreement_gate)}")
             if margin < margin_gate:
-                failures.append(f"margin {margin} < {margin_gate}")
+                failures.append(f"margin {margin:.6f} < {margin_gate}")
             result["guard_failures"].extend(failures)
         return result
     except Exception as exc:  # noqa: BLE001 — fail-open: never raise to caller

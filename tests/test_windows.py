@@ -13,9 +13,28 @@ from mailroom_ml.config import MAX_TOKENS
 from mailroom_ml.windows import estimate_tokens, window_document
 
 
+@pytest.fixture
+def hub_tokenizer():
+    """The real ModernBERT tokenizer, or a clean skip when it cannot load.
+
+    The core suite never needs the network: with the Hub unreachable (or the
+    snapshot uncached) these tests skip instead of failing.  Offline
+    windowing logic is covered in ``test_windows_offline.py``.
+    """
+    import mailroom_ml.windows as windows_mod
+
+    try:
+        tok = windows_mod._tokenizer()
+    except Exception as exc:  # noqa: BLE001 — Hub/network/cache failure
+        pytest.skip(f"ModernBERT tokenizer unavailable: {type(exc).__name__}")
+    if tok is None:
+        pytest.skip("transformers not installed")
+    return tok
+
+
 @requires_transformers
 @pytest.mark.train
-def test_window_document_single_and_multi():
+def test_window_document_single_and_multi(hub_tokenizer):
     short = window_document("t", "x" * 100)
     assert len(short) == 1 and short[0].startswith("t")
     long_text = "word " * 200_000  # ~800K chars >> 8,192 tokens
@@ -28,22 +47,20 @@ def test_window_document_single_and_multi():
 
 @requires_transformers
 @pytest.mark.train
-def test_window_document_title_prefix_survives_verbatim():
+def test_window_document_title_prefix_survives_verbatim(hub_tokenizer):
     """The raw title string is re-attached verbatim — never clamped away."""
     title = "Quarterly Risk Call — Subject Line"
     wins = window_document(title, "word " * 200_000)
     assert len(wins) > 1
     assert all(w.startswith(title + "\n\n") for w in wins)
     # every window re-tokenizes within the model budget WITH default specials
-    from transformers import AutoTokenizer
-
-    tok = AutoTokenizer.from_pretrained("answerdotai/ModernBERT-base")
+    tok = hub_tokenizer
     assert all(len(tok(w)["input_ids"]) <= MAX_TOKENS for w in wins)
 
 
 @requires_transformers
 @pytest.mark.train
-def test_window_document_without_title():
+def test_window_document_without_title(hub_tokenizer):
     wins = window_document("", "word " * 200_000)
     assert len(wins) > 1
     assert all(not w.startswith("\n\n") for w in wins)
@@ -51,7 +68,7 @@ def test_window_document_without_title():
 
 @requires_transformers
 @pytest.mark.train
-def test_window_document_short_doc_single_window():
+def test_window_document_short_doc_single_window(hub_tokenizer):
     # at or under budget: exactly one window, full text, title attached
     body = "This is a short document. " * 20
     wins = window_document("Short", body)

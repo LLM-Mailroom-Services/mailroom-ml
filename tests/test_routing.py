@@ -332,3 +332,21 @@ def test_gate_skip_eligibility_only_when_all_pass():
     assert gate["verdict"] == "FAIL"
     assert gate["eligible_for_sorter_skip"] is False
     assert gate["recommended_action"] == "force_llm_sorter"
+
+
+def test_build_handoff_accepts_sections_ok_alias_and_inference_quality():
+    """inference emits section_map_ok (+ legacy sections_ok); a quality dict
+    with only the legacy key must not be silently read as True."""
+    h = build_handoff(quality={"sections_ok": False})
+    assert h["quality"]["section_map_ok"] is False
+    h = build_handoff(quality={"sections_ok": True, "section_map_ok": False})
+    assert h["quality"]["section_map_ok"] is False  # canonical key wins
+    assert build_handoff(quality={})["quality"]["section_map_ok"] is True
+
+    from mailroom_ml.inference import classify_document
+    from tests.test_inference import _confident_doc_bundle
+
+    res = classify_document(_confident_doc_bundle(), "T", "body",
+                            window_texts=["w"])
+    h = build_handoff(method="bert", quality=res["quality"])
+    assert h["quality"]["section_map_ok"] is True

@@ -38,7 +38,11 @@ def energy_score(logits: np.ndarray, temperature: float = 1.0) -> np.ndarray:
     arr = np.asarray(logits, dtype=np.float64)
     if arr.ndim == 1:
         arr = arr[None, :]
-    t = float(temperature) if temperature else 1.0
+    # None -> 1.0; any explicit T must be a positive number.  (A falsy 0 used
+    # to map silently to 1.0 and a negative T flipped the energy's sign.)
+    t = 1.0 if temperature is None else float(temperature)
+    if not t > 0.0:  # also rejects NaN
+        raise ValueError(f"OOD energy temperature must be > 0, got {temperature!r}")
     z = arr / t
     m = z.max(axis=-1, keepdims=True)
     logsumexp = m.squeeze(-1) + np.log(np.exp(z - m).sum(axis=-1))
@@ -80,6 +84,22 @@ def fit_ood_probe(
     }
 
 
+_DIRECTIONS = ("above", "below")
+
+
+def _probe_direction(probe: dict[str, Any]) -> str:
+    """The probe's flag direction; absent -> ``above`` (energy default).
+
+    An unknown value raises: silently treating a probe fit with some other
+    convention as ``above`` would flip which documents get flagged.
+    """
+    direction = probe.get("direction", "above")
+    if direction not in _DIRECTIONS:
+        raise ValueError(
+            f"unknown OOD probe direction {direction!r} (known: {_DIRECTIONS})")
+    return direction
+
+
 def score_ood(
     logits: np.ndarray,
     probe: dict[str, Any] | None,
@@ -92,14 +112,20 @@ def score_ood(
     """
     if not probe:
         return None, None, "absent"
-    scores = energy_score(logits, float(probe.get("temperature") or 1.0))
+    direction = _probe_direction(probe)
+    scores = energy_score(logits, probe.get("temperature"))
     score = float(np.mean(scores))
     threshold = float(probe["threshold"])
-    flag = score > threshold
+    flag = score < threshold if direction == "below" else score > threshold
     return score, flag, "ok"
 
 
 def load_ood_probe(model_dir: str | Path) -> dict[str, Any] | None:
+    """Load the sidecar; None when absent/unreadable.
+
+    Raises ``ValueError`` for a probe that parses but carries an unknown
+    ``direction`` or a non-positive ``temperature`` (never guessed around).
+    """
     path = Path(model_dir) / OOD_PROBE_FILENAME
     if not path.is_file():
         return None
@@ -109,6 +135,9 @@ def load_ood_probe(model_dir: str | Path) -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict) or "threshold" not in data:
         return None
+    # reject a probe whose direction / temperature we cannot honor, loudly
+    _probe_direction(data)
+    energy_score(np.zeros(1), data.get("temperature"))
     return data
 
 

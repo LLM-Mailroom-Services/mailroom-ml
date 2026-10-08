@@ -1604,6 +1604,10 @@ _PROMOTE_GLOBS = ("*.safetensors", "pytorch_model*.bin")
 # optimizer/scheduler/resume state is training-internal (2026-09-20 audit
 # R10: it doubled repo size).
 HUB_IGNORE_PATTERNS = ["optimizer.pt", "scheduler.pt", "resume.json"]
+# The final-epoch resume state in ``output`` (dropped when promotion cannot
+# repoint the manifest at the final epoch's archive).
+_RESUME_STATE_FILES = ("optimizer.pt", "scheduler.pt", "resume.json",
+                       "resume_manifest.json")
 
 
 def _promote_epoch_files(src: Path, dst: Path) -> list[str]:
@@ -2172,6 +2176,16 @@ def main() -> int:
                     epoch=last_epoch, step_in_epoch=0, steps_done=steps_done,
                     steps_done_micro=steps_done_micro, run_id=run_id,
                     epoch_complete=True)
+            else:
+                # no final-epoch archive to point at: the final-epoch resume
+                # state left in `output` must not be paired with the promoted
+                # weights, so `output` becomes a non-resumable (shipping)
+                # bundle.
+                for name in _RESUME_STATE_FILES:
+                    (args.output / name).unlink(missing_ok=True)
+                print(f"[trainer] WARNING: final epoch archive missing "
+                      f"({final_archive}); removed the final-epoch resume "
+                      f"state from {args.output} (not resumable)", flush=True)
         else:
             print(f"[trainer] WARNING: selected epoch {selected_epoch} "
                   f"archive missing ({src}); latest/ holds the final epoch",

@@ -289,10 +289,13 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     still contributes to its head's per-class ``support``, but records no
     ``(gt, pred)`` pair, so it is excluded from the macro-F1 denominator.
     """
-    # fast_path_rate mirrors the production gate (classify_document): the
-    # artifact routing overlay (#25) when present, else the config constants,
-    # and BOTH the route and the plan's agreement floors.  An explicit
-    # ``doc_confidence`` wins over the overlay.
+    # fast_path_rate uses the production gate's CONFIDENCE thresholds
+    # (classify_document): the artifact routing overlay (#25) when present,
+    # else the config constants, and BOTH the route and the plan's agreement
+    # floors.  An explicit ``doc_confidence`` wins over the overlay.  It is a
+    # confidence-only gate: classify_document's authentic-support, catch-all,
+    # head-exclusion and subclass-projection guards are NOT applied, so
+    # fast_path_rate is an upper bound on the production fast-path rate.
     from mailroom_ml.inference import _bundle_route
 
     if doc_confidence is None:

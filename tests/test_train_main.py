@@ -219,6 +219,31 @@ def test_eval_test_scores_the_selected_epoch_weights(harness):
         archive / "train_steps.jsonl").stat().st_size
 
 
+def test_missing_final_archive_leaves_output_not_resumable(harness,
+                                                           monkeypatch):
+    """Promotion repoints the resume manifest at the final epoch's archive;
+    with that archive missing, the final-epoch optimizer/scheduler/resume
+    state left in `output` must not be paired with the promoted weights."""
+    orig_copytree = tm.shutil.copytree
+
+    def _copytree(src, dst, *a, **kw):
+        if str(dst).endswith("-e2"):
+            return dst  # simulate a failed/deleted final-epoch archive
+        return orig_copytree(src, dst, *a, **kw)
+
+    monkeypatch.setattr(tm.shutil, "copytree", _copytree)
+    harness.select(1)
+    out = harness.tmp / "latest"
+    assert harness.run(out) == 0
+    run_id = json.loads((out / "summary.json").read_text())["run_id"]
+    assert not (harness.tmp / "runs" / f"{run_id}-e2").exists()
+    assert (out / "heads.pt").read_bytes() == (
+        harness.tmp / "runs" / f"{run_id}-e1" / "heads.pt").read_bytes()
+    for name in ("optimizer.pt", "scheduler.pt", "resume.json",
+                 "resume_manifest.json"):
+        assert not (out / name).exists(), name
+
+
 def test_push_refused_when_no_epoch_met_the_gate(harness):
     harness.select(0)
     out = harness.tmp / "latest"

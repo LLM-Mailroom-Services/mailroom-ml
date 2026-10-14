@@ -17,18 +17,18 @@
     "subset": "test"
   },
   "heldout_plus_eval": {
-    "artifact_sha": "10cfcd60a91f5160e3870e1d0a666cc6436eee3062939962456ad65c77910caa",
-    "checkpoint": "/checkpoints/latest",
+    "artifact_sha": "05301a83bba45c8fab557db014555d3045f1b4a44444fed3d9e8d477a2a71136",
+    "checkpoint": "/checkpoints/runs/20261014-113614",
     "comparable_metrics_schema": "mailroom-ml/comparable-metrics/v1",
-    "compare_323": "reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-m9a-local-20260927-014429.md",
-    "eval_json": "reports/TEST-EVAL/eval_m9a-local-20260927-014429-heldout-plus.json",
-    "eval_json_canonical": "reports/eval_m9a-local-20260927-014429-heldout-plus.json",
+    "compare_323": "reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-m9c-20261014-113614.md",
+    "eval_json": "reports/TEST-EVAL/eval_m9c-20261014-113614-heldout-plus.json",
+    "eval_json_canonical": "reports/eval_m9c-20261014-113614-heldout-plus.json",
     "eval_subset": "heldout-plus",
     "n_docs": 1323,
     "note": "Extended pool; not used for #112 gate replacement.",
-    "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9a-local-20260927-014429.md",
+    "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9c-20261014-113614.md",
     "role": "heldout-plus-extended",
-    "run_tag": "m9a-local-20260927-014429"
+    "run_tag": "m9c-20261014-113614"
   },
   "related": {
     "heldout_plus_v1": "reports/HOLDOUT-PLUS-V1-REPORT.md",
@@ -228,6 +228,20 @@
       "role": "m9a-held-out-test",
       "run_tag": "m9c-20261014-113614",
       "training_report": "reports/M9a-REPORT-m9c-20261014-113614.md"
+    },
+    {
+      "artifact_sha": "05301a83bba45c8fab557db014555d3045f1b4a44444fed3d9e8d477a2a71136",
+      "checkpoint": "/checkpoints/runs/20261014-113614",
+      "comparable_metrics_schema": "mailroom-ml/comparable-metrics/v1",
+      "compare_323": "reports/TEST-EVAL/TEST-EVAL-COMPARE-323-vs-1323-m9c-20261014-113614.md",
+      "eval_json": "reports/TEST-EVAL/eval_m9c-20261014-113614-heldout-plus.json",
+      "eval_json_canonical": "reports/eval_m9c-20261014-113614-heldout-plus.json",
+      "eval_subset": "heldout-plus",
+      "n_docs": 1323,
+      "note": "Extended pool; not used for #112 gate replacement.",
+      "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9c-20261014-113614.md",
+      "role": "heldout-plus-extended",
+      "run_tag": "m9c-20261014-113614"
     }
   ],
   "schema": "mailroom-ml/test-eval-manifest/v1"

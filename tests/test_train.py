@@ -1361,3 +1361,93 @@ def test_resume_across_param_group_layouts(tmp_path):
     assert state["steps_done"] == 3
     assert sched2.last_epoch == 3
     assert [g["lr"] for g in opt2.param_groups] == [2e-5, 1e-3]
+
+
+# -- M9c loss levers (2026-10-14) ----------------------------------------------
+
+def test_subclass_prior_max_ratio_cli_default_off():
+    assert build_parser().parse_args([]).subclass_prior_max_ratio == 0.0
+    ns = build_parser().parse_args(["--subclass-prior-max-ratio", "20"])
+    assert ns.subclass_prior_max_ratio == 20.0
+
+
+def test_subclass_head_weights_cli_default_uniform():
+    assert build_parser().parse_args([]).subclass_head_weights == "uniform"
+    ns = build_parser().parse_args(["--subclass-head-weights", "logk"])
+    assert ns.subclass_head_weights == "logk"
+
+
+def test_lr_floor_cli_default_zero():
+    assert build_parser().parse_args([]).lr_floor == 0.0
+    ns = build_parser().parse_args(["--lr-floor", "0.1"])
+    assert ns.lr_floor == 0.1
+
+
+def test_log_prior_max_ratio_clamps_prior_ratio():
+    """max_ratio caps the biggest/smallest prior ratio; 0 = exact unclamped."""
+    # counts {a: 300, b: 2} -> unclamped prior ratio 150x
+    weights = {"a": 302 / (2 * 300), "b": 302 / (2 * 2)}
+    unclamped = log_prior(weights, ["a", "b"]).exp()
+    assert unclamped[0] / unclamped[1] == pytest.approx(150.0)
+    clamped = log_prior(weights, ["a", "b"], max_ratio=20.0).exp()
+    assert clamped[0] / clamped[1] == pytest.approx(20.0)
+    assert clamped.sum() == pytest.approx(1.0)
+    # max_ratio=0 must be byte-identical to the unclamped prior
+    assert log_prior(weights, ["a", "b"]).tolist() == \
+        log_prior(weights, ["a", "b"], max_ratio=0.0).tolist()
+
+
+def _two_head_setup():
+    """contract (2 labels) + insurance (6 labels) with one row each."""
+    device = torch.device("cpu")
+    heads = {
+        "doc_type": {"label2id": {"contract": 0, "insurance_claim": 1},
+                     "labels": ["contract", "insurance_claim"],
+                     "weights": {"contract": 1.0, "insurance_claim": 1.0}},
+        "contract": {"label2id": {"service": 0, "license": 1},
+                     "labels": ["service", "license"],
+                     "weights": {"service": 1.0, "license": 1.0}},
+        "insurance_claim": {"label2id": {f"c{i}": i for i in range(6)},
+                            "labels": [f"c{i}" for i in range(6)],
+                            "weights": {f"c{i}": 1.0 for i in range(6)}},
+    }
+    batch = {
+        "input_ids": torch.zeros(2, 8, dtype=torch.long),
+        "attention_mask": torch.ones(2, 8, dtype=torch.long),
+        "doc_type": torch.tensor([0, 1]),
+        "subclass": torch.tensor([0, 2]),
+        "filename": ["a.txt", "b.txt"],
+    }
+    lgs = {
+        "doc_type": torch.tensor([[5.0, 0.0], [5.0, 0.0]]),
+        "contract": torch.tensor([[1.0, 0.0], [0.0, 0.0]]),
+        "insurance_claim": torch.tensor([[0.0] * 6, [1.0, 0.0, 0, 0, 0, 0]]),
+    }
+    return device, heads, batch, lgs
+
+
+def test_head_loss_logk_weighting_redistributes_subclass_share():
+    """logk: each active head's CE weighted by log(K), normalized — a single
+    active head is unchanged; two heads split by log(K) share."""
+    device, heads, batch, lgs = _two_head_setup()
+    ce_c = F.cross_entropy(lgs["contract"][:1], batch["subclass"][:1])
+    ce_i = F.cross_entropy(lgs["insurance_claim"][1:], batch["subclass"][1:])
+    uniform, _ = head_loss(_StubHeads(lgs), batch, heads, device,
+                           LossConfig(lambda_dt=0.0))
+    assert uniform.item() == pytest.approx((ce_c.item() + ce_i.item()) / 2)
+    logk, _ = head_loss(_StubHeads(lgs), batch, heads, device,
+                        LossConfig(lambda_dt=0.0, subclass_head_weights="logk"))
+    ws = torch.tensor([math.log(2.0), math.log(6.0)])
+    expected = (ws * torch.tensor([ce_c.item(), ce_i.item()])).sum() / ws.sum()
+    assert logk.item() == pytest.approx(expected.item())
+    # a SINGLE active head: logk weighting must equal the plain mean exactly
+    only_c = {k: v for k, v in batch.items()}
+    only_c["doc_type"] = torch.zeros(2, dtype=torch.long)
+    only_c["subclass"] = torch.tensor([0, 1])
+    lgs_single = {"doc_type": lgs["doc_type"], "contract": lgs["contract"]}
+    heads_single = {k: v for k, v in heads.items() if k != "insurance_claim"}
+    l1, _ = head_loss(_StubHeads(lgs_single), only_c, heads_single, device,
+                      LossConfig(lambda_dt=0.0))
+    l2, _ = head_loss(_StubHeads(lgs_single), only_c, heads_single, device,
+                      LossConfig(lambda_dt=0.0, subclass_head_weights="logk"))
+    assert l1.item() == pytest.approx(l2.item())

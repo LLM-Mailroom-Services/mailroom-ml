@@ -239,6 +239,20 @@ class LossConfig:
       (argmax uses raw logits). To retune ``tau_eff`` on a trained
       checkpoint without a new run, eval
       ``--subclass-decode-logit-adjust d`` with ``tau_eff = tau_train - d``.
+    - ``subclass_prior_max_ratio`` (M9c, 2026-10-14): cap on the prior
+      RATIO behind ``subclass_logit_adjust`` — raw counts ``v_k ∝ 1/w_k``
+      are clamped to ``[min(v), min(v) * max_ratio]`` before the log.  With
+      M9b's unclamped tau=1.0 a 2-window class held a ~235× prior advantage
+      over a common one (+5.46 logit bias) and became a per-head attractor
+      (`attorney_demand` 39/81, `mixed_cash_stock_election` 17/17); a 20×
+      cap keeps the tail correction but stops n=2 classes from winning by
+      prior alone. 0.0 (default) = unclamped (the M9b setting, exact
+      ``tau_eff`` decode identity).
+    - ``subclass_head_weights`` (M9c, 2026-10-14): how the active subclass
+      heads' CEs combine. "uniform" = plain mean (the prior behavior);
+      "logk" = weighted mean by ``log(K_head)`` (difficulty weighting) so a
+      25-class contract head draws ~1.6× the per-head gradient share a
+      6-class insurance head gets, instead of every head counting 1/5.
     """
     lambda_dt: float = 0.65
     label_smoothing: float = 0.0
@@ -247,6 +261,8 @@ class LossConfig:
     weight_cap: float = 10.0
     subclass_loss_norm: str = "count"
     subclass_logit_adjust: float = 0.0
+    subclass_prior_max_ratio: float = 0.0
+    subclass_head_weights: str = "uniform"
 
     def transform_weights(self, weights: dict[str, float],
                           labels: list[str],
@@ -266,15 +282,30 @@ class LossConfig:
 
 
 def log_prior(weights: dict[str, float], labels: list[str],
-              device: torch.device | None = None) -> torch.Tensor:
+              device: torch.device | None = None,
+              max_ratio: float = 0.0) -> torch.Tensor:
     """Per-label log train prior from inverse-frequency weights.
 
     ``class_weights`` stores ``N / (K * n_k)``, so ``n_k ∝ 1 / w_k``. A label
     with no stored weight has no train support; it gets the smallest prior
     seen, so the adjustment never favours it. Shared with decode-time
     adjust (``mailroom_ml.logit_adjust``) so residual ``tau`` is exact.
+
+    ``max_ratio > 0`` (M9c) clamps the raw prior counts ``v_k ∝ 1 / w_k`` to
+    ``[min(v), min(v) * max_ratio]`` before the log, so the largest/smallest
+    class-prior ratio never exceeds ``max_ratio``. Decode-time adjustment
+    (``mailroom_ml.logit_adjust``) stays unclamped — the ``tau_eff =
+    tau_train - d`` identity is exact only for unclamped runs; clamped runs
+    record the ratio in ``summary.json hyperparameters``.
     """
     vals = log_prior_values(weights, labels)
+    if max_ratio > 0:
+        counts = [math.exp(v) for v in vals]
+        floor = min(counts) if counts else 1.0
+        cap = floor * max_ratio
+        counts = [min(v, cap) for v in counts]
+        total = sum(counts) or 1.0
+        vals = [math.log(v / total) for v in counts]
     return torch.tensor(vals, dtype=torch.float32, device=device)
 
 
@@ -347,7 +378,7 @@ def head_loss(model, batch, heads, device,
                                      device=logits["doc_type"].device),
         label_smoothing=cfg.label_smoothing,
         ignore_index=CE_IGNORE_INDEX)
-    sc_ces: list[torch.Tensor] = []
+    sc_terms: list[tuple[str, torch.Tensor]] = []
     for cls in heads:
         if cls == "doc_type":
             continue
@@ -368,20 +399,32 @@ def head_loss(model, batch, heads, device,
             if cfg.subclass_logit_adjust:
                 sc_logits = sc_logits + cfg.subclass_logit_adjust * log_prior(
                     heads[cls]["weights"], heads[cls]["labels"],
-                    device=sc_logits.device)
+                    device=sc_logits.device,
+                    max_ratio=cfg.subclass_prior_max_ratio)
             if cfg.subclass_loss_norm == "weighted-mean":
-                sc_ces.append(F.cross_entropy(
+                sc_terms.append((cls, F.cross_entropy(
                     sc_logits, target, weight=weight,
                     label_smoothing=cfg.subclass_label_smoothing,
-                    ignore_index=CE_IGNORE_INDEX))
+                    ignore_index=CE_IGNORE_INDEX)))
                 continue
-            sc_ces.append(F.cross_entropy(
+            sc_terms.append((cls, F.cross_entropy(
                 sc_logits, target, weight=weight,
                 label_smoothing=cfg.subclass_label_smoothing,
-                ignore_index=CE_IGNORE_INDEX, reduction="sum") / n_valid)
-    if sc_ces:
-        loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * torch.stack(
-            sc_ces).mean()
+                ignore_index=CE_IGNORE_INDEX, reduction="sum") / n_valid))
+    if sc_terms:
+        ces = torch.stack([ce for _, ce in sc_terms])
+        if cfg.subclass_head_weights == "logk":
+            # M9c difficulty weighting: a K-class head's CE is weighted by
+            # log(K) (normalized to a weighted mean) so multi-class heads
+            # (contract 25) draw more gradient than near-solved small heads
+            # (insurance 6) instead of every head counting 1/len(sc_terms).
+            ws = torch.tensor(
+                [math.log(max(2, len(heads[c]["labels"]))) for c, _ in sc_terms],
+                dtype=torch.float32, device=ces.device)
+            sc_loss = (ws * ces).sum() / ws.sum()
+        else:
+            sc_loss = ces.mean()
+        loss = cfg.lambda_dt * dt_ce + (1.0 - cfg.lambda_dt) * sc_loss
     else:
         loss = dt_ce
     return loss, logits
@@ -1391,6 +1434,10 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--grad-accum", type=int, default=2)
     ap.add_argument("--lr", type=float, default=2e-5)
     ap.add_argument("--warmup-frac", type=float, default=0.06)
+    ap.add_argument("--lr-floor", type=float, default=0.0,
+                    help="M9c: fraction of peak LR the schedule keeps at the "
+                         "end of decay instead of decaying to 0 (0 = the "
+                         "previous linear-to-zero schedule exactly)")
     ap.add_argument("--max-length", type=int, default=MAX_TOKENS)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--push-to-hub", default="",
@@ -1488,6 +1535,19 @@ def build_parser() -> argparse.ArgumentParser:
                          "log(train prior) to their logits in the loss only "
                          "(0 = off; 1.0 with --weight-mode none is the "
                          "standard setting)")
+    ap.add_argument("--subclass-prior-max-ratio", type=float, default=0.0,
+                    help="M9c: cap the prior RATIO behind "
+                         "--subclass-logit-adjust at max/min = this (raw "
+                         "counts clamped to [min, min*ratio] before the "
+                         "log). 0 = unclamped. Stops n=2 tail classes from "
+                         "carrying a ~235x prior advantage")
+    ap.add_argument("--subclass-head-weights",
+                    choices=["uniform", "logk"], default="uniform",
+                    help="M9c: how active subclass heads' CEs combine — "
+                         "uniform plain mean, or logk difficulty weighting "
+                         "(each head weighted by log(K), so the 25-class "
+                         "contract head draws ~1.6x the share of the "
+                         "6-class insurance head)")
     ap.add_argument("--mlp-heads", action="store_true",
                     help="use the ModernBERT classification recipe heads "
                          "(hidden SiLU MLP + dropout) instead of linear")
@@ -1916,7 +1976,12 @@ def main() -> int:
     def lr_lambda(step: int) -> float:
         if step < warmup:
             return step / warmup
-        return max(0.0, 1.0 - (step - warmup) / max(1, total_steps - warmup))
+        progress = (step - warmup) / max(1, total_steps - warmup)
+        scale = max(0.0, 1.0 - progress)
+        # --lr-floor (M9c): keep a fraction of peak LR alive through the last
+        # epochs instead of decaying to 0 (0.0 = the previous linear-to-zero
+        # schedule exactly).
+        return args.lr_floor + (1.0 - args.lr_floor) * scale
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
@@ -1926,7 +1991,9 @@ def main() -> int:
                           weight_mode=args.weight_mode,
                           weight_cap=args.weight_cap,
                           subclass_loss_norm=args.subclass_loss_norm,
-                          subclass_logit_adjust=args.subclass_logit_adjust)
+                          subclass_logit_adjust=args.subclass_logit_adjust,
+                          subclass_prior_max_ratio=args.subclass_prior_max_ratio,
+                          subclass_head_weights=args.subclass_head_weights)
 
     best_val = float("inf")
     stale = 0

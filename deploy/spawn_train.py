@@ -162,16 +162,43 @@ def _steps_per_epoch(train_windows: int, batch_size: int) -> int:
     return math.ceil(train_windows / batch_size)
 
 
+def _app_list_json() -> list[dict]:
+    """`modal app list --json` entries (robust to rich-table column wrapping).
+
+    The wrapped text table split the Description across two rows in an
+    80-col capture, which moved the State/Tasks fields off their expected
+    split indices (smoke watcher 2026-10-14, exit 4 with the app visibly
+    deployed). The JSON form has one object per app with canonical keys;
+    an empty list on any parse failure keeps the legacy text fallback live.
+    """
+    out = subprocess.run(["modal", "app", "list", "--json"],
+                         capture_output=True, text=True, timeout=60)
+    try:
+        data = json.loads(out.stdout)
+        return data if isinstance(data, list) else []
+    except json.JSONDecodeError:
+        return []
+
+
 def _live_app_ids() -> list[str]:
-    """Parse `modal app list` for mailroom-ml-train apps with live tasks.
+    """Parse `modal app list --json` for mailroom-ml-train apps with live tasks.
 
     A spawn on the deployed function runs as a task ON the deployed app
     (state ``deployed``, Tasks > 0) — that is the only "running work" signal;
-    stopped apps (0 tasks) must not trip the double-launch guard.
+    stopped apps (0 tasks) must not trip the double-launch guard. Falls back
+    to the legacy text-table parse if the CLI does not emit JSON.
     """
+    ids = []
+    for app in _app_list_json():
+        if (str(app.get("state", "")) == "deployed"
+                and str(app.get("tasks") or "0").isdigit()
+                and int(app["tasks"]) > 0
+                and "mailroom-ml" in str(app.get("description", ""))):
+            ids.append(app["app_id"])
+    if ids:
+        return ids
     out = subprocess.run(["modal", "app", "list"], capture_output=True,
                          text=True, timeout=60).stdout
-    ids = []
     for line in out.splitlines():
         if "ap-" not in line or "mailroom-ml" not in line:
             continue
@@ -184,6 +211,10 @@ def _live_app_ids() -> list[str]:
 
 def _deployed_app_id() -> str | None:
     """The mailroom-ml-train deployed app id (State column == 'deployed')."""
+    for app in _app_list_json():
+        if (str(app.get("state", "")) == "deployed"
+                and "mailroom-ml" in str(app.get("description", ""))):
+            return app["app_id"]
     out = subprocess.run(["modal", "app", "list"], capture_output=True,
                          text=True, timeout=60).stdout
     for line in out.splitlines():

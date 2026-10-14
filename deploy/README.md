@@ -86,19 +86,28 @@ What happens inside the container:
    **`modernbert-checkpoints`** Volume for rollback; the Volume is committed
    after a successful promote.
 
-### Cost notes (L4)
+### Cost notes (2026-10-14, `modal billing rates` live — H100 M9c shape)
 
-- On-demand L4 is roughly **$0.5–0.6/h** (verify live: `modal billing rates`,
-  1.5.4+ CLI) — the plan's budget is a one-time **~1–2 L4-hour run**. The job
-  is scale-to-zero by default: no `keep_warm`, nothing billed between runs.
-- The image build and the dataset/model download happen inside the 4 h function
-  timeout (`startup_timeout` 10 min); the first boot pays ModernBERT weight +
-  dataset download once (cached on the `mailroom-ml-hf-cache` Volume).
+- **Train function:** `H100` $3.95/h + `cpu=4` ($0.0473/core/h) + `16 GiB`
+  ($0.008/GiB/h) = **$4.2672/h all-in** (was the L4 shape: $0.9734/h). The
+  H100 drops the 6-epoch run from ~12 L4-hours / ~$11 (over envelope) to
+  **~1.5–2.5 h / ~$6.50** (measured smoke cadence is the authority: the
+  budget guard extrapolates it — never a remembered figure).
+- The job is scale-to-zero by default: no `keep_warm`, nothing billed
+  between runs. Verify live: `modal billing rates` (1.5.4+ CLI).
+- The image build and the dataset/model download happen inside the 8 h
+  function timeout (`startup_timeout` 10 min); the first boot pays
+  ModernBERT weight + dataset download once (cached on the
+  `mailroom-ml-hf-cache` Volume).
 - A smoke run costs minutes: `uv run --extra deploy python deploy/spawn_train.py --smoke`
   (a 24-micro-batch run that exercises the full path; its timing feeds the
   budget guard, so it pins `--checkpoint-every` to the real run's cadence
   rather than inheriting its own `--log-every 4`, which would put a checkpoint
   save inside every 8 micro-batches of the measurement).
+- Operator envelope (M9c): the guard ceiling defaults to **$10.00**
+  (`BUDGET_CEILING_USD`); `--budget` overrides per launch. The guard refuses
+  (exit 6) when the estimate exceeds it unless `--force` — an operator
+  decision, never a silent one.
 
 ### Checkpoint persistence & rollback
 

@@ -90,10 +90,15 @@ HUB_IGNORE_PATTERNS = ["optimizer.pt", "scheduler.pt", "resume.json",
 
 # GPU + timeouts — exposed as constants so the deploy test suite can assert the
 # deployed configuration offline (string GPU API, verified against 1.6.0 docs).
-TRAIN_GPU = "L4"
-# 8h: 5 epochs at dynamic padding measures ~1h/epoch on an L4 (~5h) +
-# held-out test eval. A timeout here kills the run WITHOUT a checkpoint
-# (saved only at the end), so the ceiling must clear the worst case.
+# M9c (2026-10-14): H100 replaces the L4 — at max_length 8192 ModernBERT is
+# bandwidth-bound (L4 300 GB/s + mandatory gradient checkpointing vs H100
+# 3.35 TB/s bf16 with checkpointing off); the 6-epoch run drops from ~12h /
+# ~$11 (over the $10 envelope) to ~1.5h / ~$6. CPU 4 / 16 GiB keeps tokenizer
+# + collation off the critical path of the faster GPU (billed on request).
+TRAIN_GPU = "H100"
+# 8h: ~1.5h measured-shaped H100 run + generous worst-case headroom. A
+# timeout here kills the run WITHOUT a checkpoint (saved only at the end),
+# so the ceiling must clear the worst case.
 TRAIN_TIMEOUT_S = 60 * 60 * 8
 TRAIN_STARTUP_TIMEOUT_S = 60 * 10
 # Compute guardrails (verified against the installed modal 1.6.0 SDK + docs on
@@ -105,11 +110,12 @@ TRAIN_STARTUP_TIMEOUT_S = 60 * 10
 #
 # 2026-09-19 (cost pass): Modal bills CPU/memory on the REQUESTED allocation,
 # and the trainer's per-step CPU work is ~0.5 s vs ~6 s of GPU work — 8 cores
-# was ~3x over-provisioned. cpu=2 / 10 GiB keeps the GPU fed at ~25% lower
-# cost/hour; the per-step log heartbeat makes any starvation visible within
-# minutes (and per-epoch checkpoints cap the loss).
-TRAIN_CPU = 2
-TRAIN_MEMORY_MIB = 10240  # 10 GiB (container measured ~7.1 GiB peak)
+# was ~3x over-provisioned. cpu=2 / 10 GiB kept the L4 fed at ~25% lower
+# cost/hour (2026-10-14 M9c: cpu=4 / 16 GiB for the H100 — 2 cores starved
+# during the in-container test eval's tokenizer pass; the per-step log
+# heartbeat makes any starvation visible within minutes).
+TRAIN_CPU = 4
+TRAIN_MEMORY_MIB = 16384  # 16 GiB
 TRAIN_RETRIES = 0
 
 # Deploy-time env keys copied into a Modal Secret (never hardcode tokens).
@@ -249,7 +255,7 @@ def _build_train_cmd(
 
 @app.function(
     gpu=TRAIN_GPU,  # string API — verified current for the 1.6.0 SDK
-    cpu=TRAIN_CPU,  # 8 physical cores — 1-vCPU default starved the GPU (see above)
+    cpu=TRAIN_CPU,  # 4 cores (0.125-core default starved the GPU; 2 was the L4 cost pass)
     memory=TRAIN_MEMORY_MIB,  # 16 GiB
     volumes={CHECKPOINT_MOUNT: checkpoint_vol, HF_CACHE_MOUNT: hf_cache_vol},
     secrets=_config_secrets(),
@@ -271,7 +277,7 @@ def train(
     trainer_extra: list[str] | None = None,
     export_onnx: bool = True,
 ) -> dict:
-    """Run the fine-tune inside an L4 GPU container.
+    """Run the fine-tune inside an H100 GPU container (M9c; was L4).
 
     Seams:
     - data pin: TRAINING_DATA_REPO/TRAINING_DATA_REVISION come from

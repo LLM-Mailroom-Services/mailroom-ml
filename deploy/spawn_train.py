@@ -1,9 +1,10 @@
 """Fire-and-forget trainer launch — submit the training call and exit.
 
 Budget guard (2026-09-19): before a real (non-smoke) spawn, the estimated
-run cost is compared against BUDGET_CEILING_USD (default $4.32, the Option A
-envelope). The estimate uses the smoke run's measured training cadence and
-dataset size (``~/.cache/mailroom-ml/smoke_metrics.json``), and a real launch
+run cost is compared against BUDGET_CEILING_USD (default $10.00, the M9c
+operator envelope; was $4.32 for the L4 shape). The estimate uses the smoke
+run's measured training cadence and dataset size
+(``~/.cache/mailroom-ml/smoke_metrics.json``), and a real launch
 is REFUSED when no smoke metrics are on file — the smoke must run first so
 the guard has real numbers, not guesses. A projection over the ceiling
 aborts with exit code 6 unless ``--force`` is passed. The ceiling bounds the
@@ -67,18 +68,21 @@ SMOKE_STEP_TIMEOUT_S = 60 * 4  # no step line for 4 min => starved/stuck
 # ---------------------------------------------------------------------------
 # Budget guard (2026-09-19) — explicit overspend protection for the real run.
 #
-# Rates from modal.com/pricing (fetched 2026-09-19): L4 $0.000222/s, CPU
-# $0.0000131/core/s, memory $0.00000222/GiB/s. Option A (L4 + cpu=2 + 10 GiB)
-# is therefore $0.9734/h all-in — the estimate multiplies that by the smoke's
-# measured (epochs x steps/epoch x seconds/step) plus a fixed startup
-# overhead. The guard refuses to launch a REAL run when the estimate exceeds
-# BUDGET_CEILING_USD ($4.32, the plan envelope) unless --force is passed.
-ALL_IN_USD_PER_HOUR = round(
-    (0.000222 + 2 * 0.0000131 + 10 * 0.00000222) * 3600, 6)
-BUDGET_CEILING_USD = 4.32
+# Rates from `modal billing rates` (live, 2026-10-14): H100 $3.95/h, CPU
+# $0.0473/core/h, memory $0.008/GiB/h. Option M9c (H100 + cpu=4 + 16 GiB) is
+# $4.2672/h all-in — the estimate multiplies that by the smoke's measured
+# (epochs x steps/epoch x seconds/step) plus a fixed startup overhead. The
+# guard refuses to launch a REAL run when the estimate exceeds
+# BUDGET_CEILING_USD unless --force is passed. (Pre-M9c it was the L4 shape:
+# L4 $0.80/h + cpu2 $0.0473*2 + mem10 $0.008*10 = $0.9734/h, ceiling $4.32.)
+BUDGET_CEILING_USD = 10.0  # operator envelope: jjburleson allocation for M9c
 STARTUP_OVERHEAD_S = 60 * 30      # cold image pull + weight download allowance
 SMOKE_METRICS_ENV = "MAILROOM_ML_SMOKE_METRICS"
 SMOKE_METRICS_DEFAULT = Path.home() / ".cache" / "mailroom-ml" / "smoke_metrics.json"
+
+GPU_USD_PER_HOUR = {"H100": 3.95, "A100-80GB": 2.50, "L4": 0.80}
+ALL_IN_USD_PER_HOUR = round(
+    GPU_USD_PER_HOUR["H100"] + 4 * 0.0473 + 16 * 0.008, 6)
 
 
 def _smoke_metrics_path() -> Path:

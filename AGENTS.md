@@ -260,8 +260,9 @@ docs** before writing configuration.
   `modernbert-checkpoints` Volume: `/checkpoints/latest/` (the consumed
   pointer) and `/checkpoints/runs/<run-id>/` (per-run archive, rollback).
   Failed runs never commit — `latest/` keeps the last good checkpoint.
-- **Cost is real.** A full run is a multi-hour L4 job (order of dollars); the
-  plan budget is ~1–2 L4-hours one-time. A smoke run is minutes. `modal-specialist`
+- **Cost is real.** A full run defaults to an **H100** (~1.5–2.5 h,
+  ~$4.27/h all-in — order of dollars; the smoke's measured cadence is the
+  authority, never a remembered figure). A smoke run is minutes. `modal-specialist`
   will refuse to `--force` past a stated money ceiling — **budget overrides are
   an operator decision**, surfaced as a `needs_attention` card, never a silent
   `--force`. Measure s/step before quoting an estimate; do not trust a

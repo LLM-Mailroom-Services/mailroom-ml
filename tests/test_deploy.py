@@ -68,15 +68,15 @@ def test_train_app_constructs() -> None:
     assert isinstance(modal_app.image, modal.Image)
     assert isinstance(modal_app.train, modal.Function)
     # deployed configuration (documented in deploy/README.md):
-    assert modal_app.TRAIN_GPU == "L4"
+    assert modal_app.TRAIN_GPU == "H100"
     assert modal_app.TRAIN_TIMEOUT_S == 8 * 60 * 60
     assert modal_app.TRAIN_STARTUP_TIMEOUT_S == 10 * 60
     # compute guardrails (2026-09-19: 1-vCPU default starved the GPU — the
     # trainer must never run on the default 0.125-core request again; the
-    # cost pass cut 8->2 cores / 16->10 GiB — billed on request, and the
-    # per-step CPU work is ~0.5s vs ~6s of GPU work):
-    assert modal_app.TRAIN_CPU >= 2
-    assert modal_app.TRAIN_MEMORY_MIB >= 10240
+    # M9c pass (2026-10-14) moved to H100 + cpu=4 + 16 GiB — billed on
+    # request, keeping tokenizer/collation off the faster GPU's path):
+    assert modal_app.TRAIN_CPU >= 4
+    assert modal_app.TRAIN_MEMORY_MIB >= 16384
     assert modal_app.TRAIN_RETRIES == 0
 
 
@@ -229,19 +229,20 @@ def test_spawn_budget_estimate() -> None:
     pytest.importorskip("modal")
     """Estimate formula: (epochs x steps/epoch x s/step + startup) / 3600 x $/h.
     Verified against the exact arithmetic with fixed inputs, plus the trip
-    condition: a healthy Option A-shaped cadence (2 epochs, 750 steps/epoch @
-    6s/step) must stay under the $4.32 ceiling while a slow/oversized run
-    (5 epochs @ 30s/step) must exceed it. (The true steps/epoch comes from the
-    smoke's train-windows measurement — never guessed here.)"""
+    condition: a healthy M9c-shaped cadence (2 epochs, 560 steps/epoch @
+    1.5s/step on the H100) must stay under the $10 ceiling while a
+    slow/oversized run (5 epochs @ 30s/step) must exceed it. (The true
+    steps/epoch comes from the smoke's train-windows measurement — never
+    guessed here.)"""
     from deploy import spawn_train as st
 
-    est = st._estimate_run_cost_usd(epochs=2, steps_per_epoch=750,
-                                    sec_per_step=6.0,
+    est = st._estimate_run_cost_usd(epochs=2, steps_per_epoch=560,
+                                    sec_per_step=1.5,
                                     usd_per_hour=st.ALL_IN_USD_PER_HOUR,
                                     startup_overhead_s=60 * 30)
-    hours = (2 * 750 * 6.0 + 1800) / 3600
+    hours = (2 * 560 * 1.5 + 1800) / 3600
     assert est == hours * st.ALL_IN_USD_PER_HOUR
-    assert est < st.BUDGET_CEILING_USD, f"healthy Option A est {est:.2f} tripped"
+    assert est < st.BUDGET_CEILING_USD, f"healthy M9c est {est:.2f} tripped"
     # a slow/misconfigured run must trip the ceiling
     slow = st._estimate_run_cost_usd(epochs=5, steps_per_epoch=3000,
                                      sec_per_step=30.0)
@@ -251,12 +252,13 @@ def test_spawn_budget_estimate() -> None:
 @pytest.mark.deploy
 def test_spawn_budget_all_in_rate_matches_pricing_page() -> None:
     pytest.importorskip("modal")
-    """2026-09-19 pricing page: L4 $0.000222/s, CPU $0.0000131/core/s,
-    memory $0.00000222/GiB/s -> L4+2 cores+10GiB = $0.9734/h."""
+    """2026-10-14 `modal billing rates`: H100 $3.95/h, CPU $0.0473/core/h,
+    memory $0.008/GiB/h -> H100+4 cores+16GiB = $4.2672/h."""
     from deploy import spawn_train as st
 
-    assert st.ALL_IN_USD_PER_HOUR == round(
-        (0.000222 + 2 * 0.0000131 + 10 * 0.00000222) * 3600, 6)
+    assert st.ALL_IN_USD_PER_HOUR == round(3.95 + 4 * 0.0473 + 16 * 0.008, 6)
+    # the guard ceiling tracks the operator envelope (M9c: $10 on jjburleson)
+    assert st.BUDGET_CEILING_USD == 10.0
 
 
 @pytest.mark.deploy

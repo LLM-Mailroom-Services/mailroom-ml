@@ -61,6 +61,24 @@ email share 0.57 train / 0.511 val, macro-F1 0.0845 ≈ the collapse floor;
 | M9a-U10 **Hub release + test metrics** | operator | ⏳ **gate — post-train** | `training/publish_run_to_hub.py` + `governance/M9a-HANDOFF.md` § post-train; repo `Lucius-Morningstar/mailroom-modernbert-classifier`; **blocked until** train/eval/gates for active run `m9a-local-20260927-010430` finish |
 | **Held-out-plus Modal eval (1,323 docs)** | operator / cloud | ✅ done | **`main` @ `65d2591`** (#39) + `a5f8df1`; eval JSON + TEST-EVAL 323 vs 1,323; pickup closed in follow-up PR |
 
+## Mission M9c — H100 retrain with loss-side M9c levers (mailroom-issues #112)
+
+> Gate: same #112 surfaces (contract test macro-F1 ≥ 0.20 AND
+> correspondence ≥ 0.25, doc_type acc ≥ 0.89, window ECE ≤ 0.05). Inherits
+> M9b's state: decode-residual sweep FAILED both-contract clearance
+> (`M9b-DECODE-SWEEP-20261006.md`), so this pass = Tier-1 CUAD data
+> (pre-registered lever) + M9c loss levers, on an H100 via the jjburleson
+> Modal account (≤ $10 operator envelope; exios66 $3.65 held in reserve).
+
+| Card | Owner | Status | Evidence |
+| --- | --- | --- | --- |
+| M9c-U1 trainer loss levers (logK head weighting, prior-ratio clamp, LR floor) | this session | ✅ done | commit `1128c4a`; tests in `tests/test_train.py`; 509 passed / 10 skipped |
+| M9c-U2 H100 deploy layer (GPU/CPU/mem, rates, $10 ceiling) | this session | ✅ done | commit `9c9ccd5`; `modal billing rates` live 2026-10-14; deploy tests re-pinned |
+| M9c-U3 Tier-1 enrichment publish + pin bump | this session | ⛔ **measured — no publish** | CUAD full pool is sha-exhausted by the canonical corpus: **508/510 `duplicate_sha_canonical` + 1 intra-pool dup + 1 missing text** (`/private/tmp/opencode/m9c_dry.log`); additive rows are Enron 503 (correspondence — gate already MET 0.351) + GNOTHEIA 663 (insurance — F1 1.000); **zero contract mass available** → publishing adds nothing to the failing gate; skipped on minimal-path decision. A new contract source requires a MAUD/S1 pin (unpublished Hub repos — operator RFC) |
+| M9c-U4 jjburleson deploy + smoke + 6-epoch spawn | this session | ⏳ pending | post-U3; budget guard `--budget 10` |
+| M9c-U5 post-train eval + #112 gates + Hub release | operator | ⏳ pending | `check_m9a_gates.py` → `publish_run_to_hub.sh` (M9a-U10 checklist) |
+
+
 **M9a-U10 authoritative checklist (post-train, not optional):**
 
 1. Held-out eval JSON exists (`reports/eval_<run_tag>.json`).

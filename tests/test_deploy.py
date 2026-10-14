@@ -455,6 +455,29 @@ def test_export_onnx_and_parity_fail_loud(monkeypatch) -> None:
         modal_app._export_onnx_and_parity("/checkpoints/runs/x")
 
 
+def test_export_parity_relief_omits_int8_gate(monkeypatch) -> None:
+    """Option-A relief: ``require_int8=False`` runs the same parity script
+    WITHOUT ``--require-int8`` (fp32 <=1e-4 stays enforced by the script;
+    int8 agreement is still computed and reported); the strict default
+    keeps the flag (pin #19)."""
+    _need_modal()
+    from deploy import modal_app
+
+    seen = []
+
+    def _ok(cmd, check=False):  # noqa: ARG001
+        seen.append(list(cmd))
+        return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(modal_app.subprocess, "run", _ok)
+    modal_app._export_onnx_and_parity("/checkpoints/runs/x")
+    modal_app._export_onnx_and_parity("/checkpoints/runs/x", require_int8=False)
+    parity = [c for c in seen if any("onnx_parity_check.py" in p for p in c)]
+    assert len(parity) == 2
+    assert "--require-int8" in parity[0]
+    assert "--require-int8" not in parity[1]
+
+
 def test_promote_latest_is_atomic(tmp_path) -> None:
     """#19: promotion is a rename, not an in-place overwrite of latest/."""
     _need_modal()

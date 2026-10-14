@@ -74,6 +74,12 @@ What happens inside the container:
    3. Only then is `/checkpoints/latest` promoted (copy + rename). Failed
       export/parity raises and **leaves `latest/` on the last good
       checkpoint**.
+   - **Post-hoc relief (operator-set):** `modal run modal_app::promote
+     --run-id <runs/<id>>` re-runs export + parity (fp32 always enforced;
+     int8 agreement reported without gating) then promotes — for
+     operator-authorized releases whose fp32 gate passes but the strict
+     int8 argmax gate fires (e.g. M9c 2026-10-14). `--require-int8` keeps
+     the strict gate on this path too.
    4. Only then, and only if the trainer's selection gate was met
       (`summary.json` → `checkpoint_selection.gate_met`, i.e. `selected_epoch
       > 0`), the app uploads the run to the `--push-to-hub` repo.

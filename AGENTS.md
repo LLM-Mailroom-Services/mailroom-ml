@@ -269,7 +269,9 @@ docs** before writing configuration.
   remembered figure.
 - ONNX export + parity gate: `deploy/onnx_export.py` →
   `deploy/onnx_parity_check.py` (fp32 ≤1e-4 is the correctness contract; int8
-  gated on argmax agreement). **Do not export through `optimum-cli`** — the
+  gated on argmax agreement, relief via `modal_app::promote` with the fp32
+  gate still enforced — `deploy/README.md` "Post-hoc relief").
+  **Do not export through `optimum-cli`** — the
   shared-encoder + `heads.pt` architecture would initialize random heads and
   silently ship a broken graph; use the committed `torch.onnx.export` path
   (`dynamo=False`). After a successful non-smoke Modal train the container

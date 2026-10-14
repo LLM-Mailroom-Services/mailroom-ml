@@ -523,6 +523,34 @@ def _promote_latest(run_dir: str, dest: str | None = None) -> None:
         shutil.rmtree(backup)
 
 
+@app.function(cpu=TRAIN_CPU, memory=TRAIN_MEMORY_MIB,
+              volumes={CHECKPOINT_MOUNT: checkpoint_vol}, timeout=60 * 60)
+def promote_run(run_id: str, require_int8: bool = False) -> dict:
+    """Post-hoc export + parity + promote from a run archive (Option A relief).
+
+    fp32 parity is ALWAYS enforced by the parity script; ``require_int8``
+    defaults False so the operator-authorized relief passes parity without
+    the int8 argmax gate (its agreement numbers are still computed and
+    print to the log, report-only). The normal train flow keeps
+    ``require_int8=True`` (fail-loud contract intact, #19).
+    """
+    run_dir = f"{CHECKPOINT_MOUNT}/runs/{run_id}"
+    if not Path(run_dir).is_dir():
+        raise FileNotFoundError(f"no run archive at {run_dir} on the Volume")
+    onnx_dir = _export_onnx_and_parity(run_dir, require_int8=require_int8)
+    _promote_latest(run_dir)
+    checkpoint_vol.commit()  # persist latest/ before the container exits
+    print(f"[mailroom-ml-train] {run_id} -> latest/ promoted "
+          f"(require_int8={require_int8})", flush=True)
+    return {"run_id": run_id, "onnx_dir": onnx_dir,
+            "promoted": True, "require_int8": require_int8}
+
+
+@app.local_entrypoint()
+def promote(run_id: str, require_int8: bool = False) -> None:
+    promote_run.remote(run_id=run_id, require_int8=require_int8)
+
+
 @app.local_entrypoint()
 def main(
     epochs: int = 5,

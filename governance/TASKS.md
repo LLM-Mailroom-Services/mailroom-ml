@@ -75,7 +75,7 @@ email share 0.57 train / 0.511 val, macro-F1 0.0845 ≈ the collapse floor;
 | M9c-U1 trainer loss levers (logK head weighting, prior-ratio clamp, LR floor) | this session | ✅ done | commit `1128c4a`; tests in `tests/test_train.py`; 509 passed / 10 skipped |
 | M9c-U2 H100 deploy layer (GPU/CPU/mem, rates, $10 ceiling) | this session | ✅ done | commit `9c9ccd5`; `modal billing rates` live 2026-10-14; deploy tests re-pinned |
 | M9c-U3 Tier-1 enrichment publish + pin bump | this session | ⛔ **measured — no publish** | CUAD full pool is sha-exhausted by the canonical corpus: **508/510 `duplicate_sha_canonical` + 1 intra-pool dup + 1 missing text** (`/private/tmp/opencode/m9c_dry.log`); additive rows are Enron 503 (correspondence — gate already MET 0.351) + GNOTHEIA 663 (insurance — F1 1.000); **zero contract mass available** → publishing adds nothing to the failing gate; skipped on minimal-path decision. A new contract source requires a MAUD/S1 pin (unpublished Hub repos — operator RFC) |
-| M9c-U4 jjburleson deploy + smoke + 6-epoch spawn | this session | ⏳ pending | post-U3; budget guard `--budget 10` |
+| M9c-U4 jjburleson deploy + smoke + 6-epoch spawn | this session | 🔄 **RUNNING** | H100 deployed (`ap-xBJOowDypuE20h7QOpPkA8`); smoke cadence **1.0 s/step @ batch 8**, 4,499 windows; budget guard **est $6.14 ≤ $10**; spawned call `fc-01M4X35KS9YT60ZYR1K20VXRDG` (spawn_train output 2026-10-14 06:4x CDT). Fix en route: `modal app list --json` parser (commit `550c14b`) |
 | M9c-U5 post-train eval + #112 gates + Hub release | operator | ⏳ pending | `check_m9a_gates.py` → `publish_run_to_hub.sh` (M9a-U10 checklist) |
 
 

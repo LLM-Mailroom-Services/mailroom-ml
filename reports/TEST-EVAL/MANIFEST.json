@@ -190,6 +190,44 @@
       "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-heldout-plus-m9a-local-20260927-014429.md",
       "role": "heldout-plus-extended",
       "run_tag": "m9a-local-20260927-014429"
+    },
+    {
+      "arm": "M9C",
+      "artifact_sha": "05301a83bba45c8fab557db014555d3045f1b4a44444fed3d9e8d477a2a71136",
+      "eval_json": "reports/TEST-EVAL/eval_m9c-20261014-113614.json",
+      "eval_json_canonical": "reports/eval_m9c-20261014-113614.json",
+      "gates_112": {
+        "contract_macro_f1": {
+          "actual": 0.3589,
+          "how": "ge",
+          "met": true,
+          "threshold": 0.2
+        },
+        "correspondence_macro_f1": {
+          "actual": 0.5249,
+          "how": "ge",
+          "met": true,
+          "threshold": 0.25
+        },
+        "doc_type_accuracy": {
+          "actual": 0.9598,
+          "how": "ge",
+          "met": true,
+          "threshold": 0.89
+        },
+        "window_ece_calibrated": {
+          "actual": 0.0189,
+          "how": "le",
+          "met": true,
+          "threshold": 0.05
+        }
+      },
+      "gates_all_met": true,
+      "generated_at": "2026-10-14T12:49:54Z",
+      "report": "reports/TEST-EVAL/TEST-EVAL-REPORT-m9c-20261014-113614.md",
+      "role": "m9a-held-out-test",
+      "run_tag": "m9c-20261014-113614",
+      "training_report": "reports/M9a-REPORT-m9c-20261014-113614.md"
     }
   ],
   "schema": "mailroom-ml/test-eval-manifest/v1"

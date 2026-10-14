@@ -1,0 +1,109 @@
+{
+  "cohort": null,
+  "metrics": {
+    "doc_type_accuracy": {
+      "a": 0.9505,
+      "b": 0.9598,
+      "delta": -0.009299999999999975,
+      "paired": {
+        "ci_high": 0.0,
+        "ci_low": -0.018575851393188854,
+        "mean_diff": -0.009106811145510835,
+        "n_paired": 323,
+        "n_resamples": 2000,
+        "observed_diff": -0.009287925696594427
+      }
+    },
+    "fast_path_rate": {
+      "a": 0.743,
+      "b": 0.3901,
+      "delta": 0.3529,
+      "paired": {
+        "ci_high": 0.4055727554179567,
+        "ci_low": 0.29721362229102166,
+        "mean_diff": 0.3530402476780186,
+        "n_paired": 323,
+        "n_resamples": 2000,
+        "observed_diff": 0.35294117647058826
+      }
+    },
+    "ood_rate": {
+      "a": 0.0402,
+      "b": 0.0557,
+      "delta": -0.0155,
+      "paired": null
+    },
+    "selective_risk_threshold": {
+      "a": 0.97,
+      "b": 0.94,
+      "delta": 0.030000000000000027,
+      "paired": null
+    },
+    "window_ece": {
+      "a": 0.0152,
+      "b": 0.0189,
+      "delta": -0.0037,
+      "paired": null
+    }
+  },
+  "n_docs_a": 323,
+  "n_docs_b": 323,
+  "n_paired": 323,
+  "note": "Paired bootstrap on aligned per_doc filenames when present; otherwise headline scalars only (no fabricated pairing).",
+  "paired": {
+    "doc_type_accuracy": {
+      "ci_high": 0.0,
+      "ci_low": -0.018575851393188854,
+      "mean_diff": -0.009106811145510835,
+      "n_paired": 323,
+      "n_resamples": 2000,
+      "observed_diff": -0.009287925696594427
+    },
+    "fast_path_rate": {
+      "ci_high": 0.4055727554179567,
+      "ci_low": 0.29721362229102166,
+      "mean_diff": 0.3530402476780186,
+      "n_paired": 323,
+      "n_resamples": 2000,
+      "observed_diff": 0.35294117647058826
+    },
+    "subclass_accuracy": {
+      "ci_high": -0.07430340557275542,
+      "ci_low": -0.15170278637770898,
+      "mean_diff": -0.1116749226006192,
+      "n_paired": 323,
+      "n_resamples": 2000,
+      "observed_diff": -0.11145510835913312
+    }
+  },
+  "pairing": "document_id",
+  "per_head": {
+    "contract": {
+      "a": 0.162,
+      "b": 0.3589,
+      "delta": -0.1969
+    },
+    "corporate_record": {
+      "a": 0.904,
+      "b": 0.7733,
+      "delta": 0.13070000000000004
+    },
+    "correspondence": {
+      "a": 0.351,
+      "b": 0.5249,
+      "delta": -0.17390000000000005
+    },
+    "insurance_claim": {
+      "a": 1.0,
+      "b": 1.0,
+      "delta": 0.0
+    },
+    "merger_agreement": {
+      "a": 0.0,
+      "b": 0.1774,
+      "delta": -0.1774
+    }
+  },
+  "resamples": 2000,
+  "seed": 42
+}

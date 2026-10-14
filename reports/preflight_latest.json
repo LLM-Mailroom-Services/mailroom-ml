@@ -2,19 +2,21 @@
   "checks": {
     "hub_pins": {
       "ok": true,
-      "online": false
+      "online": true
     },
     "stage": {
-      "ok": true,
-      "path": "/Users/morningstar/Desktop/Cold_Storage/mailroom-ml/data/modernbert_training/stage"
+      "ok": false,
+      "path": "/Users/luciusjmorningstar/Downloads/mailroom-ml/data/modernbert_training/stage"
     },
     "synthetic_policy": {
       "ok": true,
-      "path": "/Users/morningstar/Desktop/Cold_Storage/mailroom-ml/configs/synthetic_policy_v1.yaml",
+      "path": "/Users/luciusjmorningstar/Downloads/mailroom-ml/configs/synthetic_policy_v1.yaml",
       "version": "v1"
     }
   },
-  "errors": [],
-  "ok": true,
-  "timestamp_utc": "2026-10-06T01:47:56.672171+00:00"
+  "errors": [
+    "stage missing: /Users/luciusjmorningstar/Downloads/mailroom-ml/data/modernbert_training/stage (run build_dataset --stage-only)"
+  ],
+  "ok": false,
+  "timestamp_utc": "2026-10-14T11:11:10.068007+00:00"
 }

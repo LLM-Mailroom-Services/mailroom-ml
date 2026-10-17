@@ -71,7 +71,7 @@ designed for the Enron/insurance pools the operator surfaced).
 
 | Repo | Revision | Role | Verified facts |
 | --- | --- | --- | --- |
-| `Lucius-Morningstar/mailroom-dataset` | `46a4d3c240a36671cde0182fff4960f6b8b73aca` | canonical eval corpus, immutable | 3,302 rows (train 2,979 / test 323); 55 strata; 5 doc_types; `ground_truth` 36 cols incl. matter/group/relationships + `gt_fields` |
+| `Lucius-Morningstar/mailroom-dataset` | `ed7576b676343e0b402ec5412cded301e629bdee` (tag `v9.1` = `bc9eab28`; supersedes GT-closure `46a4d3c2…`) | canonical eval corpus, immutable | 3,302 rows (train 2,979 / test 323); 55 strata; 5 doc_types; `ground_truth` 36 cols at v9.1 (`_published` included; 35 at v9.2, which drops `_published`) incl. matter/group/relationships + `gt_fields` |
 | `Lucius-Morningstar/mailroom-finetune` | `19720ceb4e29bc3134a88507aa57cdfac7a64a1b` | **modifiable working copy** (the "mailroom-train" duplicate) | created 2026-09-18; schema/rows identical to canonical (verify hashes at load — see §5) |
 | `Lucius-Morningstar/mailroom-modernbert-training` | `5b72a345cd3c057b736bea4910fdbef6509ad1c3` | prepared training set (leak-free, clerk-normalized) | documents 3,302 (2,680/299/323); windows 5,068 (4,573/495); `labels.json`/`vocabularies.json`/`manifest.txt` sidecars |
 

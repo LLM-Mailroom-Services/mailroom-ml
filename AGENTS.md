@@ -158,8 +158,9 @@ or GHA **heldout-plus-modal-eval**): `MODAL_TOKEN_ID` + `MODAL_TOKEN_SECRET` (ex
   The trainer's Modal app re-verifies the pinned training-data revision
   against the Hub **before** the trainer starts — a broken pin fails before
   any GPU minute.
-- Canonical corpus: `Lucius-Morningstar/mailroom-dataset` @ `46a4d3c2…`
-  (immutable eval corpus). Working duplicate for ML:
+- Canonical corpus: `Lucius-Morningstar/mailroom-dataset` @ the published
+  tag `v9.1` (`bc9eab28`; data commit `ed7576b6…`; supersedes GT-closure
+  `46a4d3c2…`; immutable eval corpus). Working duplicate for ML:
   `Lucius-Morningstar/mailroom-finetune` @ `19720ceb…` (the "mailroom-train"
   duplicate). Prepared training set:
   `Lucius-Morningstar/mailroom-modernbert-training` @ `5b72a345…`.

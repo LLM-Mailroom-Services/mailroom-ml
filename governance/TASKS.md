@@ -10,7 +10,8 @@ ih12eEK0) do not collide.
 
 Plan: `docs/intake-classifier-combined-plan.md` (v2026-09-18, issues-minned).
 Corpus: `mailroom-finetune @ 19720ceb…` (modifiable duplicate; canonical
-`mailroom-dataset @ 46a4d3c2…` untouched). Model: `answerdotai/ModernBERT-base`.
+`mailroom-dataset @ v9.1` (`bc9eab28`; data commit `ed7576b6…`) untouched).
+Model: `answerdotai/ModernBERT-base`.
 
 | Card | Owner | Status | Evidence |
 | --- | --- | --- | --- |

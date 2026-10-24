@@ -1,185 +1,148 @@
 #!/usr/bin/env python3
-"""Generate the repository's Mailroom constellation README artwork.
+"""Generate the README artwork for mailroom-ml (constellation design v2).
 
-Design system: constellation-v1 (Digital-Mailroom midnight/cyan/violet/pink).
-Run `python3 docs/assets/readme/generate.py` to rebuild adjacent SVGs, or
-append `--check` for a read-only drift check. Python standard library only.
-Facts are repository-local CONFIG values; see the README's source links.
-No timestamp, external font, network access or image-generation dependency.
+    python3 docs/assets/readme/generate.py          # rewrite the SVGs beside this file
+    python3 docs/assets/readme/generate.py --check  # read-only drift gate (exit 1 on drift)
+
+`_art.py` is the shared kit (identical in every constellation repo); this file
+owns only this repository's labels, scene and facts. Facts come from the README
+and the committed M9c evaluation: one shared encoder with six heads, 8,192-token
+windows with 512 overlap, CPU ONNX (fp32 preferred), document-type accuracy
+0.9598 and window ECE 0.0189 on the 323-document held-out test.
+Standard library only, deterministic output.
 """
 from __future__ import annotations
 
 import argparse
-from html import escape
+import sys
 from pathlib import Path
 
-CONFIG = {'kind': 'ml',
- 'title': 'Mailroom ML',
- 'tagline': 'A calibrated first pass. A clear path for uncertain documents.',
- 'tagline_lines': ['A calibrated first pass.', 'A clear path for uncertain documents.'],
- 'eyebrow': 'MODERNBERT · CONDITIONAL HEADS · CPU INFERENCE',
- 'description': 'Clerk-normalized document windows pass through one shared encoder, '
-                'document-type and subclass heads, and a calibrated gate. Accepted '
-                'documents take the CPU fast path; uncertain documents go to the LLM '
-                'sorter.',
- 'stages': [('Document windows', 'clerk-normalized inputs'),
-            ('Shared encoder', 'ModernBERT backbone'),
-            ('Conditional heads', 'doc type + subclasses'),
-            ('Routing gate', 'calibration + OOD')],
- 'mobile_stages': [('Windows', 'normalized inputs'),
-                   ('Encoder', 'shared ModernBERT'),
-                   ('Heads', 'type + subclasses'),
-                   ('Gate', 'calibration + OOD')],
- 'mobile_note': ['Accepted → CPU fast path', 'Uncertain → LLM sorter'],
- 'stats': [('1 encoder', '6 conditional heads', 'observed-GT vocabularies'),
-           ('8,192', 'tokens per window', '512-token overlap'),
-           ('CPU ONNX', 'fp32 preferred', 'bundle-based inference'),
-           ('LLM fallback', 'uncertain documents', 'calibrated routing gate')]}
-COLORS = ("#38bdf8", "#c084fc", "#f472b6", "#22c55e")
-FONT = "ui-sans-serif,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _art as art  # noqa: E402  (shared kit lives beside this file)
+
+HERO = {
+    'title': 'Mailroom ML',
+    'kicker': 'THE MAILROOM CONSTELLATION · THE FAST PATH',
+    'tagline': 'A fast, calibrated first look at every document — and a polite handoff to the LLM when it is not sure.',
+    'eyebrow': 'MODERNBERT · ONE ENCODER · SIX HEADS · CALIBRATED GATE · CPU ONNX',
+    'caption': 'standalone contractor repo · consumes the constellation taxonomy, never redefines it',
+    'alt': 'Animated banner: a document is cut into overlapping 8,192-token windows, encoded by ModernBERT, '
+           'classified by a document-type head and subclass heads, then a calibrated gate sends it down the CPU '
+           'fast path or hands it to the LLM sorter.',
+    'tagline_lines': ['A fast, calibrated first look —', 'and a polite handoff to the LLM.'],
+    'mobile_cards': [('Window', '8,192 tokens · 512 overlap'), ('Classify', 'one encoder · six heads'),
+                     ('Calibrate', 'temperature + OOD probe'), ('Route', 'fast path or LLM sorter')],
+    'mobile_note': 'the LLM sorter stays the authority for the messy tail',
+}
+STATS = [('6', 'heads · one shared encoder', art.SKY), ('8,192', 'token windows · 512 overlap', art.VIOLET),
+         ('0.9598', 'doc-type accuracy · 323 held out', art.GREEN), ('0.0189', 'window ECE · calibrated', art.PINK),
+         ('fp32', 'ONNX on CPU, preferred', art.AMBER), ('LLM', 'takes the uncertain tail', art.LIME)]
+STAGES = [('Normalize', 'clerk-normalized', 'leak-free inputs'), ('Window', '8,192 tokens', '512 overlap'),
+          ('Encode', 'ModernBERT', 'shared by all heads'), ('Heads', 'doc_type + 5 subclass', 'plurality merge'),
+          ('Calibrate', 'temperature per head', '+ OOD energy probe'), ('Gate', 'p · agreement · margin', 'fast path or LLM')]
+SIDE = [('Train', 'local or Modal GPU', 'operator-budgeted'), ('Evaluate', 'held-out test + ECE', 'paired bootstrap compare'),
+        ('Export', 'ONNX + parity check', 'fp32 preferred'), ('Serve', 'CPU ONNX', 'Modal app is a fallback'),
+        ('Enrich', 'tiered augmentation', 'Tier 1 → Tier 3 gates')]
+TERMINAL = [('cmd', 'git clone https://github.com/LLM-Mailroom-Services/mailroom-ml.git'),
+            ('cmd', 'cd mailroom-ml && uv sync --extra dev'),
+            ('note', '# pytest + ruff · no torch, modal or onnxruntime required'),
+            ('cmd', 'uv run pytest -m "not fullcorpus"'),
+            ('note', '# deploy-layer tests importorskip the heavy extras'),
+            ('cmd', 'uv run ruff check src tests training deploy'),
+            ('cmd', 'uv run python training/eval/eval_modernbert.py --help'),
+            ('note', '# calibration, selective-risk and routing-threshold options')]
+
+TUI_GAUGES = [('doc-type acc.', '0.9598', 0.9598, art.GREEN), ('subclass acc.', '0.7387', 0.7387, art.SKY),
+              ('window ECE', '0.0189', 0.0189, art.PINK), ('gate accept.', '0.3901', 0.3901, art.AMBER)]
+TUI_LOG = [('ok', 'doc-type head: 310 / 323 documents'), ('info', 'subclass: 229 / 310 scorable documents'),
+           ('info', 'window ECE 0.0189 on the held-out test'), ('warn', 'gate acceptance is an upper bound'),
+           ('warn', 'production guards not applied here'), ('info', 'ONNX fp32 preferred · CPU serving')]
+TUI_STATUS = 'M9c evaluation · n = 323 held-out documents · lower ECE is better'
 
 
-def text(x, y, value, size=20, color="#e2e8f0", weight=400, anchor="start"):
-    """Draw escaped text using system fonts and explicit SVG coordinates."""
-    return (f'<text x="{x}" y="{y}" font-size="{size}" fill="{color}" '
-            f'font-weight="{weight}" text-anchor="{anchor}">{escape(str(value))}</text>')
+def scene() -> str:
+    """A document cut into windows, encoded, headed, then gated: fast path or LLM."""
+    y0 = 306
+    out = [art.text(80, 246, 'ONE DOCUMENT', 11, '#8b9bb4', 700, spacing=2)]
+    for k in range(6):
+        w = 220 if k % 3 else 190
+        out.append(f'<rect x="84" y="{262 + k * 14}" width="{w}" height="8" rx="4" fill="#334155"/>')
+    out.append('<rect x="78" y="256" width="240" height="94" rx="10" fill="none" stroke="#475569"/>')
+    for k, (dx, color) in enumerate(((0, art.SKY), (46, art.VIOLET))):
+        out.append(f'<rect class="motion" x="{82 + dx}" y="258" width="130" height="90" rx="8" fill="{color}" opacity=".22" '
+                   f'stroke="{color}" stroke-width="2"><animate attributeName="x" values="{82 + dx};{82 + dx + 70};{82 + dx}" '
+                   'dur="4s" repeatCount="indefinite"/></rect>')
+    out.append(art.text(198, 372, '8,192-token windows · 512 overlap', 11, art.DIM, anchor='middle'))
+    out.append(art.arrow(326, y0, 384, y0, art.MUTED))
+    out.append(f'<rect x="388" y="262" width="140" height="88" rx="14" fill="{art.PANEL}" stroke="{art.VIOLET}" stroke-width="2"/>')
+    out.append(art.text(458, 298, 'ModernBERT', 16, art.INK, 700, 'middle'))
+    out.append(art.text(458, 320, 'shared encoder', 12, art.MUTED, anchor='middle'))
+    out.append(art.arrow(536, y0, 584, y0, art.MUTED))
+    heads = ['doc_type', 'contract', 'merger_agreement', 'corporate_record', 'correspondence', 'insurance_claim']
+    for k, head in enumerate(heads):
+        y = 248 + k * 20
+        color = art.PINK if k == 0 else art.SKY
+        out.append(f'<rect x="590" y="{y}" width="160" height="17" rx="6" fill="{art.PANEL}" stroke="{color}" stroke-opacity=".8"/>')
+        out.append(art.text(670, y + 12.5, head, 11, art.INK, 600, 'middle', family=art.MONO))
+    out.append(art.arrow(758, y0, 800, y0, art.MUTED))
+    out.append(f'<rect x="804" y="262" width="170" height="88" rx="14" fill="{art.PANEL}" stroke="{art.AMBER}" stroke-width="2"/>')
+    out.append(art.text(889, 296, 'calibrated gate', 15, art.INK, 700, 'middle'))
+    out.append(art.text(889, 318, 'S = p·agreement·margin', 11, art.MUTED, anchor='middle', family=art.MONO))
+    out.append(art.text(889, 338, 'OOD flag fails the fast path', 11, art.DIM, anchor='middle'))
+    out.append(f'<path id="fast" d="M974 284 C1000 284 1004 266 1030 266" fill="none" stroke="{art.GREEN}" stroke-width="2.2"/>')
+    out.append(f'<path id="slow" d="M974 328 C1000 328 1004 346 1030 346" fill="none" stroke="{art.AMBER}" stroke-width="2.2" stroke-dasharray="6 5"/>')
+    out.append(f'<rect x="1030" y="246" width="130" height="40" rx="12" fill="{art.PANEL}" stroke="{art.GREEN}" stroke-width="2"/>')
+    out.append(art.text(1095, 271, 'CPU fast path', 14, '#86efac', 700, 'middle'))
+    out.append(f'<rect x="1030" y="326" width="130" height="40" rx="12" fill="{art.PANEL}" stroke="{art.AMBER}" stroke-width="2" stroke-dasharray="7 5"/>')
+    out.append(art.text(1095, 351, 'LLM sorter', 14, '#fcd34d', 700, 'middle'))
+    out.append(f'<path id="run" d="M326 {y0} H800 L974 284" fill="none"/>')
+    out.append(f'<path id="run2" d="M326 {y0} H800 L974 328" fill="none"/>')
+    out.append(art.particle('run', 3.2, 0, '#86efac'))
+    out.append(art.particle('run2', 3.2, 1.6, '#fcd34d'))
+    return '\n'.join(out)
 
 
-def frame(width, height, title, description):
-    """Open an accessible, self-contained SVG with shared family tokens."""
-    return [f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-            f'width="{width}" height="{height}" role="img" aria-labelledby="title desc" font-family="{FONT}">',
-            f'<title id="title">{escape(title)}</title><desc id="desc">{escape(description)}</desc>',
-            '<defs><linearGradient id="bg" x2="1" y2="1">'
-            '<stop stop-color="#0b1220"/><stop offset=".55" stop-color="#151036"/>'
-            '<stop offset="1" stop-color="#22103a"/></linearGradient>'
-            '<linearGradient id="heading"><stop stop-color="#7dd3fc"/>'
-            '<stop offset=".5" stop-color="#c4b5fd"/><stop offset="1" stop-color="#f9a8d4"/>'
-            '</linearGradient><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" '
-            'markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
-            '<path d="M0 0 L10 5 L0 10" fill="none" stroke="#94a3b8" stroke-width="1.5"/>'
-            '</marker></defs>',
-            '<style>.cue{stroke-dasharray:6 22;animation:travel 4.5s linear 1}'
-            '@keyframes travel{from{stroke-dashoffset:112}to{stroke-dashoffset:0}}'
-            '@media(prefers-reduced-motion:reduce){.cue{animation:none}}</style>',
-            f'<rect width="{width}" height="{height}" rx="24" fill="url(#bg)"/>',
-            f'<rect x=".5" y=".5" width="{width-1}" height="{height-1}" rx="24" fill="none" stroke="#334155"/>']
+def build() -> dict[str, str]:
+    """Return every generated asset keyed by file name."""
+    flow_desc = ('Inputs are clerk-normalized, windowed, encoded by ModernBERT, scored by six heads, calibrated and '
+                 'gated; around the model sit training, evaluation, ONNX export, serving and enrichment.')
+    return {
+        'hero.svg': art.hero(HERO, scene),
+        'hero-mobile.svg': art.hero(HERO, mobile=True),
+        'stats.svg': art.stats(STATS, 'mailroom-ml by the numbers'),
+        'stats-mobile.svg': art.stats(STATS, 'mailroom-ml by the numbers', mobile=True),
+        'flow.svg': art.flow('From raw text to a routing decision', STAGES, SIDE, 'Around the model', desc=flow_desc,
+                             side_color=art.PINK),
+        'flow-mobile.svg': art.flow('From raw text to a routing decision', STAGES, SIDE, 'Around the model',
+                                    mobile=True, desc=flow_desc, side_color=art.PINK),
+        'constellation.svg': art.constellation('mailroom-ml'),
+        'constellation-mobile.svg': art.constellation('mailroom-ml', mobile=True),
+        'tui.svg': art.tui('~/mailroom-ml — evaluation dashboard', TUI_GAUGES, TUI_LOG, TUI_STATUS,
+                           'Dashboard of the committed M9c evaluation: document-type accuracy 0.9598, conditional subclass accuracy 0.7387, window ECE 0.0189 and an upper-bound gate acceptance of 0.3901 on 323 held-out documents.', left='M9C EVIDENCE', right='NOTES'),
+        'terminal.svg': art.terminal('~/mailroom-ml — zsh', TERMINAL,
+                                     'Animated terminal: clone, sync the dev extra, run the core tests and the linter, '
+                                     'and list the evaluation options.'),
+    }
 
 
-def line(x1, y1, x2, y2, cue=False):
-    """Draw a permanently visible connector with an optional finite flow cue."""
-    base = (f'<path d="M{x1} {y1} L{x2} {y2}" fill="none" stroke="#64748b" '
-            'stroke-width="2" marker-end="url(#arrow)"/>')
-    if cue:
-        base += (f'<path class="cue" d="M{x1} {y1} L{x2} {y2}" '
-                 'fill="none" stroke="#7dd3fc" stroke-width="2"/>')
-    return base
-
-
-def card(x, y, width, label, detail, color, height=86):
-    """Draw one labeled stage without relying on motion to reveal content."""
-    return (f'<rect x="{x}" y="{y}" width="{width}" height="{height}" rx="14" '
-            f'fill="#111a2e" stroke="{color}" stroke-opacity=".65"/>'
-            f'<rect x="{x+16}" y="{y+18}" width="5" height="{height-36}" rx="2" fill="{color}"/>'
-            + text(x+34, y+36, label, 21, "#e2e8f0", 700)
-            + text(x+34, y+63, detail, 16, "#cbd5e1"))
-
-
-def branch_band(label, left, right):
-    """Draw a visible two-outcome band for routing and quality branches."""
-    return (text(600, 462, label, 16, "#94a3b8", anchor="middle")
-            + text(326, 425, left, 19, "#7dd3fc", 600, "middle")
-            + text(874, 425, right, 19, "#facc15", 600, "middle")
-            + '<path d="M1023 346 V366 H600 V393 H326 M600 393 H874" fill="none" stroke="#64748b" stroke-width="1.5"/>')
-
-
-def desktop_diagram(kind):
-    """Render a repository-specific topology, rather than an identical conveyor."""
-    stages = CONFIG["stages"]
-    bits = []
-    if kind == "dojo":
-        bits += [card(48, 246, 270, "Ground truth", "expected fields + labels", COLORS[0], 80),
-                 card(48, 344, 270, "Prediction", "observed fields + labels", COLORS[1], 80),
-                 '<path d="M318 286 H370 V335 H420 M318 384 H370 V335" fill="none" stroke="#64748b" stroke-width="2"/>',
-                 card(420, 292, 330, "Field-type matcher", "normalize · align · compare", COLORS[2]),
-                 line(750, 335, 825, 335, True),
-                 card(825, 246, 327, "Metrics + intervals", "task suites · uncertainty", COLORS[3], 80),
-                 card(825, 344, 327, "Diagnostics + reports", "explain errors · export", COLORS[0], 80)]
-    else:
-        for i, (label, detail) in enumerate(stages):
-            x = 48+i*282
-            bits.append(card(x, 260, 258, label, detail, COLORS[i]))
-            if i < 3:
-                bits.append(line(x+258, 303, x+279, 303, True))
-        if kind == "ml":
-            bits.append(branch_band("calibrated gate", "CPU fast path when accepted", "LLM fallback when uncertain"))
-        elif kind == "pipeline":
-            bits += ['<path d="M741 346 V404 H1020 V346" fill="none" stroke="#facc15" stroke-width="1.5" stroke-dasharray="5 5"/>',
-                     text(600, 391, "When required: Judge → Arbiter → human review", 18, "#facc15", 600, "middle"),
-                     text(600, 435, "Boss handles matter conflicts · procedural compilation · hash-chained audit", 17, "#cbd5e1", anchor="middle")]
-        else:
-            bits += [text(600, 395, "P0 → P1 → P2 → P3 / P4 → P5 → P6", 23, "#7dd3fc", 600, "middle"),
-                     text(600, 435, "Reports + staged exports · Hub publication is an explicit operator action", 17, "#cbd5e1", anchor="middle")]
-    return "\n".join(bits)
-
-
-def hero(mobile=False):
-    """Render the full desktop hero or a readable two-column phone variant."""
-    width, height = (640, 680) if mobile else (1200, 480)
-    bits = frame(width, height, CONFIG["title"], CONFIG["description"])
-    center = width//2
-    bits += [text(center, 54, "THE MAILROOM CONSTELLATION", 14, "#94a3b8", 700, "middle"),
-             text(center, 116 if mobile else 132, CONFIG["title"], 42 if mobile else 64, "url(#heading)", 800, "middle")]
-    if mobile:
-        for i, label in enumerate(CONFIG["tagline_lines"]):
-            bits.append(text(center, 157+i*29, label, 22, "#cbd5e1", anchor="middle"))
-        for i, (label, detail) in enumerate(CONFIG["mobile_stages"]):
-            x, y = 24+(i%2)*306, 248+(i//2)*146
-            bits.append(card(x, y, 286, label, detail, COLORS[i], 110))
-        bits += ([line(167, 358, 167, 388), '<path d="M473 358 V378 H167" fill="none" stroke="#64748b" stroke-width="2"/>'] if CONFIG["kind"] == "dojo" else [line(310,303,326,303), '<path d="M473 363 V378 H167 V388" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrow)"/>'])
-        bits += [line(310,449,326,449),
-                 text(center, 575, CONFIG["mobile_note"][0], 22, "#7dd3fc", 600, "middle"),
-                 text(center, 610, CONFIG["mobile_note"][1], 20, "#cbd5e1", anchor="middle")]
-    else:
-        bits += [text(center, 181, CONFIG["tagline"], 23, "#cbd5e1", anchor="middle"),
-                 text(center, 220, CONFIG["eyebrow"], 14, "#94a3b8", 600, "middle"),
-                 desktop_diagram(CONFIG["kind"])]
-    bits.append('</svg>\n')
-    return "\n".join(bits)
-
-
-def stats():
-    """Render static capability cards; repeat the facts as prose in the README."""
-    bits = frame(1200, 176, CONFIG["title"]+" at a glance", "; ".join(" — ".join(s) for s in CONFIG["stats"]))
-    for i, (value, label, detail) in enumerate(CONFIG["stats"]):
-        x = 24+i*294
-        bits += [f'<rect x="{x}" y="24" width="270" height="128" rx="18" fill="#111a2e" stroke="#334155"/>',
-                 text(x+22, 76, value, 34, COLORS[i], 800),
-                 text(x+22, 107, label, 19, "#e2e8f0", 600),
-                 text(x+22, 132, detail, 15, "#94a3b8")]
-    bits.append('</svg>\n')
-    return "\n".join(bits)
-
-
-def main():
-    """Generate deterministic adjacent assets, or check their bytes read-only."""
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true", help="fail on asset drift without writing")
+def main() -> None:
+    """Write the assets, or compare them byte-for-byte with --check."""
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--check', action='store_true', help='fail on drift without writing')
     args = parser.parse_args()
     base = Path(__file__).resolve().parent
-    assets = {"hero.svg": hero(), "hero-mobile.svg": hero(True), "stats.svg": stats()}
     drift = []
-    for name, content in assets.items():
-        path = base/name
+    for name, content in build().items():
+        path = base / name
         if args.check:
-            if not path.exists() or path.read_text(encoding="utf-8") != content:
+            if not path.exists() or path.read_text(encoding='utf-8') != content:
                 drift.append(name)
         else:
-            path.write_text(content, encoding="utf-8")
+            path.write_text(content, encoding='utf-8')
     if drift:
-        parser.exit(1, "README asset drift: " + ", ".join(drift) + "\n")
-    print("README assets match" if args.check else "Generated three README SVG assets")
+        parser.exit(1, 'README asset drift: ' + ', '.join(drift) + '\n')
+    print('README assets match' if args.check else 'README assets written')
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

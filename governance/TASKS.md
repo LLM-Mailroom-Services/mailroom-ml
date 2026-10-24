@@ -168,3 +168,9 @@ routes upstream as an RFC/child issue on the #85 epic — `needs_attention`.
 | Card | Owner | Status | Evidence |
 | --- | --- | --- | --- |
 | #1 root README design and accuracy follow-up | Codex 2026-10-24 UTC | needs_attention — review | DMR-101: source README and deterministic desktop/mobile SVGs complete; atom audit + second review, hazel design report. Core suite 510 passed / 9 skipped / 4 deselected in native venv; broader non-fullcorpus run has one pre-existing environment failure (`test_onnx_parity_executes_or_skips`: onnxruntime absent with local artifacts present). Worktree collection also exposes a pre-existing .git-directory assumption in build_dataset.py; source code is identical to origin/main. Links/anchors, shell/Python/TOML examples, 12 SVGs across the four repos and asset --check pass; desktop/390px rendering verified. M9c metrics label 126/323 confidence-only acceptance as an upper bound, not production coverage. Documentation-only commit adding this evidence; standalone PR recorded on hub card. No training, deployment, Hub writes or taxonomy changes. |
+
+## Constellation label clearance — hub DMR-110
+
+| Card | Owner | Status | Evidence |
+| --- | --- | --- | --- |
+| DMR-110 artwork label spacing | Codex 2026-10-24 UTC | done | Shared README art and browser regression delivered in the commit carrying this row. 12 map variants failed before the correction; six source regression pages and hub now pass 58 map-frame/stat cases. Mutation checks reject escaped node text and a badge moved into its title. Generators and diff checks pass; source PR/merge recorded on hub DMR-110. No model, training, taxonomy or data changes. |

@@ -1,4 +1,24 @@
-# mailroom-ml
+<div align="center">
+
+<picture>
+  <source media="(max-width: 640px)" srcset="docs/assets/readme/hero-mobile.svg"/>
+  <img src="docs/assets/readme/hero.svg" alt="ModernBERT windows feed a shared encoder and conditional heads; a calibrated gate chooses the CPU fast path or the LLM sorter." width="100%"/>
+</picture>
+
+# Mailroom ML
+
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?style=for-the-badge)](pyproject.toml)
+[![ModernBERT](https://img.shields.io/badge/encoder-ModernBERT-6C63FF?style=for-the-badge)](src/mailroom_ml/inference.py)
+[![CPU ONNX](https://img.shields.io/badge/inference-CPU_ONNX-22C55E?style=for-the-badge)](deploy/README.md)
+[![Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-0EA5E9?style=for-the-badge)](pyproject.toml)
+
+**[Quickstart](#quickstart)** · **[How it works](#how-it-works)** · **[Results](#evaluation-evidence)** · **[Workflows](#training-and-evaluation)** · **[Docs](#documentation)**
+
+</div>
+
+---
+
+## What this does
 
 Machine-learning training, evaluation, and deployment for the Digital Mailroom
 **ModernBERT ingest fast-path classifier**: one shared encoder plus conditional
@@ -11,7 +31,36 @@ It serves `eval-environment`, `llm-mailroom`, `Mailroom-Corpus-EDA`, and the
 `mailroom-issues` epic **#85** intake-overhaul track. Canonical subclass
 surfaces are consumed, never redefined here.
 
-## Architecture
+
+<div align="center">
+<img src="docs/assets/readme/stats.svg" alt="One encoder, six heads; 8,192-token windows with 512-token overlap; CPU ONNX fp32 preferred; uncertain documents route to the LLM." width="100%"/>
+</div>
+
+## Prerequisites
+
+- Python **3.11+**
+- [uv](https://docs.astral.sh/uv/)
+- Optional: Modal account + `HF_TOKEN` for cloud training
+- Optional GPU for local train/eval
+
+## Quickstart
+
+<a id="quick-start"></a>
+
+```bash
+git clone https://github.com/LLM-Mailroom-Services/mailroom-ml.git
+cd mailroom-ml
+uv sync --extra dev
+uv run pytest -m "not fullcorpus"
+uv run ruff check src tests training deploy
+```
+
+The core suite is green with **no** modal / torch / onnxruntime installed.
+Deploy-layer tests `importorskip` the heavy extras and never touch the network.
+
+## How it works
+
+<a id="architecture"></a>
 
 - **Heads.** `doc_type` (5 classes) plus one subclass head per type
   (`contract`, `merger_agreement`, `corporate_record`, `correspondence`,
@@ -31,30 +80,38 @@ surfaces are consumed, never redefined here.
 - **Routing.** `S = p_calibrated · agreement · margin` against the fast-path
   gate (`mailroom_ml.routing`). Catch-all `other` and unmapped subclasses
   route to the LLM.
-- **Serving.** Primary path is ONNX on CPU (`artifacts/onnx/model/`). The
+- **Serving.** Primary path is ONNX on CPU (`artifacts/onnx/model/`), with **fp32 preferred**. Dynamic int8 quantization has known argmax disagreements; it is a fallback, not an equivalent certified bundle. The
   Modal serve app is an explicit **FALLBACK**.
 
-## Prerequisites
+## Evaluation evidence
 
-- Python **3.11+**
-- [uv](https://docs.astral.sh/uv/)
-- Optional: Modal account + `HF_TOKEN` for cloud training
-- Optional GPU for local train/eval
+The **M9c** model release is `m9c-20261014-113614` (recorded Hub commit
+`0910ad7b`). These figures describe the **canonical held-out test, 323
+documents**, from the committed [test report](reports/TEST-EVAL/TEST-EVAL-REPORT-m9c-20261014-113614.md)
+and [evaluation JSON](reports/eval_m9c-20261014-113614.json).
 
-## Quick start
+| Metric | Result | Scope |
+| :--- | ---: | :--- |
+| Document-type accuracy | 0.9598 | 310 / 323 documents |
+| Conditional subclass accuracy | 0.7387 | 229 / 310 scorable documents |
+| Calibrated window ECE | 0.0189 | Window-level calibration |
+| Confidence-gate acceptance (upper bound) | 0.3901 | 126 / 323; production guards not applied |
 
-```bash
-git clone https://github.com/LLM-Mailroom-Services/mailroom-ml.git
-cd mailroom-ml
-uv sync --extra dev
-uv run pytest -m "not fullcorpus"
-uv run ruff check src tests training deploy
-```
+The confidence-only acceptance figure omits authentic-support, catch-all,
+head-exclusion and subclass-projection guards. It is **not production fast-path
+coverage**; the full routing gate can accept fewer documents.
 
-The core suite is green with **no** modal / torch / onnxruntime installed.
-Deploy-layer tests `importorskip` the heavy extras and never touch the network.
+The [#112 gate receipt](reports/TEST-EVAL/gates-check-armM9C.txt) passes the
+specified contract/correspondence F1, document-type accuracy and window ECE
+gates. Contract and correspondence remain excluded from fast-path routing by
+the checkpoint policy. Gate success does not mean every subclass is reliable.
+The separate [1,323-document distribution-shift evaluation](reports/eval_m9c-20261014-113614-heldout-plus.json)
+is diagnostic evidence, not a larger certification set; see the
+[correspondence probe](reports/PROBE-corr-unex-20261014.md).
 
-## Environment extras
+## Configuration
+
+### Environment extras
 
 ```bash
 uv sync --extra dev      # pytest + ruff
@@ -79,7 +136,9 @@ The current training revision is **leak-free and clerk-normalized**. Do not
 reintroduce a title/filename label leak, and do not train on raw corpus text.
 Authoritative constants: `src/mailroom_ml/config.py`.
 
-## Local train / eval
+## Training and evaluation
+
+<a id="local-train--eval"></a>
 
 ```bash
 # GPU local (only if you have one)
@@ -102,7 +161,7 @@ uv run python training/eval/eval_modernbert.py \
 
 # Paired bootstrap compare (classifier vs LLM sorter export, or two runs)
 uv run python training/eval/compare_runs.py \
-  --a reports/eval_run3_20260921.json --b reports/eval_b.json
+  --a reports/eval_m9c-20261014-113614.json --b reports/eval_b.json
 ```
 
 `--label-smoothing` is **doc_type only**. Subclass CE uses
@@ -143,8 +202,9 @@ live tip.
 ## Modal training runbook (summary)
 
 Full runbook + cost notes: [`deploy/README.md`](deploy/README.md).
-A full L4 run costs real money and is gated on operator budget authorization
-(mailroom-ml **#13**, mailroom-issues **#112**).
+Cloud training costs real money. Choose the GPU and run parameters from the
+current [deploy runbook](deploy/README.md) and obtain a run-specific operator
+budget before launching. The commands below are examples, not an active mission.
 
 ```bash
 # one-time deploy (image cached; no GPU while idle)
@@ -162,15 +222,18 @@ HF_TOKEN=... uv run --extra deploy python deploy/spawn_train.py \
   --trainer-extra=--label-smoothing=0.05
 ```
 
-After a successful **non-smoke** train the container (`#19`):
+The normal **non-smoke** training chain (`#19`):
 
 1. Exports ONNX via the committed `torch.onnx.export` path (`dynamo=False`).
 2. Runs `onnx_parity_check.py --require-int8`.
 3. Promotes `/checkpoints/latest` **only if** export + parity succeed.
    Failed parity leaves `latest/` on the last good checkpoint.
 
-`--no-export-onnx` skips the chain. Never use `optimum-cli export onnx` —
-random heads on this architecture.
+`--no-export-onnx` skips the chain. M9c initially failed the int8 gate and was
+later promoted through the explicit **fp32-enforced, int8 report-only** relief
+path documented in [the deploy runbook](deploy/README.md). A failed gate does
+not authorize automatic promotion. Never use `optimum-cli export onnx` for
+this multi-head architecture; use the committed export script.
 
 ## ONNX export (local)
 
@@ -181,7 +244,9 @@ uv run python deploy/onnx_export.py \
 uv run python deploy/onnx_parity_check.py --require-int8
 ```
 
-## Layout
+## Repository map
+
+<a id="layout"></a>
 
 | Path | Role |
 | --- | --- |
@@ -203,9 +268,50 @@ and the dojo taxonomy (`DMR-066`). **mailroom-ml consumes the taxonomy; it
 may not unilaterally redefine it.** Dictionary changes route upstream as an
 RFC on the **#85** epic.
 
-## Governance
+## Testing
 
-Mission board: [`governance/TASKS.md`](governance/TASKS.md).
-Active M9a pass: [`governance/M9a-HANDOFF.md`](governance/M9a-HANDOFF.md)
-(blocked on **#13** budget authorization — do not spawn GPU spend from this
-checkout without an operator `--budget` / `--force` decision).
+```bash
+uv run pytest -m "not fullcorpus"
+uv run ruff check src tests training deploy
+```
+
+Core tests use injected bundles; model artifacts, training extras and corpus
+snapshots gate their respective optional tests. See marker definitions in
+[`pyproject.toml`](pyproject.toml).
+
+## Documentation
+
+<a id="governance"></a>
+
+| Start here | Purpose |
+| :--- | :--- |
+| [Combined plan](docs/intake-classifier-combined-plan.md) | Architecture, data lineage and intake contract |
+| [Deploy runbook](deploy/README.md) | Training, ONNX parity, promotion and serving |
+| [Enrichment publishing](docs/enrichment-publish-runbook.md) | Staging, checks and explicit Hub publication |
+| [Reports](reports/README.md) | Evaluation receipts and experiment history |
+| [Mission board](governance/TASKS.md) | Current status; M9c release and remaining follow-ups |
+| [Agent and contributor rules](AGENTS.md) | Taxonomy ownership, pins, tests and commit discipline |
+
+The earlier [M9a handoff](governance/M9a-HANDOFF.md) is historical context;
+the mission board records the later M9c release. New GPU work needs its own
+operator budget authorization.
+
+---
+
+<div align="center">
+
+**[Digital-Mailroom](https://github.com/LLM-Mailroom-Services/Digital-Mailroom)** ·
+**[llm-mailroom](https://github.com/Exios66/llm-mailroom)** ·
+**[llm-dojo-scoring](https://github.com/Exios66/llm-dojo-scoring)** ·
+**[The-Mailroom](https://github.com/Exios66/The-Mailroom)** ·
+**[local-mailroom-sandbox](https://github.com/Exios66/local-mailroom-sandbox)** ·
+**[Mailroom-Corpus-EDA](https://github.com/Exios66/Mailroom-Corpus-EDA)** ·
+**[mailroom-ml](https://github.com/LLM-Mailroom-Services/mailroom-ml)**
+
+<sub>The Mailroom constellation · independent source repositories, shared interfaces.</sub>
+<br/>
+<sub>Core packages integrate in Digital-Mailroom; mailroom-ml is a standalone contractor.</sub>
+<br/>
+<sub>Local artwork: <a href="docs/assets/readme/README.md">design and regeneration</a>.</sub>
+
+</div>

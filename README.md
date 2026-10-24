@@ -24,6 +24,33 @@
 
 ---
 
+<!-- readme-v2.1 -->
+<details>
+<summary><b>📑 Contents</b></summary>
+
+- [🧠 What is this?](#what-this-does)
+- [🤔 When to reach for it](#when-to-reach-for-it)
+- [🧰 Prerequisites](#prerequisites)
+- [🚀 Quickstart](#quickstart)
+- [🧭 How it works](#how-it-works)
+- [🧪 Evaluation evidence](#evaluation-evidence)
+- [⚙️ Configuration](#configuration)
+- [📌 Hub pins (never live tips)](#hub-pins-never-live-tips)
+- [🏋️ Training and evaluation](#training-and-evaluation)
+- [🪜 Enrichment ladder](#enrichment-ladder)
+- [☁️ Modal training runbook (summary)](#modal-training-runbook-summary)
+- [📦 ONNX export (local)](#onnx-export-local)
+- [🗺️ Repository map](#repository-map)
+- [⚖️ Taxonomy law](#taxonomy-law)
+- [✅ Testing](#testing)
+- [📖 Documentation](#documentation)
+- [🌌 Where it fits](#where-it-fits)
+- [❓ FAQ](#faq)
+- [🙏 Built on](#built-on)
+- [🤝 Contributing, security and license](#contributing-security-and-license)
+
+</details>
+
 <a id="what-this-does"></a>
 
 ## 🧠 What is this?
@@ -45,6 +72,16 @@ surfaces are consumed, never redefined here.
   <img src="docs/assets/readme/stats.svg" alt="By the numbers: six heads on one shared encoder, 8,192-token windows, document-type accuracy 0.9598, window ECE 0.0189, fp32 ONNX on CPU, and the LLM sorter for the uncertain tail" width="100%"/>
 </picture>
 </div>
+
+<a id="when-to-reach-for-it"></a>
+
+## 🤔 When to reach for it
+
+| ✅ Reach for it when… | ↪️ Look elsewhere when… |
+| :--- | :--- |
+| You want a cheap CPU fast path that classifies the clear-cut documents before the LLM sorter sees them | You need every document classified. Low-confidence, out-of-distribution, catch-all and unmapped documents route to the LLM sorter by design |
+| You need calibrated confidence and an out-of-distribution signal, not just an argmax | You want contract or correspondence on the fast path today. The checkpoint policy keeps both on the LLM path |
+| You want training and evaluation pinned to exact Hub revisions, with committed receipts | You want to change the taxonomy. It is consumed here, never redefined; changes go upstream as an RFC |
 
 <a id="prerequisites"></a>
 
@@ -372,6 +409,70 @@ operator budget authorization.
 | 🧠 | [`llm-mailroom`](https://github.com/Exios66/llm-mailroom) | The pipeline. Its LLM sorter stays the authority for the messy, ambiguous and sparse tail |
 | 🔬 | [`Mailroom-Corpus-EDA`](https://github.com/Exios66/Mailroom-Corpus-EDA) | Profiles the corpus and publishes the dataset whose revision this repository pins |
 | 🥋 | [`llm-dojo-scoring`](https://github.com/Exios66/llm-dojo-scoring) | The dojo taxonomy this repository consumes and may not redefine (see [Taxonomy law](#taxonomy-law)) |
+
+<a id="faq"></a>
+
+## ❓ FAQ
+
+<details>
+<summary><b>Does it replace the LLM sorter?</b></summary>
+
+No. It is an intake fast path. The LLM sorter in llm-mailroom stays the authority for the messy, ambiguous and sparse tail, and anything the routing gate does not accept goes there.
+
+</details>
+
+<details>
+<summary><b>Do I need a GPU?</b></summary>
+
+Not for the core suite, which is green with no modal, torch or onnxruntime installed. Training needs a local GPU or a budget-authorized Modal run; serving is ONNX on CPU.
+
+</details>
+
+<details>
+<summary><b>What does the 0.3901 acceptance figure mean?</b></summary>
+
+It is a confidence-only upper bound (126 of 323 test documents). It omits the authentic-support, catch-all, head-exclusion and subclass-projection guards, so it is **not** production fast-path coverage. See [Evaluation evidence](#evaluation-evidence).
+
+</details>
+
+<details>
+<summary><b>Why fp32 instead of int8 ONNX?</b></summary>
+
+Dynamic int8 quantization has known argmax disagreements, so it is a fallback rather than an equivalent certified bundle. M9c was promoted on the fp32-enforced, int8 report-only path in the [deploy runbook](deploy/README.md).
+
+</details>
+
+<details>
+<summary><b>Can I export with `optimum-cli`?</b></summary>
+
+No. Use the committed `deploy/onnx_export.py`; `optimum-cli export onnx` does not handle this multi-head architecture.
+
+</details>
+
+<a id="built-on"></a>
+
+## 🙏 Built on
+
+The classifier stands on:
+
+| Project | What it does here |
+| :--- | :--- |
+| [ModernBERT-base](https://huggingface.co/answerdotai/ModernBERT-base) | The shared encoder with its 8,192-token native context |
+| [🤗 Transformers](https://github.com/huggingface/transformers) · [PyTorch](https://pytorch.org/) · [Accelerate](https://github.com/huggingface/accelerate) | Training (`[train]` extra) |
+| [ONNX Runtime](https://onnxruntime.ai/) | CPU serving and the ONNX parity gate (`[serve]` extra) |
+| [🤗 Hub](https://github.com/huggingface/huggingface_hub) · [🤗 Datasets](https://github.com/huggingface/datasets) | Pinned corpus, training set and classifier revisions |
+| [Modal](https://modal.com/) | Cloud training and the fallback serve app (`[deploy]` extra) |
+| [uv](https://docs.astral.sh/uv/) | Environment and lockfile |
+
+<a id="contributing-security-and-license"></a>
+
+## 🤝 Contributing, security and license
+
+| | |
+| :--- | :--- |
+| **Contributing** | Read [`AGENTS.md`](AGENTS.md) for taxonomy ownership, pins, tests and commit discipline, and check the [mission board](governance/TASKS.md) first. New GPU work needs its own operator budget authorization. |
+| **Security** | Report vulnerabilities privately to a maintainer (contacts are in the hub [security policy](https://github.com/LLM-Mailroom-Services/Digital-Mailroom/blob/main/SECURITY.md)); never post exploit details publicly. Keep `HF_TOKEN` and Modal credentials in secrets, never in the repository. |
+| **License** | [Apache-2.0](LICENSE). |
 
 ---
 

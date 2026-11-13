@@ -174,3 +174,9 @@ routes upstream as an RFC/child issue on the #85 epic — `needs_attention`.
 | Card | Owner | Status | Evidence |
 | --- | --- | --- | --- |
 | DMR-110 artwork label spacing | Codex 2026-10-24 UTC | done | Shared README art and browser regression delivered in the commit carrying this row. 12 map variants failed before the correction; six source regression pages and hub now pass 58 map-frame/stat cases. Mutation checks reject escaped node text and a badge moved into its title. Generators and diff checks pass; source PR/merge recorded on hub DMR-110. No model, training, taxonomy or data changes. |
+
+## Dojo alignment (2026-11-13)
+
+| Card | Owner | Status | Evidence |
+| --- | --- | --- | --- |
+| Pin the Dojo for eval/gates; vendored contract for train/serve | orchestrator | 🔄 in review | `src/mailroom_ml/dojo_contract.py`, `dojo_metrics.py`, `tests/test_dojo_contract.py`; Dojo PR Exios66/llm-dojo-scoring#143 |

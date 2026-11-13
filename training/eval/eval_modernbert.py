@@ -65,6 +65,7 @@ from mailroom_ml.config import (  # noqa: E402
     SELECTIVE_RISK_MIN_N,
     STAGE_DIR,
 )
+from mailroom_ml.dojo_metrics import dojo_scorecard, require_dojo  # noqa: E402
 from mailroom_ml.inference import (  # noqa: E402
     BundleLoadError,
     BundleUnavailable,
@@ -308,6 +309,7 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     Tokenizer ``RuntimeError``/``OSError`` becomes ``SystemExit``. A merge
     ``ValueError`` becomes an ``llm_overflow`` prediction; other errors propagate.
     """
+    require_dojo()  # fail before the inference pass, not after it
     # fast_path_rate uses the production gate's CONFIDENCE thresholds
     # (classify_document): the artifact routing overlay (#25) when present,
     # else the config constants, and BOTH the route and the plan's agreement
@@ -471,6 +473,11 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
             "agreement": agree,
             "fast_path": fast,
             "ood_flag": ood_flag,
+            # raw confidences (None when the merge had none, e.g. llm_overflow),
+            # so a missing value is left out of the Dojo's ECE, not read as 0.0
+            "doc_type_confidence": gv.get("calibrated_confidence"),
+            "subclass_confidence": (
+                gv.get("subclass_confidence") if sc_pred is not None else None),
         })
         # window-level calibration data (doc_type head only)
         for p in merged["_window_probs"]:
@@ -539,6 +546,8 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
                 report.setdefault("cohorts")[cohort]["selective_risk"] = \
                     _sweep_or_refuse(bundle, c["win_confs"], c["win_correct"])
     report["comparable_metrics"] = build_comparable_metrics(report)
+    # The M9a gates read these: the Dojo's definitions, shared by the constellation.
+    report["dojo"] = dojo_scorecard(per_doc, win_confs, win_correct)
     return report
 
 

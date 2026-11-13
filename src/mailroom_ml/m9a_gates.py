@@ -24,12 +24,27 @@ def _f(x: object) -> float | None:
 
 
 def m9a_gate_rows(report: dict) -> list[tuple[str, float | None, float, str]]:
-    """Display name, actual, threshold, comparator ('ge' or 'le')."""
-    per_head = report.get("per_head") or {}
-    contract = _f((per_head.get("contract") or {}).get("macro_f1"))
-    corr = _f((per_head.get("correspondence") or {}).get("macro_f1"))
-    dt_acc = _f(report.get("doc_type_accuracy"))
-    ece = _f((report.get("window_calibration") or {}).get("ece"))
+    """Display name, actual, threshold, comparator ('ge' or 'le').
+
+    Reports from an eval run with the Dojo carry a ``dojo`` scorecard; the gates
+    read the Dojo's numbers from it (per-class subclass macro-F1, doc_type
+    accuracy, window ECE), so mailroom-ml gates on the constellation's shared
+    definitions. Older reports without it fall back to the harness's own fields.
+    """
+    dojo = report.get("dojo")
+    if isinstance(dojo, dict):
+        by_class = dojo.get("by_class") or {}
+        metrics = dojo.get("metrics") or {}
+        contract = _f((by_class.get("contract") or {}).get("subclass_macro_f1"))
+        corr = _f((by_class.get("correspondence") or {}).get("subclass_macro_f1"))
+        dt_acc = _f(metrics.get("doc_type_accuracy"))
+        ece = _f(dojo.get("window_ece"))
+    else:
+        per_head = report.get("per_head") or {}
+        contract = _f((per_head.get("contract") or {}).get("macro_f1"))
+        corr = _f((per_head.get("correspondence") or {}).get("macro_f1"))
+        dt_acc = _f(report.get("doc_type_accuracy"))
+        ece = _f((report.get("window_calibration") or {}).get("ece"))
     return [
         ("contract test macro-F1", contract, CONTRACT_F1, "ge"),
         ("correspondence test macro-F1", corr, CORR_F1, "ge"),

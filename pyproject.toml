@@ -35,6 +35,12 @@ serve = [
 dev = [
     "pytest>=9.0",
     "ruff>=0.16",
+    "mailroom-ml[dojo]",
+]
+# The Dojo (llm-dojo-scoring) scores eval and gate reports; training and serving
+# read the vendored contract instead. Pin moves with dojo_contract.DOJO_COMMIT.
+dojo = [
+    "llm-dojo-scoring @ git+https://github.com/Exios66/llm-dojo-scoring@ab7d9bc9b5e7f9c1c14d6a9887c1b446c3ad3729",
 ]
 # Deploy-time only — never part of the runtime venv (tests stub/importorskip it).
 deploy = [
@@ -44,6 +50,9 @@ deploy = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true  # the dojo extra pins a git commit
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mailroom_ml"]

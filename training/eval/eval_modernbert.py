@@ -65,7 +65,7 @@ from mailroom_ml.config import (  # noqa: E402
     SELECTIVE_RISK_MIN_N,
     STAGE_DIR,
 )
-from mailroom_ml.dojo_metrics import dojo_scorecard  # noqa: E402
+from mailroom_ml.dojo_metrics import dojo_scorecard, require_dojo  # noqa: E402
 from mailroom_ml.inference import (  # noqa: E402
     BundleLoadError,
     BundleUnavailable,
@@ -309,6 +309,7 @@ def evaluate_documents(bundle, docs, *, sample: int, seed: int,
     Tokenizer ``RuntimeError``/``OSError`` becomes ``SystemExit``. A merge
     ``ValueError`` becomes an ``llm_overflow`` prediction; other errors propagate.
     """
+    require_dojo()  # fail before the inference pass, not after it
     # fast_path_rate uses the production gate's CONFIDENCE thresholds
     # (classify_document): the artifact routing overlay (#25) when present,
     # else the config constants, and BOTH the route and the plan's agreement

@@ -27,6 +27,11 @@ def _dojo():
     return score_intake_model, expected_calibration_error
 
 
+def require_dojo() -> None:
+    """Raise now if the Dojo is not installed, so a long eval fails before it runs."""
+    _dojo()
+
+
 def intake_records(per_doc: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Map eval ``per_doc`` rows onto the Dojo's intake record shape."""
     return [

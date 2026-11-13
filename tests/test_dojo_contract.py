@@ -140,3 +140,16 @@ def test_reports_without_a_dojo_block_still_gate_on_their_own_fields():
     report = {"per_head": {"contract": {"macro_f1": 0.25}, "correspondence": {"macro_f1": 0.3}},
               "doc_type_accuracy": 0.9, "window_calibration": {"ece": 0.04}}
     assert [actual for _n, actual, _t, _h in m9a_gate_rows(report)] == [0.25, 0.3, 0.9, 0.04]
+
+
+def test_eval_without_the_dojo_fails_before_inference(monkeypatch):
+    """A missing dojo extra stops evaluate_documents before any model call."""
+    from mailroom_ml import dojo_metrics
+
+    def missing():
+        raise RuntimeError("install the dojo extra")
+
+    monkeypatch.setattr(dojo_metrics, "_dojo", missing)
+    eval_mod = pytest.importorskip("training.eval.eval_modernbert")
+    with pytest.raises(RuntimeError, match="dojo extra"):
+        eval_mod.evaluate_documents(object(), [], sample=1, seed=0, max_length=8)

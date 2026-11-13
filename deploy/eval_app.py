@@ -46,6 +46,7 @@ from mailroom_ml.config import (  # noqa: E402
     TRAINING_DATA_REPO,
     TRAINING_DATA_REVISION,
 )
+from mailroom_ml.dojo_contract import DOJO_REQUIREMENT  # noqa: E402
 
 image = (
     modal.Image.debian_slim(python_version="3.12")
@@ -60,6 +61,9 @@ image = (
         "huggingface_hub>=1.33,<2",
         "datasets>=5.0.1",
     )
+    # eval and gate metrics come from the Dojo, pinned like the dojo extra
+    .apt_install("git")
+    .uv_pip_install(DOJO_REQUIREMENT)
     .add_local_dir(ROOT / "src", remote_path="/root/src")
     .add_local_dir(ROOT / "training", remote_path="/root/training")
 )

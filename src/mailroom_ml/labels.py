@@ -13,6 +13,11 @@ repo never imports the dojo package (Mailroom-Corpus-EDA commit cf096fa):
 The corpus GT surfaces (CORPUS_SUBCLASS_SURFACES) all resolve through these
 tables; tests pin every surface value to its canonical key.
 
+These copies are held to the Dojo's published contract
+(``contracts/dojo_ml_contract.json``, pinned in ``dojo_contract.py``) by
+``tests/test_dojo_contract.py``: a table that drifts from the pinned Dojo fails
+there. Eval and gate metrics come from the Dojo itself (``dojo_metrics.py``).
+
 HEAD VOCABS ARE OBSERVED, NOT ENUMERATED (mailroom-issues #66/#67/#68/#75,
 see ``observed_label_surfaces``): per-class training heads are derived from
 the pinned GT at build time (train+validation rows only — the held-out test

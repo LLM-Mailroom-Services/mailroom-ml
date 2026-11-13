@@ -188,6 +188,25 @@ surface-drift parity test (`tests/test_surfaces.py`, #66/#67/#75) guards this.
 `other` head, so out-of-vocab subclasses route to the LLM, never silently
 remapped).
 
+**Dojo alignment.** The Dojo is the constellation's scoring core, pinned to one
+commit (`DOJO_COMMIT` in `src/mailroom_ml/dojo_contract.py`, the `dojo` extra in
+`pyproject.toml`, `uv.lock`; `dev` includes the extra):
+
+- Eval and the M9a gates use the Dojo's numbers. `training/eval/eval_modernbert.py`
+  adds a `dojo` block to every report, built by `mailroom_ml.dojo_metrics` with
+  `llm_dojo_scoring.ml.score_intake_model` and the Dojo's ECE. `m9a_gates` reads
+  per-class subclass macro-F1, doc_type accuracy and window ECE from that block.
+  Reports from before the pin fall back to their own fields. The Modal eval image
+  installs the same pin.
+- Training and serving never import the Dojo. `labels.py`, `normalize.py` and
+  `config.py` keep their copies, and `tests/test_dojo_contract.py` holds them to
+  the vendored contract `src/mailroom_ml/contracts/dojo_ml_contract.json`.
+- To move the pin:
+  1. Change `DOJO_COMMIT` and the `dojo` extra together.
+  2. Copy `llm_dojo_scoring/ml/data/ml_contract.json` from that commit over the
+     vendored file.
+  3. Run `uv lock` and the suite.
+
 ## Governance & task board
 
 `governance/TASKS.md` is the board; read it first every session. This is a

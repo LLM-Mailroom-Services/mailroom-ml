@@ -438,3 +438,19 @@ def test_fast_path_rate_honors_routing_overlay(monkeypatch):
     assert tight["fast_path_gate"]["doc_confidence"] == 0.999999
     # the plan's agreement floor still applies under a looser overlay
     assert tight["fast_path_gate"]["window_agreement"] == ev.GATE_REQUIRED_AGREEMENT
+
+
+def test_eval_report_carries_the_dojo_scorecard(monkeypatch):
+    """Every eval report has a Dojo block that agrees with the harness's own figures."""
+    import training.eval.eval_modernbert as ev
+
+    monkeypatch.setattr(ev, "window_document",
+                        lambda title, text, max_tokens, **_kw: ["w1", "w2"] if text == "multi" else ["w1"])
+    report = ev.evaluate_documents(
+        _stub_bundle(_confident_predict), _eval_docs(),
+        sample=0, seed=42, max_length=8192)
+    dojo = report["dojo"]
+    assert dojo["n_scored"] == report["n_docs"] == 3
+    assert dojo["metrics"]["doc_type_accuracy"] == report["doc_type_accuracy"]
+    assert dojo["window_ece"] == pytest.approx(report["window_calibration"]["ece"], abs=1e-4)
+    assert dojo["dojo"]["commit"]
